@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 深色底（配绿色前景）；页背景保持浅色 -->
+    <color name="ic_launcher_background">#0A0B0D</color>
+    <color name="page_background">#F3F6FB</color>
+
+    <style name="Theme.AiGateway" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/page_background</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+    </style>
+</resources>

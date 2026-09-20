@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AI 聚合网关</string>
+    <string name="channel_name">本地网关</string>
+    <string name="channel_desc">保持本地模型网关运行</string>
+</resources>

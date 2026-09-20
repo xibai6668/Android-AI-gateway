@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- AI 聚合网关图标：中心一个「网关」方块，6 个来源节点环绕并由连线汇聚到它。
+     中心用圆角方块、外围用圆点，形态区分开，避免整体读成「加号」。
+     配色沿用深色底 + 绿色（#0A0B0D / #32F08C / #239A5D）。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 汇聚连线（暗绿，画在节点之下） -->
+    <path
+        android:strokeColor="#239A5D"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:pathData="M54,41 L54,33 M65.26,47.5 L72.19,43.5 M65.26,60.5 L72.19,64.5 M54,67 L54,75 M42.74,60.5 L35.81,64.5 M42.74,47.5 L35.81,43.5" />
+    <!-- 中心网关：26x26 圆角方块 -->
+    <path
+        android:fillColor="#32F08C"
+        android:pathData="M48,41 L60,41 A7,7 0 0 1 67,48 L67,60 A7,7 0 0 1 60,67 L48,67 A7,7 0 0 1 41,60 L41,48 A7,7 0 0 1 48,41 Z" />
+    <!-- 6 个来源节点（半径 6，距中心 27） -->
+    <path
+        android:fillColor="#32F08C"
+        android:pathData="M48,27 a6,6 0 1,0 12,0 a6,6 0 1,0 -12,0 Z M71.38,40.5 a6,6 0 1,0 12,0 a6,6 0 1,0 -12,0 Z M71.38,67.5 a6,6 0 1,0 12,0 a6,6 0 1,0 -12,0 Z M48,81 a6,6 0 1,0 12,0 a6,6 0 1,0 -12,0 Z M24.62,67.5 a6,6 0 1,0 12,0 a6,6 0 1,0 -12,0 Z M24.62,40.5 a6,6 0 1,0 12,0 a6,6 0 1,0 -12,0 Z" />
+</vector>

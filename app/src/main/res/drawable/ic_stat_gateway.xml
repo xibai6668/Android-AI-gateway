@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 通知栏小图标：Android 要求纯白剪影，由系统着色。
+     状态栏实际只有 20dp 上下，启动图标那套「方块 + 6 节点 + 连线」在这里会糊成一团，
+     所以只保留中心方块与四条向外的短须：小尺寸下能看清，又还留着「汇聚」的意思。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="#FFFFFF">
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:pathData="M17.5,12 L21.5,12 M12,17.5 L12,21.5 M6.5,12 L2.5,12 M12,6.5 L12,2.5" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M9,6.5 L15,6.5 A2.5,2.5 0 0 1 17.5,9 L17.5,15 A2.5,2.5 0 0 1 15,17.5 L9,17.5 A2.5,2.5 0 0 1 6.5,15 L6.5,9 A2.5,2.5 0 0 1 9,6.5 Z" />
+</vector>
