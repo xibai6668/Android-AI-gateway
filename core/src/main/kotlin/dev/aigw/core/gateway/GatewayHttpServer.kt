@@ -4,6 +4,7 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import dev.aigw.core.provider.ChatCall
 import dev.aigw.core.provider.ErrorKind
+import dev.aigw.core.provider.OpenAiSseAggregator
 import dev.aigw.core.usage.CallRecord
 import dev.aigw.core.usage.CallStatus
 import dev.aigw.core.util.CappedStringBuilder
@@ -19,7 +20,7 @@ import java.io.OutputStream
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.UUID
-import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 
 /**
@@ -42,7 +43,10 @@ class GatewayHttpServer(
             when {
                 session.method == NanoHTTPD.Method.OPTIONS -> preflight()
                 session.method == NanoHTTPD.Method.POST && uri == "/v1/chat/completions" -> chatCompletions(session)
+                session.method == NanoHTTPD.Method.POST && isGeminiGenerate(uri) -> geminiGenerate(session, uri)
                 session.method == NanoHTTPD.Method.GET && uri == "/v1/models" -> models(session)
+                session.method == NanoHTTPD.Method.GET && isGeminiModels(uri) -> geminiModels(session)
+                session.method == NanoHTTPD.Method.GET && (uri == "/v1/credits" || uri == "/credits" || uri == "/v1/v1/credits") -> credits(session)
                 session.method == NanoHTTPD.Method.GET && uri == "/healthz" ->
                     NanoHTTPD.newFixedLengthResponse(SimpleStatus(200, "OK"), "text/plain; charset=utf-8", "ok")
                 session.method == NanoHTTPD.Method.GET && uri == "/authorize" -> authorize(session)
@@ -76,6 +80,86 @@ class GatewayHttpServer(
         return json(200, OpenAiApi.modelList(engine.models()))
     }
 
+    /** 聚合额度与配额查询端点：包含各供应商剩余额度及 Antigravity 的四个进度条指标。 */
+    private fun credits(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
+        if (!authorized(session)) return unauthorized()
+        val refresh = session.parms["refresh"] == "true"
+        val providers = engine.registry.all().map { it.id }.distinct()
+        val root = JsonObject()
+        val providerArray = com.google.gson.JsonArray()
+
+        // 使用并发并行拉取各供应商，避免阻塞 NanoHTTPD 单连接超时；复用引擎的共享线程池
+        val executor = engine.ioExecutor()
+        val futures = providers.map { pid ->
+            executor.submit<JsonObject> {
+                val pObj = JsonObject()
+                pObj.addProperty("id", pid)
+                val pDisplayName = engine.registry.get(pid)?.displayName ?: pid
+                pObj.addProperty("displayName", pDisplayName)
+
+                val accounts = engine.accounts(pid)
+                val accArray = com.google.gson.JsonArray()
+                var totalCredits = 0L
+                var creditsKnown = false
+
+                for (acc in accounts) {
+                    if (refresh) {
+                        try {
+                            engine.refreshCredits(pid, acc.uid)
+                        } catch (_: Exception) {}
+                    }
+                    val current = engine.pool.status(pid, acc.uid) ?: acc
+                    val aObj = JsonObject()
+                    aObj.addProperty("uid", current.uid)
+                    aObj.addProperty("nickname", current.nickname)
+                    aObj.addProperty("credits", current.credits)
+                    aObj.addProperty("creditsKnown", current.creditsKnown)
+                    aObj.addProperty("detail", current.detail)
+                    aObj.addProperty("enabled", current.enabled)
+                    aObj.addProperty("disabled", current.disabled)
+
+                    if (current.creditsKnown) {
+                        totalCredits += current.credits
+                        creditsKnown = true
+                    }
+
+                    // 额度包 / QuotaPacks
+                    val packs = try {
+                        engine.creditPacks(pid, current.uid)
+                    } catch (_: Exception) {
+                        emptyList()
+                    }
+                    val packArray = com.google.gson.JsonArray()
+                    for (pack in packs) {
+                        val pkObj = JsonObject()
+                        pkObj.addProperty("name", pack.name)
+                        pkObj.addProperty("group", pack.group)
+                        pkObj.addProperty("limit", pack.limit)
+                        pkObj.addProperty("used", pack.used)
+                        pkObj.addProperty("remain", pack.remain)
+                        pkObj.addProperty("expireAt", pack.expireAt)
+                        packArray.add(pkObj)
+                    }
+                    aObj.add("packs", packArray)
+                    accArray.add(aObj)
+                }
+                pObj.addProperty("totalCredits", totalCredits)
+                pObj.addProperty("creditsKnown", creditsKnown)
+                pObj.add("accounts", accArray)
+                pObj
+            }
+        }
+
+        for (future in futures) {
+            try {
+                providerArray.add(future.get())
+            } catch (_: Exception) {}
+        }
+
+        root.add("providers", providerArray)
+        return json(200, root.toString())
+    }
+
     private fun chatCompletions(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
         if (!authorized(session)) return unauthorized()
 
@@ -88,93 +172,287 @@ class GatewayHttpServer(
         val streaming = peek.get("stream")?.asBoolean ?: false
         val requestedModel = peek.get("model")?.asString.orEmpty()
 
-        val route = engine.resolveRoute(requestedModel)
+        val primaryRoute = engine.resolveRoute(requestedModel)
             ?: return errorResponse(400, "invalid_request", "缺少 model 参数")
-        val provider = engine.registry.get(route.providerId)
-            ?: return errorResponse(400, "invalid_request", "未知供应商：${route.providerId}")
-        // 目录里查不到也放行，交给上游判定；避免目录拉取失败时误伤合法模型名
-        val resolvedModel = provider.resolveModel(route.model)
-        val prepared = withModel(body, resolvedModel)
 
         val startedAt = System.currentTimeMillis()
-        val tried = HashSet<String>()
         var lastError = ""
-
-        var attempt = 0
-        while (attempt < settings.maxRotate.coerceAtLeast(1)) {
-            attempt++
-            val picked = engine.pool.pick(route.providerId, tried) ?: break
-            tried += picked.uid
-
-            var account = picked
-            try {
-                val refreshed = provider.refreshAccount(account, settings.refreshSkewSeconds)
-                if (refreshed != null) {
-                    engine.pool.saveAccount(refreshed)
-                    account = refreshed
-                }
-            } catch (e: Exception) {
-                engine.pool.noteError(route.providerId, account.uid, settings.errorThreshold, settings.errorCooldownMillis)
-                lastError = e.message ?: "刷新凭证失败"
-                continue
-            }
-
-            val call: ChatCall = try {
-                provider.openChat(account, prepared)
-            } catch (e: Exception) {
-                engine.pool.noteError(route.providerId, account.uid, settings.errorThreshold, settings.errorCooldownMillis)
-                lastError = e.message ?: "上游连接失败"
-                continue
-            }
-
-            // 流内业务错误（如 Loomy 的 HTTP 200 + 业务码）
-            val failure = call.failure
-            if (failure != null) {
-                call.close()
-                if (failure.kind == ErrorKind.CLIENT) {
-                    log("请求被上游拒绝（${route.providerId}/${account.nickname}）：${failure.message}")
-                    return errorResponse(400, "upstream_rejected", failure.message)
-                }
-                engine.applyCooling(route.providerId, account.uid, failure.kind, failure.message)
-                lastError = failure.message
-                continue
-            }
-
-            if (call.status >= 400) {
-                val error = provider.classify(call.status, call.errorBody)
-                call.close()
-                if (error.kind == ErrorKind.CLIENT) {
-                    // 客户端问题（模型名/参数不对）不该连累账号，直接回给调用方
-                    log("请求被上游拒绝（${route.providerId}/${account.nickname}）：${error.message}")
-                    return errorResponse(400, "upstream_rejected", error.message)
-                }
-                engine.applyCooling(route.providerId, account.uid, error.kind, "上游 HTTP ${call.status}")
-                lastError = error.message
-                continue
-            }
-
-            if (streaming) {
-                val stream = call.stream
-                if (stream == null) {
-                    call.close()
-                    lastError = "上游未返回流"
-                    continue
-                }
-                engine.pool.noteSuccess(route.providerId, account.uid)
-                return streamResponse(stream, call, route.providerId, resolvedModel, account.uid, account.nickname, startedAt, body)
-            }
-
-            val aggregated = call.aggregated
-            call.close()
-            if (aggregated == null) {
-                lastError = "上游返回的内容为空"
-                continue
-            }
-            engine.pool.noteSuccess(route.providerId, account.uid)
-            return aggregatedResponse(aggregated, route.providerId, resolvedModel, account.uid, account.nickname, startedAt, body)
+        val routeErrors = ArrayList<String>()
+        val failoverCfg = engine.failoverSettings()
+        if (engine.verboseLogging()) {
+            log("收到请求 /v1/chat/completions：model=$requestedModel stream=$streaming，已解析路由 ${primaryRoute.providerId}/${primaryRoute.model}")
+            engine.logVerbose("请求原文", body)
         }
 
-        val reason = if (lastError.isEmpty()) "账号池中没有可用账号（冷却中或已停用）" else "全部账号不可用：$lastError"
+        // 首选路由优先；失败后做同款模型 Failover
+        val triedProviders = LinkedHashSet<String>()
+        var currentRoute = primaryRoute
+
+        // 候选路由惰性解析并缓存：仅当首选失败需要换家时才计算，且只算一次。
+        // 内部会 flush 各供应商的模型目录（网络调用），放在 failover 循环里反复解析会让每次换家都多打一轮上游。
+        var cachedCandidates: List<Route>? = null
+        fun candidateRoutes(): List<Route> =
+            cachedCandidates ?: engine.resolveCandidateRoutes(requestedModel).also { cachedCandidates = it }
+
+        while (true) {
+            val providerId = currentRoute.providerId
+            triedProviders.add(providerId)
+            val provider = engine.registry.get(providerId) ?: break
+
+            // 1. 熔断检查：某供应商连续失败达标后，在静默期内直接跳过，避免拖慢整体响应
+            val cb = engine.circuitBreakerOf(providerId)
+            if (!cb.allowRequest()) {
+                val skipReason = "$providerId(熔断隔离中，直接跳过)"
+                log("供应商 [$providerId] 处于熔断隔离状态，跳过此候选...")
+                routeErrors.add(skipReason)
+
+                // 寻找下一个候选供应商
+                val next = candidateRoutes()
+                    .firstOrNull { it.providerId !in triedProviders && engine.pool.pick(it.providerId) != null }
+                if (next != null) {
+                    log("自动故障转移至下一候选供应商 [${next.providerId}]...")
+                    currentRoute = next
+                    continue
+                }
+                break
+            }
+
+            val pMetrics = engine.metricsOf(providerId)
+            val resolvedModel = provider.resolveModel(currentRoute.model)
+            val prepared = withModel(body, resolvedModel)
+            val secSettings = engine.securitySettings()
+            // 反审核脱敏：仅改写 system 消息内的敏感词（注入零宽空格），完全不触碰 user 输入
+            val sanitized = engine.sanitizer.sanitizeOpenAiBody(prepared, resolvedModel, secSettings.sanitizeEnabled)
+
+            val tried = HashSet<String>()
+            var attempt = 0
+            var providerLastError = ""
+            val maxAttempts = if (failoverCfg.enabled) failoverCfg.retry.maxAttempts else settings.maxRotate.coerceAtLeast(1)
+
+            while (attempt < maxAttempts) {
+                attempt++
+                var picked = engine.pickAccount(currentRoute.providerId, tried, currentRoute.region)
+                if (picked == null) {
+                    // 若池中有可用账号（如单账号或全部账号已轮过一轮），清空已试列表允许继续完成剩余重试配额
+                    if (engine.pickAccount(currentRoute.providerId, emptySet(), currentRoute.region) != null) {
+                        tried.clear()
+                        picked = engine.pickAccount(currentRoute.providerId, tried, currentRoute.region)
+                    }
+                }
+                if (picked == null) break
+                tried += picked.uid
+
+                // 单供应商内重试退避：非首次尝试时计算指数退避 + Jitter 抖动休眠，避免冲击上游
+                if (attempt > 1 && failoverCfg.enabled) {
+                    val backoff = failoverCfg.retry.computeBackoffMillis(attempt)
+                    if (backoff > 0) {
+                        if (engine.verboseLogging()) log("供应商 [$providerId] 执行第 $attempt 次尝试，指数退避休眠 ${backoff}ms...")
+                        try { Thread.sleep(backoff) } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
+                    }
+                }
+
+                if (engine.verboseLogging()) {
+                    log("第 $attempt 次选号（$providerId）：${picked.nickname.ifEmpty { picked.uid }}，发送模型 $resolvedModel")
+                    engine.logVerbose("转发内容", sanitized)
+                }
+
+                var account = picked
+                try {
+                    val refreshed = provider.refreshAccount(account, settings.refreshSkewSeconds)
+                    if (refreshed != null) {
+                        engine.pool.saveAccount(refreshed)
+                        account = refreshed
+                    }
+                } catch (e: Exception) {
+                    providerLastError = e.message ?: "刷新凭证失败"
+                    lastError = providerLastError
+                    cb.recordFailure()
+                    pMetrics.record(false, System.currentTimeMillis() - startedAt, "token_refresh_failed")
+                    if (engine.verboseLogging()) engine.logVerbose("返回原文", "刷新凭证异常：$providerLastError")
+                    continue
+                }
+
+                // 账号级限速与节拍抖动：控制同一账号调用频率，规避上游自动化行为特征检测
+                val waitedMs = engine.rateLimiter.acquire(
+                    currentRoute.providerId,
+                    account.uid,
+                    secSettings.minIntervalMillis,
+                    secSettings.jitterMillis,
+                )
+                if (waitedMs > 0 && engine.verboseLogging()) {
+                    log("账号限速生效（${currentRoute.providerId}/${account.nickname}）：节拍对齐等待 ${waitedMs}ms")
+                }
+
+                val attemptStart = System.currentTimeMillis()
+                val call: ChatCall = try {
+                    provider.openChat(account, sanitized)
+                } catch (e: Exception) {
+                    val elapsed = System.currentTimeMillis() - attemptStart
+                    providerLastError = e.message ?: "上游连接失败"
+                    lastError = providerLastError
+                    cb.recordFailure()
+                    pMetrics.record(false, elapsed, "connect_exception")
+                    if (engine.verboseLogging()) engine.logVerbose("返回原文", "openChat 异常：$providerLastError")
+                    continue
+                }
+
+                // 流内业务错误（如 Loomy 的 HTTP 200 + 业务码）
+                val failure = call.failure
+                if (failure != null) {
+                    val elapsed = System.currentTimeMillis() - attemptStart
+                    call.close()
+                    cb.recordFailure()
+                    pMetrics.record(false, elapsed, failure.kind.name)
+                    if (failure.kind == ErrorKind.CLIENT) {
+                        log("请求被上游拒绝（${currentRoute.providerId}/${account.nickname}）：${failure.message}")
+                        if (engine.verboseLogging()) engine.logVerbose("返回原文", call.errorBody)
+                        return errorResponse(400, "upstream_rejected", failure.message)
+                    }
+                    if (failure.kind == ErrorKind.SESSION_DEAD) {
+                        engine.pool.disable(currentRoute.providerId, account.uid, failure.message)
+                        log("凭证失效，已禁用账号（${currentRoute.providerId}/${account.nickname}）：${failure.message}")
+                        // 凭证失效立即换供应商
+                        providerLastError = failure.message
+                        lastError = providerLastError
+                        break
+                    }
+                    providerLastError = failure.message
+                    lastError = providerLastError
+                    if (engine.verboseLogging()) engine.logVerbose("返回原文", call.errorBody)
+                    continue
+                }
+
+                if (call.status == 0) {
+                    val elapsed = System.currentTimeMillis() - attemptStart
+                    val err = call.errorBody.ifEmpty { "连接上游失败（请检查网络连接或代理设置）" }
+                    call.close()
+                    cb.recordFailure()
+                    pMetrics.record(false, elapsed, "network_status_0")
+                    providerLastError = err
+                    lastError = providerLastError
+                    if (engine.verboseLogging()) engine.logVerbose("返回原文", err)
+                    continue
+                }
+
+                if (call.status >= 400) {
+                    val elapsed = System.currentTimeMillis() - attemptStart
+                    val error = provider.classify(call.status, call.errorBody)
+                    cb.recordFailure()
+                    pMetrics.record(false, elapsed, "http_${call.status}")
+
+                    if (engine.verboseLogging()) {
+                        log("上游返回 HTTP ${call.status}（$providerId/${account.nickname}）：${error.message}")
+                        engine.logVerbose("返回原文", call.errorBody)
+                    }
+                    call.close()
+
+                    // 错误决策：客户端不可重试错误（400/审核）立即中断返回客户端，不重试不换家
+                    val decision = dev.aigw.core.failover.ClassifiedError(
+                        statusCode = call.status,
+                        errorCode = error.kind.name,
+                        message = error.message,
+                    ).decide()
+
+                    if (error.kind == ErrorKind.CLIENT || decision == dev.aigw.core.failover.FailoverDecision.ABORT_IMMEDIATELY) {
+                        log("请求被上游拒绝（${currentRoute.providerId}/${account.nickname}）：${error.message}")
+                        return errorResponse(400, "upstream_rejected", error.message)
+                    }
+
+                    if (error.kind == ErrorKind.SESSION_DEAD || decision == dev.aigw.core.failover.FailoverDecision.SWITCH_NEXT_PROVIDER) {
+                        if (error.kind == ErrorKind.SESSION_DEAD) {
+                            engine.pool.disable(currentRoute.providerId, account.uid, error.message)
+                            log("凭证失效，已禁用账号（${currentRoute.providerId}/${account.nickname}）：${error.message}")
+                        }
+                        providerLastError = error.message
+                        lastError = error.message
+                        // 不可恢复错误：直接退出当前供应商重试，迅速切换下一家候选
+                        break
+                    }
+
+                    providerLastError = error.message
+                    lastError = error.message
+                    continue
+                }
+
+                // 客户端要流式但上游只回了非流式结果：包成 SSE 再发
+                val aggregated = call.aggregated
+                if (aggregated != null && OpenAiSseAggregator.isEmptyCompletion(aggregated)) {
+                    val elapsed = System.currentTimeMillis() - attemptStart
+                    call.close()
+                    cb.recordFailure()
+                    pMetrics.record(false, elapsed, "empty_completion")
+                    log("${currentRoute.providerId} 返回了零内容回复，已尝试其他账号或供应商")
+                    if (engine.verboseLogging()) engine.logVerbose("返回原文", aggregated)
+                    providerLastError = "上游返回了空回复"
+                    lastError = providerLastError
+                    continue
+                }
+
+                // 成功链路：记录熔断器成功与度量指标，模型统一归一化为客户端请求的名称
+                cb.recordSuccess()
+                pMetrics.record(true, System.currentTimeMillis() - attemptStart)
+                val transparentModel = requestedModel
+
+                if (streaming && aggregated != null) {
+                    val sse = OpenAiSseAggregator.completionAsSse(aggregated).byteInputStream(Charsets.UTF_8)
+                    return streamResponse(sse, call, currentRoute.providerId, transparentModel, account.uid, account.nickname, startedAt, body)
+                }
+
+                if (streaming) {
+                    val stream = call.stream
+                    if (stream == null) {
+                        val elapsed = System.currentTimeMillis() - attemptStart
+                        call.close()
+                        cb.recordFailure()
+                        pMetrics.record(false, elapsed, "stream_null")
+                        providerLastError = "上游未返回流"
+                        lastError = providerLastError
+                        continue
+                    }
+                    return streamResponse(stream, call, currentRoute.providerId, transparentModel, account.uid, account.nickname, startedAt, body)
+                }
+
+                if (aggregated != null) {
+                    if (engine.verboseLogging()) {
+                        log("上游返回 2xx（$providerId/${account.nickname}，非流式）")
+                        engine.logVerbose("返回原文", aggregated)
+                    }
+                    return aggregatedResponse(aggregated, currentRoute.providerId, transparentModel, account.uid, account.nickname, startedAt, body)
+                }
+
+                call.close()
+                providerLastError = "上游返回的内容为空"
+                lastError = providerLastError
+                continue
+            }
+
+            val summary = engine.pool.summary(currentRoute.providerId)
+            val errDetail = if (providerLastError.isEmpty()) {
+                "无可用账号（总数: ${summary.total}，可用: ${summary.usable}，停用: ${summary.disabled}）"
+            } else {
+                providerLastError
+            }
+            routeErrors.add("${currentRoute.providerId}($errDetail)")
+
+            // 同款模型跨供应商 Failover：按优先级选下一个尚未尝试且有可用账号的供应商
+            val next = candidateRoutes()
+                .firstOrNull { it.providerId !in triedProviders && engine.pool.pick(it.providerId) != null }
+            if (next != null) {
+                log("[故障转移] 供应商 [${currentRoute.providerId}] 调用未成功（$errDetail），自动切换至备选供应商 [${next.providerId}]（对应模型: ${next.model}）...")
+                currentRoute = next
+                continue
+            }
+            break
+        }
+
+        val allErrors = routeErrors.joinToString("；")
+        val reason = "所有候选供应商均不可用：$allErrors"
+        if (engine.verboseLogging()) {
+            log("全部尝试完毕返回 503：已试供应商 [${triedProviders.joinToString(", ")}]")
+            routeErrors.forEachIndexed { index, error -> log("  原因 ${index + 1}：$error") }
+        } else {
+            log("全部供应商尝试完毕，返回 503：$reason")
+        }
         return errorResponse(503, "no_healthy_account", reason)
     }
 
@@ -192,13 +470,20 @@ class GatewayHttpServer(
         requestBody: String,
     ): NanoHTTPD.Response {
         val id = newCompletionId()
-        return SseResponse { writer ->
+        return SseResponse(engine.schedulerExecutor()) { writer ->
             // 边收边截：记录只留前 MAX_LOGGED_BODY 字符，避免长回复把整段内容留在堆里
             val collected = CappedStringBuilder(MAX_LOGGED_BODY)
+            // 返回原文：上游逐行原始报文（未做任何解析），排障时能还原上游到底回了什么
+            val rawLines = CappedStringBuilder(MAX_LOGGED_BODY)
             var usage: JsonObject? = null
             var pointsConsumed = 0L
             var status = CallStatus.SUCCESS
             var failure = ""
+            var sawData = false
+            var sawPayload = false
+            // 上游空行代表一个 SSE 事件结束。把同一事件的非空行攒在一起、遇空行才一次性写出，
+            // 输出字节与“逐行补 \n\n”完全一致，但每个事件只 flush 一次，减少分块帧与网络小包。
+            val batch = StringBuilder(1024)
             try {
                 stream.bufferedReader(Charsets.UTF_8).use { reader ->
                     while (true) {
@@ -206,17 +491,28 @@ class GatewayHttpServer(
                         // 先把行原样透传，再看一眼统计：解析绝不能影响转发。
                         // 上游 chunk 里 `"usage": null` 这类字段用 Gson 裸转换是会抛异常的，
                         // 一旦抛在转发循环里，整条流就断了，客户端只看到「连接断开」。
-                        writer.write(line)
-                        writer.write("\n")
+                        // 输出恒为规范帧：跳过上游的空行，每个非空行统一补 \n\n 结尾，
+                        // 否则严格解析器会把整条流当成一个没结束的事件，客户端收到空回复。
+                        if (line.isBlank()) {
+                            flushBatch(batch, writer)
+                            continue
+                        }
+                        if (line.startsWith("data:")) sawData = true
+                        rawLines.append(line + "\n")
+                        batch.append(line).append("\n\n")
+                        if (batch.length >= FLUSH_THRESHOLD_CHARS) flushBatch(batch, writer)
                         val chunk = runCatching { parseChunk(line) }.getOrNull() ?: continue
                         chunk.usage?.let { usage = it }
                         if (chunk.pointsConsumed > 0) pointsConsumed = chunk.pointsConsumed
+                        if (chunk.hasPayload) sawPayload = true
                         chunk.error?.let {
                             status = CallStatus.FAILED
                             failure = it
                         }
                         collected.append(chunk.content)
                     }
+                    // 上游没以空行收尾时的尾批
+                    flushBatch(batch, writer)
                 }
             } catch (e: IOException) {
                 // 客户端中途断开是最常见原因，不算账号故障
@@ -228,14 +524,45 @@ class GatewayHttpServer(
                 failure = "网关转发流出错：${e.message}"
                 engine.logError("转发 $providerId 的流失败：$e")
             } finally {
+                // 上游一条 data 都没给：不能静默结束，否则客户端只看到「输出完成却空」
+                if (status == CallStatus.SUCCESS && !sawData) {
+                    status = CallStatus.FAILED
+                    failure = "上游流式响应没有任何数据"
+                    engine.logError("$providerId 的流式响应没有任何 data 行，已向客户端报错")
+                    runCatching {
+                        writer.write("data: " + OpenAiApi.errorBody("upstream_empty", failure) + "\n\n")
+                        writer.write("data: [DONE]\n\n")
+                    }
+                } else if (status == CallStatus.SUCCESS && sawData && !sawPayload) {
+                    // 有 data 行但全是元数据（role/finish/usage），零实际内容：同样不能算成功
+                    status = CallStatus.FAILED
+                    failure = "上游流式响应没有任何内容"
+                    engine.logError("$providerId 的流式响应零内容，已向客户端报错")
+                    runCatching {
+                        writer.write("data: " + OpenAiApi.errorBody("upstream_empty", failure) + "\n\n")
+                        writer.write("data: [DONE]\n\n")
+                    }
+                }
                 call.close()
                 if (status == CallStatus.SUCCESS) {
-                    engine.pool.noteSuccess(providerId, uid)
                     engine.refreshCreditsSoon(providerId, uid)
                 }
-                recordCall(id, providerId, model, uid, nickname, true, status, usage, pointsConsumed, failure, collected.content(), requestBody, startedAt)
+                if (engine.verboseLogging()) {
+                    log("流式转发结束（$providerId/$model）：$status，耗时 ${System.currentTimeMillis() - startedAt}ms" +
+                        if (failure.isNotEmpty()) "，失败：$failure" else "")
+                    engine.logVerbose("返回原文", rawLines.content())
+                }
+                recordCall(id, providerId, model, uid, nickname, true, status, usage, pointsConsumed, failure, collected.content(), requestBody, startedAt, rawLines.content())
             }
         }
+    }
+
+    /** 把累积的 SSE 行批量写出；非空则写出并清空缓冲，返回是否有内容。 */
+    private fun flushBatch(batch: StringBuilder, writer: ChunkWriter): Boolean {
+        if (batch.isEmpty()) return false
+        writer.write(batch.toString())
+        batch.setLength(0)
+        return true
     }
 
     /** 非流式：provider 已聚合完毕，直接返回其 completion。 */
@@ -249,16 +576,160 @@ class GatewayHttpServer(
         requestBody: String,
     ): NanoHTTPD.Response {
         val payload = runCatching { JsonParser.parseString(aggregated).asJsonObject }.getOrNull()
+        // 对调用方透明：将响应中的 model 归一化为客户端请求的逻辑模型
+        if (payload != null && model.isNotEmpty()) {
+            payload.addProperty("model", model)
+        }
+        val normalized = payload?.toString() ?: aggregated
         val usage = payload?.objOrNull("usage")
         val content = payload?.arrayOrNull("choices")?.firstOrNull()
             ?.takeIf { it.isJsonObject }?.asJsonObject
             ?.objOrNull("message")?.get("content")?.asString.orEmpty()
         recordCall(
             newCompletionId(), providerId, model, uid, nickname, false,
-            CallStatus.SUCCESS, usage, pointsConsumedOf(payload ?: JsonObject(), usage), "", content, requestBody, startedAt,
+            CallStatus.SUCCESS, usage, pointsConsumedOf(payload ?: JsonObject(), usage), "", content, requestBody, startedAt, normalized,
         )
         engine.refreshCreditsSoon(providerId, uid)
-        return json(200, aggregated)
+        return json(200, normalized)
+    }
+
+    private fun isGeminiGenerate(uri: String): Boolean {
+        val clean = uri.trimEnd('/')
+        return (clean.startsWith("/v1beta/models/") || clean.startsWith("/v1/models/") || clean.startsWith("/models/")) &&
+            (clean.endsWith(":streamGenerateContent") || clean.endsWith(":generateContent"))
+    }
+
+    private fun isGeminiModels(uri: String): Boolean {
+        val clean = uri.trimEnd('/')
+        return clean == "/v1beta/models" || clean == "/models"
+    }
+
+    /** 响应 Google Gemini 官方协议的 models 列表请求（GET /v1beta/models）。 */
+    private fun geminiModels(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
+        if (!authorized(session)) return unauthorized()
+        val provider = engine.registry.get("antigravity")
+        val account = engine.pool.pick("antigravity")
+        val catalog = provider?.listModels(account) ?: dev.aigw.core.provider.ProviderModelCatalogView(emptyList(), true, "")
+        val array = com.google.gson.JsonArray()
+        for (m in catalog.models) {
+            array.add(JsonObject().apply {
+                addProperty("name", "models/${m.id}")
+                addProperty("version", "001")
+                addProperty("displayName", m.name)
+                addProperty("description", m.name)
+                addProperty("inputTokenLimit", if (m.contextWindow > 0) m.contextWindow else 1048576)
+                addProperty("outputTokenLimit", 65536)
+                add("supportedGenerationMethods", com.google.gson.JsonArray().apply { add("generateContent") })
+            })
+        }
+        return json(200, JsonObject().apply { add("models", array) }.toString())
+    }
+
+    /** 响应 Google Gemini 官方协议的 generateContent / streamGenerateContent。 */
+    private fun geminiGenerate(session: NanoHTTPD.IHTTPSession, uri: String): NanoHTTPD.Response {
+        if (!authorized(session)) return unauthorized()
+        val cleanUri = uri.trimEnd('/')
+        val rawModel = cleanUri.substringAfter("/models/").substringBefore(":")
+        val isStream = cleanUri.endsWith(":streamGenerateContent") || session.parms["alt"] == "sse"
+
+        val body = readBody(session)
+        if (body.isEmpty()) return errorResponse(400, "invalid_request", "请求体为空")
+
+        val provider = engine.registry.get("antigravity") as? dev.aigw.core.provider.GeminiNativeSupport
+            ?: return errorResponse(503, "no_provider", "反重力供应商未就绪")
+
+        val startedAt = System.currentTimeMillis()
+        if (engine.verboseLogging()) {
+            log("收到请求 $cleanUri（原生 Gemini 协议）：model=$rawModel stream=$isStream")
+            engine.logVerbose("请求原文", body)
+        }
+
+        val secSettings = engine.securitySettings()
+        val sanitized = engine.sanitizer.sanitizeGeminiNativeBody(body, rawModel, secSettings.sanitizeEnabled)
+
+        val tried = HashSet<String>()
+        val settings = engine.settings()
+        var attempt = 0
+        var lastError = ""
+
+        while (attempt < settings.maxRotate.coerceAtLeast(1)) {
+            attempt++
+            val picked = engine.pool.pick("antigravity", tried) ?: break
+            tried += picked.uid
+            if (engine.verboseLogging()) {
+                log("第 $attempt 次选号（antigravity）：${picked.nickname.ifEmpty { picked.uid }}，发送模型 $rawModel")
+            }
+
+            // 原生 Gemini 账号级限速
+            val waitedMs = engine.rateLimiter.acquire(
+                "antigravity",
+                picked.uid,
+                secSettings.minIntervalMillis,
+                secSettings.jitterMillis,
+            )
+            if (waitedMs > 0 && engine.verboseLogging()) {
+                log("账号限速生效（antigravity/${picked.nickname}）：节拍对齐等待 ${waitedMs}ms")
+            }
+
+            val call = try {
+                provider.openGeminiNative(picked, rawModel, sanitized, isStream)
+            } catch (e: Exception) {
+                lastError = e.message ?: "连接失败"
+                if (engine.verboseLogging()) engine.logVerbose("返回原文", "openGeminiNative 异常：$lastError")
+                continue
+            }
+
+            if (call.status == 0) {
+                val err = call.errorBody.ifEmpty { "连接上游失败" }
+                call.close()
+                lastError = err
+                if (engine.verboseLogging()) engine.logVerbose("返回原文", err)
+                continue
+            }
+
+            if (call.status >= 400) {
+                val err = call.errorBody
+                if (engine.verboseLogging()) {
+                    log("上游返回 HTTP ${call.status}（antigravity/${picked.nickname}）")
+                    engine.logVerbose("返回原文", err)
+                }
+                call.close()
+                lastError = err
+                continue
+            }
+
+            if (isStream) {
+                val stream = call.stream
+                if (stream == null) {
+                    call.close()
+                    lastError = "上游未返回流"
+                    continue
+                }
+                return streamResponse(stream, call, "antigravity", rawModel, picked.uid, picked.nickname, startedAt, body)
+            }
+
+            val aggregated = call.aggregated
+            call.close()
+            if (aggregated != null) {
+                if (engine.verboseLogging()) {
+                    log("上游返回 2xx（antigravity/${picked.nickname}，非流式）")
+                    engine.logVerbose("返回原文", aggregated)
+                }
+                return json(200, aggregated)
+            }
+            lastError = "上游返回内容为空"
+        }
+
+        val summary = engine.pool.summary("antigravity")
+        val reason = if (lastError.isEmpty()) {
+            "供应商 [antigravity] 账号池中没有可用账号（总数: ${summary.total}，可用: ${summary.usable}，停用: ${summary.disabled}）"
+        } else {
+            "供应商 [antigravity] 调用失败：$lastError"
+        }
+        if (engine.verboseLogging()) {
+            log("全部尝试完毕返回 503（原生 Gemini 端点）：$reason")
+        }
+        return errorResponse(503, "no_healthy_account", reason)
     }
 
     private fun authorize(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
@@ -276,15 +747,35 @@ class GatewayHttpServer(
 
     // ------------------------------------------------------------------ 工具
 
+    private fun isLocalhost(session: NanoHTTPD.IHTTPSession): Boolean {
+        val remoteIp = session.remoteIpAddress ?: ""
+        return remoteIp == "127.0.0.1" || remoteIp == "::1" || remoteIp == "localhost"
+    }
+
     private fun authorized(session: NanoHTTPD.IHTTPSession): Boolean {
+        // 本地回环地址发起额度/探活查询免 Key，方便本地 Dashboard 面板脚本在非对话时也能常驻刷新
+        val uri = session.uri.trimEnd('/').ifEmpty { "/" }
+        if (isLocalhost(session) && (uri == "/v1/credits" || uri == "/credits" || uri == "/v1/v1/credits" || uri == "/healthz")) {
+            return true
+        }
         val settings = engine.settings()
         if (settings.allowNoKey) return true
         val expected = settings.apiKey
         if (expected.isEmpty()) return false
-        val header = session.headers["authorization"] ?: return false
-        if (!header.startsWith("Bearer ", ignoreCase = true)) return false
+
+        val authHeader = session.headers["authorization"]
+        val googKeyHeader = session.headers["x-goog-api-key"]
+        val queryKey = session.parms["key"]
+
+        val token = when {
+            authHeader != null && authHeader.startsWith("Bearer ", ignoreCase = true) -> authHeader.substring(7).trim()
+            authHeader != null -> authHeader.trim()
+            googKeyHeader != null -> googKeyHeader.trim()
+            queryKey != null -> queryKey.trim()
+            else -> return false
+        }
         return MessageDigest.isEqual(
-            header.substring(7).toByteArray(StandardCharsets.UTF_8),
+            token.toByteArray(StandardCharsets.UTF_8),
             expected.toByteArray(StandardCharsets.UTF_8),
         )
     }
@@ -369,16 +860,29 @@ class GatewayHttpServer(
         val obj = JsonParser.parseString(payload).takeIf { it.isJsonObject }?.asJsonObject ?: return null
         val delta = obj.arrayOrNull("choices")?.firstOrNull()?.asObjectOrNull()?.objOrNull("delta")
         val usage = obj.objOrNull("usage")
+        val content = delta?.stringOrNull("content").orEmpty()
+        // 有实际负载才算「有内容」：纯 role/finish chunk 不算，
+        // 否则上游只回元数据时会被当成成功的空回复
+        val hasPayload = content.isNotEmpty() ||
+            delta?.has("tool_calls") == true ||
+            !delta?.stringOrNull("reasoning_content").isNullOrEmpty()
         return ChunkInfo(
             usage = usage,
             error = obj.objOrNull("error")?.stringOrNull("message"),
-            content = delta?.stringOrNull("content").orEmpty(),
+            content = content,
+            hasPayload = hasPayload,
             // 绝大多数 chunk 不带积分字段：字符串预检跳过十几次 JSON 查找
             pointsConsumed = if (payload.contains("points")) pointsConsumedOf(obj, usage) else 0L,
         )
     }
 
-    private data class ChunkInfo(val usage: JsonObject?, val error: String?, val content: String, val pointsConsumed: Long)
+    private data class ChunkInfo(
+        val usage: JsonObject?,
+        val error: String?,
+        val content: String,
+        val hasPayload: Boolean,
+        val pointsConsumed: Long,
+    )
 
     /**
      * 从流 chunk 里取「本次积分消耗」；字段清单照官方 Web 客户端的 turnPoints 解析
@@ -437,6 +941,7 @@ class GatewayHttpServer(
         responseText: String,
         requestBody: String,
         startedAt: Long,
+        rawResponse: String = "",
     ) {
         engine.callLogStore.add(
             CallRecord(
@@ -457,6 +962,7 @@ class GatewayHttpServer(
                 error = error,
                 requestBody = requestBody.take(MAX_LOGGED_BODY),
                 responseBody = responseText.take(MAX_LOGGED_BODY),
+                rawResponse = rawResponse.take(MAX_LOGGED_BODY),
             ),
         )
         // 每写入一条就顺带检查跳天清理：网关可能持续只收少量请求，
@@ -469,6 +975,9 @@ class GatewayHttpServer(
     companion object {
         const val MAX_BODY_BYTES = 8 * 1024 * 1024
         const val MAX_LOGGED_BODY = 8 * 1024
+
+        /** 上游迟迟不给空行事件边界时的兜底 flush 阈值（字符）。 */
+        const val FLUSH_THRESHOLD_CHARS = 8 * 1024
 
         /** `/authorize` 回调固定归 Trae（其它供应商的登录不经过网关端口）。 */
         const val TRAE_PROVIDER_ID = "trae"
@@ -515,6 +1024,7 @@ internal class ChunkWriter(private val out: OutputStream) {
 
 /** 流式响应：自己做分块编码，避免 NanoHTTPD 默认实现不逐块 flush 导致 SSE 卡顿。 */
 internal class SseResponse(
+    private val scheduler: ScheduledExecutorService,
     private val produce: (ChunkWriter) -> Unit,
 ) : NanoHTTPD.Response(SimpleStatus(200, "OK"), "text/event-stream; charset=utf-8", null, -1) {
 
@@ -540,10 +1050,8 @@ internal class SseResponse(
 
         // 上游长思考时可能几十秒不出任何 chunk，客户端会读超时并把连接判成断开；
         // 定时发 SSE 注释行（按规范客户端会忽略）把空闲连接续上。
-        val beats = Executors.newSingleThreadScheduledExecutor { runnable ->
-            Thread(runnable, "gateway-sse-heartbeat").apply { isDaemon = true }
-        }
-        beats.scheduleAtFixedRate(
+        // 复用引擎的共享定时器，只取消本流的这一个周期任务，不额外创建/销毁线程。
+        val beat = scheduler.scheduleAtFixedRate(
             { runCatching { writer.write(HEARTBEAT) } },
             HEARTBEAT_SECONDS,
             HEARTBEAT_SECONDS,
@@ -552,7 +1060,7 @@ internal class SseResponse(
         try {
             produce(writer)
         } finally {
-            beats.shutdownNow()
+            runCatching { beat.cancel(false) }
             runCatching { writer.finish() }
             runCatching { outputStream.flush() }
         }

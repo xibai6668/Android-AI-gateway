@@ -67,7 +67,7 @@ object LoomyUi : ProviderUi {
         }
 
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            SectionCard {
+            SectionCard(enterIndex = 0) {
                 SectionLabel("登录")
                 OutlinedTextField(
                     value = phone,

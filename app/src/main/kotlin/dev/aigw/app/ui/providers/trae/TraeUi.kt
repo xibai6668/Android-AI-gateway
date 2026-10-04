@@ -50,7 +50,7 @@ object TraeUi : ProviderUi {
         var raw by remember { mutableStateOf("") }
 
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            SectionCard {
+            SectionCard(enterIndex = 0) {
                 SectionLabel("登录")
                 Button(
                     onClick = { actions.onWebLogin(id) },

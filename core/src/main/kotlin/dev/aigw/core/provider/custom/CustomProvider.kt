@@ -15,6 +15,7 @@ import dev.aigw.core.provider.ProviderAccount
 import dev.aigw.core.provider.ProviderCapability
 import dev.aigw.core.provider.ProviderModel
 import dev.aigw.core.provider.ProviderModelCatalogView
+import dev.aigw.core.provider.StreamFailureChatCall
 import dev.aigw.core.provider.StreamingChatCall
 import dev.aigw.core.provider.UpstreamError
 import dev.aigw.core.util.arrayOrNull
@@ -94,12 +95,47 @@ class CustomProvider(
             } finally {
                 conn.disconnect()
             }
+            if (OpenAiSseAggregator.isEmptyCompletion(aggregated)) {
+                return emptyUpstreamFailure(status, contentType, aggregated)
+            }
             return AggregatedChatCall(status, aggregated)
         }
 
         val text = runCatching { stream.use { readLimited(it) } }.getOrDefault("")
         conn.disconnect()
+        // 200 但空 body（代理吞响应、上游静默拒绝）：当成功会让客户端「输出完成却什么都没有」
+        if (text.isBlank()) return emptyUpstreamFailure(status, contentType, text)
+        // 非流式响应必须是 OpenAI completion；HTML 登录页之类不能当回复透传
+        if (!isChatCompletion(text)) {
+            return StreamFailureChatCall(
+                status,
+                UpstreamError(
+                    ErrorKind.CLIENT,
+                    "上游响应不符合 OpenAI 协议（HTTP $status，Content-Type: ${contentType.ifEmpty { "—" }}）：${text.trim().take(200)}",
+                ),
+            )
+        }
+        // 客户端要流式但上游只回了普通 JSON：包成 SSE，严格客户端才能解析出内容
+        if (streaming) {
+            return StreamingChatCall(status, OpenAiSseAggregator.completionAsSse(text).byteInputStream(Charsets.UTF_8))
+        }
         return AggregatedChatCall(status, text)
+    }
+
+    /** 上游 200 但没给出任何内容：保持可检测的失败，不能报成「成功的空回复」。 */
+    private fun emptyUpstreamFailure(status: Int, contentType: String, raw: String): ChatCall = StreamFailureChatCall(
+        status,
+        UpstreamError(
+            ErrorKind.CLIENT,
+            "上游返回了空响应（HTTP $status，Content-Type: ${contentType.ifEmpty { "—" }}" +
+                if (raw.isBlank()) "）" else "，片段：${raw.trim().take(120)}）",
+        ),
+    )
+
+    /** 是否是合法的 OpenAI completion（非流式响应）。 */
+    private fun isChatCompletion(body: String): Boolean {
+        val obj = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull() ?: return false
+        return obj.get("choices")?.isJsonArray == true
     }
 
     override fun classify(status: Int, body: String): UpstreamError {
@@ -138,10 +174,6 @@ class CustomProvider(
         if (apiKey.isEmpty()) return null
         return ProviderAccount(id, uidOf(apiKey), config.name, secretOf(apiKey))
     }
-
-    /** 用第一个 key 拉 `/v1/models`。 */
-    fun fetchModels(): List<String> =
-        fetchModels(config.baseUrl, config.apiKeys.firstOrNull().orEmpty())
 
     // ------------------------------------------------------------------ 内部
 

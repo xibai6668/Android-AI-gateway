@@ -38,7 +38,7 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
         subtitle = "让网关在后台持续运行",
         leading = { BackButton(onBack) },
     ) {
-        SectionCard {
+        SectionCard(enterIndex = 0) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("保活状态", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
                 Text(
@@ -61,7 +61,7 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
             }
         }
 
-        SectionCard {
+        SectionCard(enterIndex = 1) {
             StatusRow(
                 title = "通知权限",
                 detail = if (status?.notificationsGranted == true) "已允许，常驻通知可见" else "未允许，后台通知不会显示",
@@ -107,7 +107,7 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
             }
         }
 
-        SectionCard {
+        SectionCard(enterIndex = 2) {
             Text("厂商后台管理页", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Text(
                 text = "国产系统默认会限制第三方应用后台。下面的入口会尝试直接打开厂商的后台管理页；" +

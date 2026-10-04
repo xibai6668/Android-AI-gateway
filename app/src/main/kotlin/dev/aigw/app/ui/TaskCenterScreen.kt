@@ -12,7 +12,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import dev.aigw.core.pool.coolingText
 
 /**
  * 任务中心：批量签到与额度维护。
@@ -27,7 +26,7 @@ fun TaskCenterScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> U
         subtitle = "签到与额度",
         leading = { BackButton(onBack) },
     ) {
-        SectionCard {
+        SectionCard(enterIndex = 0) {
             SectionLabel("批量操作")
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -61,7 +60,7 @@ fun TaskCenterScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> U
         }
 
         if (state.providers.none { state.accountsOf(it.id).isNotEmpty() }) {
-            SectionCard {
+            SectionCard(enterIndex = 1) {
                 EmptyHint("还没有账号", "先去「供应商」页添加账号，再回来签到。")
             }
             return@PageScaffold
@@ -70,7 +69,7 @@ fun TaskCenterScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> U
         for (info in state.providers) {
             val accounts = state.accountsOf(info.id)
             if (accounts.isEmpty()) continue
-            SectionCard {
+            SectionCard(enterIndex = 2) {
                 SectionLabel(info.displayName)
                 for (account in accounts) {
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -84,7 +83,7 @@ fun TaskCenterScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> U
                                 append("额度 ")
                                 append(if (account.creditsKnown) account.credits.toString() else "—")
                                 append(" · ")
-                                append(account.coolingText())
+                                append(accountStatusText(account))
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,

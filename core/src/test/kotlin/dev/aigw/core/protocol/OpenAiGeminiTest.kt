@@ -71,7 +71,8 @@ class OpenAiGeminiTest {
             .getAsJsonArray("functionDeclarations")[0].asJsonObject
 
         assertEquals("get_weather", declaration.get("name").asString)
-        val loc = declaration.getAsJsonObject("parameters")
+        // 上游要求字段名为 parametersJsonSchema（与 CLIProxyAPI 一致）
+        val loc = declaration.getAsJsonObject("parametersJsonSchema")
             .getAsJsonObject("properties").getAsJsonObject("loc")
         assertFalse(loc.has("default"), "default 会 400，必须剥离")
         assertFalse(loc.has("${'$'}ref"), "\$ref 会 400，必须剥离")
@@ -113,15 +114,36 @@ class OpenAiGeminiTest {
     @Test
     fun `finishReason 映射并补 DONE`() {
         val translator = OpenAiGemini.SseTranslator("id", "m", created = 1)
-        val line = """data: {"response":{"candidates":[{"content":{"parts":[{"text":"end"}]},"finishReason":"MAX_TOKENS"}]}}"""
+        // 与 CLIProxyAPI 一致：finishReason 只在同时带 usage 的最终 chunk 上终结，
+        // 单独出现时先缓存，流结束由 close 补终止 chunk
+        val line = """data: {"response":{"candidates":[{"content":{"parts":[{"text":"end"}]},"finishReason":"MAX_TOKENS"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":2,"totalTokenCount":3}}}"""
 
         val out = translator.translate(line)
         assertEquals(2, out.size)
         assertTrue(out[1].contains("[DONE]"))
 
         val chunk = JsonParser.parseString(out[0].removePrefix("data: ").trim()).asJsonObject
-        assertEquals("length", chunk.getAsJsonArray("choices")[0].asJsonObject.get("finish_reason").asString)
-        assertTrue(translator.close().isEmpty(), "已结束就不该再补 DONE")
+        assertEquals("max_tokens", chunk.getAsJsonArray("choices")[0].asJsonObject.get("finish_reason").asString)
+        assertTrue(translator.close().isEmpty(), "已结束就不该再补")
+    }
+
+    @Test
+    fun `finishReason 与 usage 拆在不同 chunk 时流不早终结`() {
+        val translator = OpenAiGemini.SseTranslator("id", "m", created = 1)
+        val first = translator.translate(
+            """data: {"response":{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}]}}""",
+        )
+        assertEquals(1, first.size, "缺 usage 的 chunk 不终结")
+        assertTrue(!first[0].contains("[DONE]"))
+
+        val rest = translator.translate(
+            """data: {"response":{"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}}""",
+        )
+        assertEquals(2, rest.size)
+        assertTrue(rest[1].contains("[DONE]"))
+        val finish = JsonParser.parseString(rest[0].removePrefix("data: ").trim()).asJsonObject
+            .getAsJsonArray("choices")[0].asJsonObject.get("finish_reason").asString
+        assertEquals("stop", finish)
     }
 
     @Test
@@ -143,6 +165,8 @@ class OpenAiGeminiTest {
         assertTrue(translator.translate("").isEmpty())
         assertTrue(translator.translate(": keep-alive").isEmpty())
         assertTrue(translator.translate("data: {\"response\":{\"candidates\":[]}}").isEmpty())
-        assertEquals(1, translator.close().size, "没结束时 close 应补一个 DONE")
+        // close 现在补终止 chunk + DONE 两条（上游未发 finishReason 时不能只发 DONE 了事）
+        assertEquals(2, translator.close().size)
+        assertTrue(translator.close().isEmpty(), "第二次 close 不应再补")
     }
 }

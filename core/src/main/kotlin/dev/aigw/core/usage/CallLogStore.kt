@@ -28,8 +28,10 @@ data class CallRecord(
     val error: String,
     /** 请求体原文（截断保存），供「调用记录」详情查看。 */
     val requestBody: String,
-    /** 响应原文（截断保存）。 */
+    /** 响应摘要（截断保存）：流式为拼接后的正文，非流式为 content。 */
     val responseBody: String,
+    /** 返回原文（截断保存）：流式为上游逐行报文，非流式为完整 JSON；排查 503/空回复用。 */
+    val rawResponse: String = "",
 )
 
 /** 用量统计聚合。 */
@@ -140,14 +142,18 @@ class CallLogStore(
             val obj = runCatching { JsonParser.parseString(raw).asJsonObject }.getOrNull() ?: continue
             val request = obj.get("requestBody")?.asString.orEmpty()
             val response = obj.get("responseBody")?.asString.orEmpty()
+            val rawResponse = obj.get("rawResponse")?.asString.orEmpty()
             val trimmedRequest = truncate(request, maxChars)
             val trimmedResponse = truncate(response, maxChars)
-            if (trimmedRequest == request && trimmedResponse == response) continue
+            val trimmedRaw = truncate(rawResponse, maxChars)
+            if (trimmedRequest == request && trimmedResponse == response && trimmedRaw == rawResponse) continue
             saved += (request.length - trimmedRequest.length).toLong() +
-                (response.length - trimmedResponse.length).toLong()
+                (response.length - trimmedResponse.length).toLong() +
+                (rawResponse.length - trimmedRaw.length).toLong()
             changed++
             obj.addProperty("requestBody", trimmedRequest)
             obj.addProperty("responseBody", trimmedResponse)
+            obj.addProperty("rawResponse", trimmedRaw)
             store.write(key, obj.toString())
             val id = obj.get("id")?.asString.orEmpty()
             val index = records.indexOfFirst { it.id == id }
@@ -155,6 +161,7 @@ class CallLogStore(
                 records[index] = records[index].copy(
                     requestBody = trimmedRequest,
                     responseBody = trimmedResponse,
+                    rawResponse = trimmedRaw,
                 )
             }
         }
@@ -202,6 +209,7 @@ class CallLogStore(
                     error = obj.get("error")?.asString.orEmpty(),
                     requestBody = obj.get("requestBody")?.asString.orEmpty(),
                     responseBody = obj.get("responseBody")?.asString.orEmpty(),
+                    rawResponse = obj.get("rawResponse")?.asString.orEmpty(),
                 ),
             )
         }
@@ -240,4 +248,5 @@ private fun CallRecord.toJson(): JsonObject = JsonObject().apply {
     addProperty("error", error)
     addProperty("requestBody", requestBody)
     addProperty("responseBody", responseBody)
+    addProperty("rawResponse", rawResponse)
 }

@@ -18,7 +18,7 @@ class StorageMaintenanceTest {
 
     private val day = 24L * 3600 * 1000
 
-    private fun record(id: String, at: Long, request: String = "req", response: String = "resp") = CallRecord(
+    private fun record(id: String, at: Long, request: String = "req", response: String = "resp", raw: String = "") = CallRecord(
         id = id,
         startedAtMillis = at,
         providerId = "trae",
@@ -35,6 +35,7 @@ class StorageMaintenanceTest {
         error = "",
         requestBody = request,
         responseBody = response,
+        rawResponse = raw,
     )
 
     // ------------------------------------------------------------------ 保留天数
@@ -173,6 +174,30 @@ class StorageMaintenanceTest {
         reader.clear()
         assertEquals(0, reader.storedCount())
         assertEquals(0L, reader.storageChars())
+    }
+
+    @Test
+    fun `截断同时覆盖请求响应与返回原文`() {
+        val store = InMemoryKeyValueStore()
+        val log = CallLogStore(store)
+        val long = "x".repeat(5_000)
+        log.add(record("long", 1L, request = long, response = long, raw = long))
+
+        val (changed, saved) = log.truncateFields(1_000)
+        assertEquals(1, changed)
+        val kept = log.list().first { it.id == "long" }
+        assertEquals(1_000 + CallLogStore.TRUNCATE_MARK.length, kept.rawResponse.length)
+        assertTrue(kept.rawResponse.endsWith(CallLogStore.TRUNCATE_MARK))
+        assertTrue(saved > 11_900, "三个字段都要计入释放量，实际 $saved")
+    }
+
+    @Test
+    fun `返回原文随记录持久化并在重启后读回`() {
+        val store = InMemoryKeyValueStore()
+        CallLogStore(store).add(record("a", 1L, raw = "data: {\"ok\":true}"))
+
+        val reloaded = CallLogStore(store).list().first()
+        assertEquals("data: {\"ok\":true}", reloaded.rawResponse)
     }
 
     @Test

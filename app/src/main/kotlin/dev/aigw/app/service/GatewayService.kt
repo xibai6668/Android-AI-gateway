@@ -1,19 +1,15 @@
 package dev.aigw.app.service
 
 import android.app.Notification
-import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.net.wifi.WifiManager
 import android.os.Build
-import android.os.Handler
 import android.os.IBinder
-import android.os.Looper
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
 import dev.aigw.app.MainActivity
 import dev.aigw.app.R
 import dev.aigw.app.AiGatewayApp
@@ -30,26 +26,26 @@ class GatewayService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val engine = applicationContext.gatewayEngine
-        // 进程被系统回收后 START_STICKY 会重建服务，这里顺便把网关也拉起来，
-        // 避免出现「通知说运行中、端口实际上没人听」的不一致状态。
-        // startForeground 必须在 stopSelf 之前调：startForegroundService 拉起的服务
-        // 不调它会被系统判定超时直接崩溃（ForegroundServiceDidNotStartInTime）。
-        val started = engine.isRunning() || runCatching { engine.start() }.isSuccess
+        // 通知必须最先发：startForegroundService 拉起的服务不调 startForeground
+        // 会被系统判定超时直接崩溃（ForegroundServiceDidNotStartInTime），
+        // 而且「服务已启动」本身就是用户要的反馈，不应等引擎验证完才弹。
+        // NanoHTTPD.start(timeout=0) 会同步等 bind 完成/抛出，engine.start() 返回
+        // 即端口已就绪，所以这里不需要任何先导耗时操作。
         startForeground(NOTIFICATION_ID, buildNotification(engine.settings().port))
+        val started = engine.isRunning() || runCatching { engine.start() }.isSuccess
         if (started) {
             engine.requestLog.info("前台服务已拉起，通知已发布")
-            scheduleNotificationCheck()
-        }
-        if (!started) {
-            stopSelf()
+            acquireLocks()
+            // START_NOT_STICKY：进程被杀后不自重建（自重建是灰色软件检测的典型特征）。
+            // 代价：系统回收后网关不会自动恢复，用户需重新打开 App 或点磁贴。
             return START_NOT_STICKY
         }
-        acquireLocks()
-        return START_STICKY
+        // 引擎没起来：撤掉刚发的通知再退出，避免「通知说运行中、端口没人听」
+        stopSelf()
+        return START_NOT_STICKY
     }
 
     override fun onDestroy() {
-        retryHandler.removeCallbacksAndMessages(null)
         releaseLocks()
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
@@ -91,27 +87,6 @@ class GatewayService : Service() {
         wifiLock = null
     }
 
-    /**
-     * 冷启动后第一次 post 的常驻通知偶发被系统静默吞掉（服务活着、通知栏里却没有），
-     * 重启一次服务才出现。这里延迟自查状态栏：发现同 ID 通知不在就补发一次（同 ID 幂等）。
-     */
-    private fun scheduleNotificationCheck() {
-        val engine = applicationContext.gatewayEngine
-        retryHandler.postDelayed({
-            val visible = getSystemService(NotificationManager::class.java)
-                ?.activeNotifications?.any { it.id == NOTIFICATION_ID } == true
-            if (!visible) {
-                runCatching {
-                    NotificationManagerCompat.from(this)
-                        .notify(NOTIFICATION_ID, buildNotification(engine.settings().port))
-                }.onFailure {
-                    engine.requestLog.warn("通知补发失败：${it.message}")
-                }
-                engine.requestLog.warn("检测到常驻通知缺失，已补发")
-            }
-        }, NOTIFICATION_RETRY_MILLIS)
-    }
-
     private fun buildNotification(port: Int): Notification {
         val open = PendingIntent.getActivity(
             this,
@@ -133,9 +108,5 @@ class GatewayService : Service() {
         const val NOTIFICATION_ID = 1001
         private const val WAKE_LOCK_TAG = "aigw:gateway"
         private const val WIFI_LOCK_TAG = "aigw:gateway-wifi"
-        private const val NOTIFICATION_RETRY_MILLIS = 1_500L
     }
-
-    /** 通知缺失自查用的主线程调度器，onDestroy 时清空。 */
-    private val retryHandler = Handler(Looper.getMainLooper())
 }

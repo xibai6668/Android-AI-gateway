@@ -96,6 +96,7 @@ class TraeProvider(
             return FailedChatCall(e.status, e.body)
         }
         if (call.status >= 400) return FailedChatCall(call.status, call.errorBody)
+        // 上游 200 但没回 SSE（签名失效时常直接回 JSON 错误体）：errorBody 已带诊断信息
         val stream = call.stream ?: return FailedChatCall(call.status, call.errorBody)
 
         if (isStreamingBody(openAiBody)) {

@@ -10,6 +10,7 @@ import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.BatterySaver
 import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.VpnLock
 import androidx.compose.material3.AlertDialog
@@ -47,7 +48,7 @@ fun MeScreen(state: AppUiState, viewModel: AppViewModel, open: (SubPage) -> Unit
         subtitle = "网关与偏好设置",
         onTitleClick = { showAbout = true },
     ) {
-        SectionCard {
+        SectionCard(enterIndex = 0) {
             SectionLabel("外观")
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -66,9 +67,10 @@ fun MeScreen(state: AppUiState, viewModel: AppViewModel, open: (SubPage) -> Unit
             }
         }
 
-        SectionCard {
+        SectionCard(enterIndex = 1) {
             SectionLabel("功能")
             NavRow(Icons.Filled.Key, "接入设置", "端口与 API Key") { open(SubPage.ApiSettings) }
+            NavRow(Icons.Filled.Shield, "安全防护", "反审核脱敏与账号限速") { open(SubPage.SecurityProtection) }
             NavRow(Icons.Filled.AccountBalanceWallet, "额度中心", "按供应商查看额度包明细") { open(SubPage.CreditCenter) }
             NavRow(Icons.Filled.BarChart, "用量统计", "请求数、token 与成功率") { open(SubPage.Usage) }
             NavRow(Icons.Filled.VpnLock, "代理设置", "境外供应商需要走代理") { open(SubPage.Proxy) }
@@ -79,7 +81,31 @@ fun MeScreen(state: AppUiState, viewModel: AppViewModel, open: (SubPage) -> Unit
             }
         }
 
-        SectionCard {
+        SectionCard(enterIndex = 2) {
+            SectionLabel("排查")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("详细日志", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "记录每次调用的请求、转发、发送与返回原文，用于排查 503 等问题；关闭后立即生效",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = state.settings.verboseLogging,
+                    onCheckedChange = {
+                        viewModel.updateSettings(state.settings.copy(verboseLogging = it))
+                    },
+                )
+            }
+        }
+
+        SectionCard(enterIndex = 3) {
             SectionLabel("关于")
             Text(
                 text = "ai-gateway · 本地 OpenAI 兼容网关",
@@ -151,7 +177,7 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
             )
         },
     ) {
-        SectionCard {
+        SectionCard(enterIndex = 3) {
             SectionLabel("今日")
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                 StatCell(state.today.requests.toString(), "请求")
@@ -165,7 +191,7 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
             }
         }
 
-        SectionCard {
+        SectionCard(enterIndex = 4) {
             SectionLabel("累计")
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                 StatCell(state.total.requests.toString(), "请求")
@@ -179,7 +205,7 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
             }
         }
 
-        SectionCard {
+        SectionCard(enterIndex = 5) {
             SectionLabel("最近调用")
             if (state.calls.isEmpty()) {
                 EmptyHint("还没有调用记录", "客户端发起请求后，这里会显示模型、账号与耗时。")
@@ -202,7 +228,7 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
             }
         }
 
-        SectionCard {
+        SectionCard(enterIndex = 6) {
             SectionLabel("存储")
             Text(
                 text = "调用记录 ${state.storedCalls} 条，占用约 ${StorageAudit.formatSize(state.storage?.totalChars ?: 0L)}",

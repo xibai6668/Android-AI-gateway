@@ -100,3 +100,37 @@ fun Modifier.pressScale(): Modifier {
         }
     }
 }
+
+/**
+ * Q 弹按压动效：按下缩放到 0.85，松手触发 onClick 并以低阻尼弹性超调回弹。
+ */
+@Composable
+fun Modifier.bouncyClick(
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+): Modifier {
+    var pressed by remember { mutableStateOf(false) }
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) 0.85f else 1f,
+        animationSpec = spring(
+            dampingRatio = 0.36f, // 超弹阻尼，产生明显的 Q 弹物理振荡感
+            stiffness = 450f,
+        ),
+        label = "bouncyScale",
+    )
+    return graphicsLayer {
+        scaleX = scale
+        scaleY = scale
+    }.pointerInput(enabled) {
+        if (!enabled) return@pointerInput
+        awaitEachGesture {
+            awaitFirstDown(requireUnconsumed = false)
+            pressed = true
+            val up = waitForUpOrCancellation()
+            pressed = false
+            if (up != null) {
+                onClick()
+            }
+        }
+    }
+}

@@ -143,8 +143,22 @@ class OpenAiSseTranslator(
         }
         is SoloEvent.Failure -> {
             done = true
-            val text = "solo error code=${event.code} msg=${event.message}"
-            listOf("event: error\ndata: " + gson.toJson(text) + "\n\n", SSE_DONE)
+            // 用 OpenAI 标准错误帧（顶层 error 对象）：网关的 parseChunk 能识别它并把调用记为失败，
+            // 客户端也能直接读到错误。旧私有格式（event: error + 字符串 body）会被网关静默吞掉，
+            // 表现为「额度耗尽却像正常结束」。
+            val kind = SoloStreamError(event.code, event.message).kind.toErrorKind().name
+            listOf(
+                "data: " + gson.toJson(
+                    JsonObject().apply {
+                        add("error", JsonObject().apply {
+                            addProperty("code", event.code)
+                            addProperty("message", event.message.ifEmpty { "上游流内错误" })
+                            addProperty("type", kind)
+                        })
+                    },
+                ) + "\n\n",
+                SSE_DONE,
+            )
         }
 
         is SoloEvent.Named -> emptyList()

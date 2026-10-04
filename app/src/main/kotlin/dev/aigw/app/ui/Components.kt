@@ -40,6 +40,14 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import dev.aigw.core.pool.AccountStatus
+
+/** 账号状态文案：只有凭证失效与手动停用两种异常态，正常即「可用」。 */
+fun accountStatusText(account: AccountStatus): String = when {
+    account.disabled -> "凭证失效，需重新登录"
+    !account.enabled -> "已停用"
+    else -> "可用"
+}
 
 /** 页头：居中标题 + 副标题，右侧放状态胶囊与页内动作。 */
 @Composable
@@ -123,14 +131,22 @@ fun PageScaffold(
     }
 }
 
-/** 白底大圆角卡片，参考稿里所有内容区块都是这个形状。 */
+/**
+ * 白底大圆角卡片，参考稿里所有内容区块都是这个形状。
+ *
+ * [enterIndex] 非空时卡片带错峰入场动效（第 n 张延迟 40ms·n），用于列表/表单页的首屏。
+ */
 @Composable
 fun SectionCard(
     modifier: Modifier = Modifier,
+    enterIndex: Int? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth().then(modifier),
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (enterIndex != null) Modifier.staggeredAppear(enterIndex) else Modifier)
+            .then(modifier),
         shape = MaterialTheme.shapes.large,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),

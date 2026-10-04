@@ -1,5 +1,10 @@
 package dev.aigw.app
 
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -35,6 +40,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import dev.aigw.app.service.GatewayTileService
 import dev.aigw.app.ui.pushPopSpec
 import dev.aigw.app.ui.tabContentSpec
 import dev.aigw.app.ui.AppUiState
@@ -52,6 +58,7 @@ import dev.aigw.app.ui.ProviderDetailScreen
 import dev.aigw.app.ui.ProviderListScreen
 import dev.aigw.app.ui.ProviderCreditsScreen
 import dev.aigw.app.ui.ProxyScreen
+import dev.aigw.app.ui.SecurityProtectionScreen
 import dev.aigw.app.ui.SubPage
 import dev.aigw.app.ui.TaskCenterScreen
 import dev.aigw.app.ui.UsageScreen
@@ -60,15 +67,42 @@ import dev.aigw.app.ui.theme.AiGatewayTheme
 
 class MainActivity : ComponentActivity() {
 
+    private var viewModel: AppViewModel? = null
+
+    private val gatewayToggledReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            // 磁贴启停后通知界面刷新（磁贴无法直接触达 ViewModel）
+            viewModel?.refresh()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        registerGatewayToggledReceiver()
         setContent {
-            val viewModel: AppViewModel = viewModel(factory = appViewModelFactory())
-            val state by viewModel.state.collectAsStateWithLifecycle()
+            val vm: AppViewModel = viewModel(factory = appViewModelFactory())
+            viewModel = vm
+            val state by vm.state.collectAsStateWithLifecycle()
             AiGatewayTheme(dynamicColor = state.dynamicColor) {
-                AppRoot(viewModel, state)
+                AppRoot(vm, state)
             }
+        }
+    }
+
+    override fun onDestroy() {
+        runCatching { unregisterReceiver(gatewayToggledReceiver) }
+        viewModel = null
+        super.onDestroy()
+    }
+
+    private fun registerGatewayToggledReceiver() {
+        val filter = IntentFilter(GatewayTileService.ACTION_GATEWAY_TOGGLED)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(gatewayToggledReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(gatewayToggledReceiver, filter)
         }
     }
 
@@ -180,6 +214,7 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
                 SubPage.KeepAlive -> KeepAliveScreen(state, viewModel) { subPage = null }
                 SubPage.Proxy -> ProxyScreen(state, viewModel) { subPage = null }
                 SubPage.ApiSettings -> ApiSettingsScreen(state, viewModel) { subPage = null }
+                SubPage.SecurityProtection -> SecurityProtectionScreen(state, viewModel) { subPage = null }
                 SubPage.DataManagement -> DataManagementScreen(state, viewModel) { subPage = null }
                 null -> MainTabs(
                     viewModel = viewModel,

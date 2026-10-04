@@ -22,12 +22,8 @@ data class GatewaySettings(
     val refreshSkewSeconds: Long = 24L * 3600,
     /** 单次请求最多换号次数。 */
     val maxRotate: Int = 3,
-    /** 额度/积分不足的冷却时长。 */
-    val quotaCooldownMillis: Long = 12L * 3600 * 1000,
-    /** 限流的冷却时长。 */
-    val softCooldownMillis: Long = 60_000L,
-    val errorThreshold: Int = 3,
-    val errorCooldownMillis: Long = 10L * 60 * 1000,
+    /** 详细日志：记录每次调用的请求/转发/发送/返回全链路原文，用于排查 503 类问题；会增加存储占用。 */
+    val verboseLogging: Boolean = false,
     /** 调用记录保留天数（1~3650）；服务运行时每日自动清理超过该天数的记录。 */
     val logRetentionDays: Int = DEFAULT_RETENTION_DAYS,
     /** 模型名不带 provider 前缀时落到哪个供应商。 */
@@ -41,10 +37,7 @@ data class GatewaySettings(
         addProperty("onlyUsableModels", onlyUsableModels)
         addProperty("refreshSkewSeconds", refreshSkewSeconds)
         addProperty("maxRotate", maxRotate)
-        addProperty("quotaCooldownMillis", quotaCooldownMillis)
-        addProperty("softCooldownMillis", softCooldownMillis)
-        addProperty("errorThreshold", errorThreshold)
-        addProperty("errorCooldownMillis", errorCooldownMillis)
+        addProperty("verboseLogging", verboseLogging)
         addProperty("logRetentionDays", logRetentionDays)
         addProperty("defaultProvider", defaultProvider)
     }
@@ -69,10 +62,7 @@ data class GatewaySettings(
                 onlyUsableModels = obj.boolOr("onlyUsableModels", defaults.onlyUsableModels),
                 refreshSkewSeconds = obj.longOr("refreshSkewSeconds", defaults.refreshSkewSeconds),
                 maxRotate = obj.intOr("maxRotate", defaults.maxRotate),
-                quotaCooldownMillis = obj.longOr("quotaCooldownMillis", defaults.quotaCooldownMillis),
-                softCooldownMillis = obj.longOr("softCooldownMillis", defaults.softCooldownMillis),
-                errorThreshold = obj.intOr("errorThreshold", defaults.errorThreshold),
-                errorCooldownMillis = obj.longOr("errorCooldownMillis", defaults.errorCooldownMillis),
+                verboseLogging = obj.boolOr("verboseLogging", defaults.verboseLogging),
                 defaultProvider = obj.strOr("defaultProvider", defaults.defaultProvider),
                 logRetentionDays = clampRetentionDays(obj.intOr("logRetentionDays", defaults.logRetentionDays)),
             )

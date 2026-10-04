@@ -9,6 +9,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.BIND_QUICK_SETTINGS_TILE" />
 
     <application
         android:name=".AiGatewayApp"
@@ -36,6 +37,17 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="本地网关需在后台持续监听端口，锁屏后客户端仍能调用" />
+        </service>
+
+        <service
+            android:name=".service.GatewayTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_stat_gateway"
+            android:label="网关"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
         </service>
 
     </application>

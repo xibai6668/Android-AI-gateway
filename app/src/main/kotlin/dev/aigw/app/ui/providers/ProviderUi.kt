@@ -5,6 +5,7 @@ import androidx.compose.ui.Modifier
 import com.google.gson.JsonObject
 import dev.aigw.core.gateway.ProviderSettings
 import dev.aigw.core.pool.AccountStatus
+import dev.aigw.core.provider.ProviderTaskListView
 import dev.aigw.core.provider.QuotaPack
 
 /**
@@ -36,7 +37,6 @@ class ProviderUiActions(
     val onCheckDeviceAuth: (providerId: String, region: String) -> Unit = { _, _ -> },
     val onToggleAccount: (providerId: String, uid: String, enabled: Boolean) -> Unit = { _, _, _ -> },
     val onRemoveAccount: (providerId: String, uid: String) -> Unit = { _, _ -> },
-    val onClearCooldown: (providerId: String, uid: String) -> Unit = { _, _ -> },
     /** 账号凭证级修改（如 Trae 的设备指纹）：直接替换 secret。 */
     val onUpdateSecret: (providerId: String, uid: String, secret: String, notice: String) -> Unit =
         { _, _, _, _ -> },
@@ -48,12 +48,17 @@ class ProviderUiActions(
     val creditPacksOf: (providerId: String, uid: String) -> List<QuotaPack> = { _, _ -> emptyList() },
     /** 异步拉取账号的额度包明细（打上游，结果回到 [creditPacksOf]）。 */
     val onLoadCreditPacks: (providerId: String, uid: String) -> Unit = { _, _ -> },
+    /** 读已拉取的成长任务明细（键 `providerId/uid`；需要拉取时调 [onLoadTaskList]）。 */
+    val taskListOf: (providerId: String, uid: String) -> ProviderTaskListView? = { _, _ -> null },
+    /** 异步拉取账号的成长任务明细（打上游，结果回到 [taskListOf]）。 */
+    val onLoadTaskList: (providerId: String, uid: String) -> Unit = { _, _ -> },
     /** 重新生成一套设备指纹（仅 Trae 用）。 */
     val onRegenerateDeviceId: (providerId: String, uid: String) -> Unit = { _, _ -> },
     /** 手动填入设备指纹（仅 Trae 用）。 */
     val onSetDeviceId: (providerId: String, uid: String, value: String) -> Unit = { _, _, _ -> },
-    /** 添加自定义供应商账号（名称可选，默认同供应商名）。 */
-    val onAddCustomAccount: (providerId: String, nickname: String, apiKey: String) -> Unit = { _, _, _ -> },
+    /** 添加自定义供应商账号（名称可选，默认同供应商名）；连同模型列表一并保存。 */
+    val onAddCustomAccount: (providerId: String, nickname: String, apiKey: String, models: List<String>) -> Unit =
+        { _, _, _, _ -> },
     /** 改账号显示名称（自定义供应商用）。 */
     val onRenameAccount: (providerId: String, uid: String, nickname: String) -> Unit = { _, _, _ -> },
     /** 读账号的 API Key（仅自定义供应商）。 */
@@ -62,8 +67,6 @@ class ProviderUiActions(
     val customModelsOf: (providerId: String) -> List<String> = { _ -> emptyList() },
     /** 读自定义供应商的接口地址（拉模型用）。 */
     val customBaseUrlOf: (providerId: String) -> String = { _ -> "" },
-    /** 保存自定义供应商的模型列表。 */
-    val onUpdateCustomModels: (providerId: String, models: List<String>) -> Unit = { _, _ -> },
     /** 用任意 key 从云端拉模型列表（自定义供应商）。 */
     val onFetchCustomModels: (baseUrl: String, apiKey: String, onResult: (List<String>, String) -> Unit) -> Unit =
         { _, _, _ -> },

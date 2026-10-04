@@ -1,17 +1,20 @@
 package dev.aigw.app.ui
 
 import android.app.Application
+import android.content.ComponentName
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
+import android.service.quicksettings.TileService
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.gson.JsonObject
 import dev.aigw.app.data.KeepAlive
 import dev.aigw.app.data.KeepAliveStatus
-import dev.aigw.app.data.WebViewCache
 import dev.aigw.app.gatewayEngine
 import dev.aigw.app.service.GatewayService
+import dev.aigw.app.service.GatewayTileService
 import dev.aigw.core.gateway.CustomProviderConfig
 import dev.aigw.core.gateway.GatewayEngine
 import dev.aigw.core.gateway.GatewaySettings
@@ -62,12 +65,18 @@ class AppearanceStore(private val store: KeyValueStore) {
     }
 }
 
+sealed interface ModelTestStatus {
+    data object Testing : ModelTestStatus
+    data class Success(val latencyMs: Long) : ModelTestStatus
+    data object Timeout : ModelTestStatus
+}
+
 data class AppUiState(
     val running: Boolean = false,
     val port: Int = GatewaySettings.DEFAULT_PORT,
     val localUrl: String = "",
     val lanUrls: List<String> = emptyList(),
-    val pool: PoolSummary = PoolSummary(0, 0, 0, 0, 0, 0, 0),
+    val pool: PoolSummary = PoolSummary(0, 0, 0, 0, 0, 0),
     val today: UsageStats = UsageStats(),
     /** 全部记录汇总（今日 + 历史）。 */
     val total: UsageStats = UsageStats(),
@@ -76,20 +85,29 @@ data class AppUiState(
     val customProviders: List<CustomProviderConfig> = emptyList(),
     val models: List<RoutedModel> = emptyList(),
     val modelsError: String = "",
+    /** 模型测速状态，键为 `model.fullId`。 */
+    val modelTestLatencies: Map<String, ModelTestStatus> = emptyMap(),
     val calls: List<CallRecord> = emptyList(),
     /** 存储中的记录条数（含未载入内存的，仅供「数据管理」展示）。 */
     val storedCalls: Int = 0,
     /** 已拉取的额度包明细，键为 `providerId/uid`。 */
     val creditPacks: Map<String, List<QuotaPack>> = emptyMap(),
+    /** 已拉取的成长任务明细，键为 `providerId/uid`。 */
+    val taskLists: Map<String, dev.aigw.core.provider.ProviderTaskListView> = emptyMap(),
     val logs: List<LogLine> = emptyList(),
     val settings: GatewaySettings = GatewaySettings(),
     /** 代理设置。 */
     val proxy: ProxySettings = ProxySettings(),
     val dynamicColor: Boolean = false,
     val keepAlive: KeepAliveStatus? = null,
-    /** 存储占用明细（含 WebView 缓存）。 */
+    /** 存储占用明细（含各类记录与设置）。 */
     val storage: StorageReport? = null,
-    val webViewCacheBytes: Long = 0L,
+    /** 安全防护与风控设置。 */
+    val security: dev.aigw.core.security.SecuritySettings = dev.aigw.core.security.SecuritySettings(),
+    /** 出网取证记录列表。 */
+    val evidences: List<dev.aigw.core.security.OutboundEvidence> = emptyList(),
+    /** 当前生效的脱敏规则词汇数。 */
+    val sanitizerRulesCount: Int = 0,
     val busy: String = "",
     val notice: String = "",
 ) {
@@ -118,6 +136,9 @@ private class Snapshot(
     val settings: GatewaySettings,
     val proxy: ProxySettings,
     val keepAlive: KeepAliveStatus,
+    val security: dev.aigw.core.security.SecuritySettings,
+    val evidences: List<dev.aigw.core.security.OutboundEvidence>,
+    val sanitizerRulesCount: Int,
 )
 
 class AppViewModel(
@@ -142,11 +163,30 @@ class AppViewModel(
     /** 最近一次设备授权登录的区域，保证手动重试轮询与登录时打同一个端点。 */
     private val deviceRegions = HashMap<String, String>()
 
+    /** 账号集合签名：判断账号变化是否真的影响模型目录，避免刷新凭证也重复拉取。 */
+    private var lastAccountSignature: String = ""
+
     init {
-        // 登录在浏览器里完成、由网关的回调监听落池，这里接住通知刷新界面
-        engine.onAccountsChanged = { viewModelScope.launch { refresh() } }
+        // 登录在浏览器里完成、由网关的回调监听落池，这里接住通知刷新界面。
+        // 只有账号集合真的变了才重拉模型：刷新凭证（refreshAccount 回存）也会触发本回调，
+        // 那类更新不影响模型列表，重复拉取只是白白多打一轮上游。
+        engine.onAccountsChanged = {
+            viewModelScope.launch {
+                val signature = withContext(Dispatchers.IO) { accountSignature(engine.accounts()) }
+                if (signature != lastAccountSignature) {
+                    lastAccountSignature = signature
+                    refreshModels(silent = true)
+                }
+                refresh()
+            }
+        }
         refresh()
+        // 启动时在后台静默预拉取一次模型，进入模型页直接秒开（不弹「正在拉取」提示）
+        refreshModels(silent = true)
     }
+
+    private fun accountSignature(accounts: List<AccountStatus>): String =
+        accounts.joinToString("|") { "${it.providerId}/${it.uid}/${it.disabled}/${it.enabled}" }
 
     override fun onCleared() {
         engine.onAccountsChanged = null
@@ -173,6 +213,9 @@ class AppViewModel(
                     settings = engine.settings(),
                     proxy = engine.proxySettings(),
                     keepAlive = KeepAlive.status(app),
+                    security = engine.securitySettings(),
+                    evidences = engine.sanitizer.evidenceList(),
+                    sanitizerRulesCount = engine.sanitizer.currentRulesCount(),
                 )
             }
             _state.value = _state.value.copy(
@@ -191,6 +234,9 @@ class AppViewModel(
                 settings = snapshot.settings,
                 proxy = snapshot.proxy,
                 keepAlive = snapshot.keepAlive,
+                security = snapshot.security,
+                evidences = snapshot.evidences,
+                sanitizerRulesCount = snapshot.sanitizerRulesCount,
             )
         }
     }
@@ -218,21 +264,46 @@ class AppViewModel(
      */
     fun refreshStorage() {
         viewModelScope.launch {
-            val (report, cached, count) = withContext(Dispatchers.IO) {
-                Triple(engine.storageReport(), WebViewCache.sizeBytes(app), engine.callLogStore.storedCount())
+            val (report, count) = withContext(Dispatchers.IO) {
+                engine.storageReport() to engine.callLogStore.storedCount()
             }
-            _state.value = _state.value.copy(storage = report, webViewCacheBytes = cached, storedCalls = count)
+            _state.value = _state.value.copy(storage = report, storedCalls = count)
         }
     }
 
-    fun refreshModels() {
+    fun refreshModels(silent: Boolean = false) {
         viewModelScope.launch {
-            _state.value = _state.value.copy(busy = "正在拉取模型目录")
+            if (!silent) _state.value = _state.value.copy(busy = "正在拉取模型目录")
             val (models, error) = withContext(Dispatchers.IO) {
                 runCatching { engine.models() }
                     .fold({ it to "" }, { emptyList<RoutedModel>() to (it.message ?: "拉取失败") })
             }
-            _state.value = _state.value.copy(models = models, modelsError = error, busy = "")
+            _state.value = _state.value.copy(
+                models = models,
+                modelsError = error,
+                busy = if (silent) _state.value.busy else "",
+            )
+        }
+    }
+
+    /** 对指定模型执行一次轻量连通性与延迟探测。 */
+    fun testModel(routedModel: RoutedModel) {
+        val fullId = routedModel.fullId
+        val current = _state.value.modelTestLatencies.toMutableMap()
+        current[fullId] = ModelTestStatus.Testing
+        _state.value = _state.value.copy(modelTestLatencies = current)
+
+        viewModelScope.launch {
+            val latency = withContext(Dispatchers.IO) {
+                engine.probeModelLatency(routedModel.providerId, routedModel.model.id, routedModel.region)
+            }
+            val updated = _state.value.modelTestLatencies.toMutableMap()
+            if (latency > 0) {
+                updated[fullId] = ModelTestStatus.Success(latency)
+            } else {
+                updated[fullId] = ModelTestStatus.Timeout
+            }
+            _state.value = _state.value.copy(modelTestLatencies = updated)
         }
     }
 
@@ -263,6 +334,7 @@ class AppViewModel(
                 _state.value = _state.value.copy(notice = "启动失败：$error")
             }
             refresh()
+            requestTileUpdate()
         }
     }
 
@@ -272,6 +344,17 @@ class AppViewModel(
             app.stopService(Intent(app, GatewayService::class.java))
             _state.value = _state.value.copy(notice = "服务已停止")
             refresh()
+            requestTileUpdate()
+        }
+    }
+
+    /** App 内启停后让控制中心磁贴同步状态。 */
+    private fun requestTileUpdate() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            TileService.requestListeningState(
+                app,
+                ComponentName(app, GatewayTileService::class.java),
+            )
         }
     }
 
@@ -282,6 +365,25 @@ class AppViewModel(
             withContext(Dispatchers.IO) { engine.updateSettings(updated) }
             refresh()
         }
+    }
+
+    fun updateSecuritySettings(updated: dev.aigw.core.security.SecuritySettings) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { engine.updateSecuritySettings(updated) }
+            refresh()
+        }
+    }
+
+    /** 重新加载反审核脱敏处理链。 */
+    fun reloadSanitizerPipeline() = action {
+        val count = engine.reloadSanitizerPipeline()
+        "处理链已重载，生效规则数：$count"
+    }
+
+    /** 清空出网取证流水。 */
+    fun clearEvidences() {
+        engine.sanitizer.clearEvidence()
+        _state.value = _state.value.copy(evidences = emptyList())
     }
 
     fun setDynamicColor(enabled: Boolean) {
@@ -477,8 +579,8 @@ class AppViewModel(
         }
     }
 
-    /** 添加自定义供应商账号：每个 key 一个账号，名称可选（默认用供应商名）。 */
-    fun addCustomAccount(providerId: String, nickname: String, apiKey: String) = action {
+    /** 添加自定义供应商账号：每个 key 一个账号，名称可选（默认用供应商名）；同时保存供应商的模型列表。 */
+    fun addCustomAccount(providerId: String, nickname: String, apiKey: String, models: List<String>) = action {
         val key = apiKey.trim()
         if (key.isEmpty()) throw IllegalStateException("API Key 不能为空")
         val provider = engine.registry.get(providerId) as? CustomProvider
@@ -486,7 +588,18 @@ class AppViewModel(
         val uid = CustomProvider.uidOf(key)
         if (engine.account(providerId, uid) != null) throw IllegalStateException("这个 API Key 已经添加过了")
         engine.addAccount(providerId, uid, nickname.trim().ifEmpty { provider.displayName }, CustomProvider.secretOf(key))
+        saveCustomModels(providerId, models)
         "账号已添加"
+    }
+
+    /** 把模型列表写入供应商配置（供「添加账号」时一并保存）。 */
+    private fun saveCustomModels(providerId: String, models: List<String>) {
+        val repository = engine.settingsRepository
+        if (repository.loadCustomProviders().none { it.providerId == providerId }) return
+        repository.saveCustomProviders(
+            repository.loadCustomProviders().map { if (it.providerId == providerId) it.copy(models = models) else it },
+        )
+        engine.reloadCustomProviders()
     }
 
     /** 修改账号显示名称。 */
@@ -518,18 +631,6 @@ class AppViewModel(
         return provider.baseUrl
     }
 
-    /** 保存自定义供应商的模型列表（供应商保留原样）。 */
-    fun updateCustomModels(providerId: String, models: List<String>) = action {
-        val repository = engine.settingsRepository
-        val config = repository.loadCustomProviders().firstOrNull { it.providerId == providerId }
-            ?: throw IllegalStateException("供应商不存在")
-        repository.saveCustomProviders(
-            repository.loadCustomProviders().map { if (it.providerId == providerId) it.copy(models = models) else it },
-        )
-        engine.reloadCustomProviders()
-        "模型列表已保存（共 ${models.size} 个）"
-    }
-
     private fun noticeOf(outcome: LoginOutcome): String =
         if (outcome.ok) "登录成功：${outcome.nickname.ifEmpty { outcome.uid }}" else "失败：${outcome.error}"
 
@@ -538,16 +639,6 @@ class AppViewModel(
     fun setAccountEnabled(providerId: String, uid: String, enabled: Boolean) = action {
         engine.setAccountEnabled(providerId, uid, enabled)
         if (enabled) "已启用该账号" else "已停用该账号"
-    }
-
-    /**
-     * 手动解除冷却。
-     *
-     * 熔断只是本地保护策略，不代表上游一定不可用（例如额度刚恢复），
-     * 所以给用户一个「立即重试」的出口，而不是干等 10 分钟到 12 小时。
-     */
-    fun clearCooldown(providerId: String, uid: String) = action {
-        if (engine.clearCooldown(providerId, uid)) "已解除冷却，重新提交请求试试" else "该账号当前未处于冷却中"
     }
 
     fun removeAccount(providerId: String, uid: String) = action {
@@ -732,6 +823,17 @@ class AppViewModel(
         }
     }
 
+    /** 拉取某账号的成长任务明细（会打上游）；支持任务中心的供应商才返回结果。 */
+    fun loadTaskList(providerId: String, uid: String) {
+        viewModelScope.launch {
+            val view = withContext(Dispatchers.IO) { engine.taskList(providerId, uid) }
+            if (view == null) return@launch
+            _state.value = _state.value.copy(
+                taskLists = _state.value.taskLists + ("$providerId/$uid" to view),
+            )
+        }
+    }
+
     // ------------------------------------------------------------------ 数据管理
 
     /** 更新保留天数（越界由 core 夹回 1~3650）。 */
@@ -750,22 +852,6 @@ class AppViewModel(
     fun truncateLongRecords() = action {
         val (count, saved) = engine.truncateLongRecords()
         if (count == 0) "没有超长记录需要截断" else "已截断 $count 条记录，释放约 ${StorageAudit.formatSize(saved)}"
-    }
-
-    /**
-     * 清 WebView 缓存。
-     *
-     * 现在只做文件系统删除（见 WebViewCache.clear 的注释：调 WebStorage/CookieManager
-     * 会把 Chromium 加载进主进程，使登录页的进程隔离失效）。
-     */
-    fun clearWebViewCache() {
-        viewModelScope.launch {
-            val freed = WebViewCache.clear(app)
-            _state.value = _state.value.copy(
-                notice = if (freed == 0L) "WebView 缓存本来就是空的" else "已清理 WebView 缓存 ${StorageAudit.formatSize(freed)}",
-            )
-            refresh()
-        }
     }
 
     // ------------------------------------------------------------------ 记录

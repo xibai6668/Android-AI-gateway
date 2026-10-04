@@ -94,7 +94,6 @@ private fun accounts(engine: GatewayEngine, rest: List<String>) {
         val flags = buildString {
             if (status.disabled) append(" [凭证失效]")
             else if (!status.enabled) append(" [已停用]")
-            else if (status.cooling) append(" [冷却至 ${java.util.Date(status.untilMillis)}]")
         }
         val credits = if (status.creditsKnown) status.credits.toString() else "—"
         println(
@@ -104,7 +103,7 @@ private fun accounts(engine: GatewayEngine, rest: List<String>) {
     }
     val summary = engine.pool.summary(providerId)
     println(
-        "合计 ${summary.total} 个账号，可用 ${summary.usable}，冷却 ${summary.cooling}，" +
+        "合计 ${summary.total} 个账号，可用 ${summary.usable}，" +
             "停用 ${summary.disabled + summary.disabledByUser}，已知额度合计 ${summary.totalCredits}",
     )
 }

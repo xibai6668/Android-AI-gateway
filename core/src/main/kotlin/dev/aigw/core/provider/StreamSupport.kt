@@ -158,4 +158,62 @@ object OpenAiSseAggregator {
             }
         }
     }
+
+    /**
+     * 聚合结果是否为空回复（既无正文、无思维链、也无工具调用）。
+     *
+     * 上游 200 但一条内容都没有时必须保持「可检测的失败」：
+     * 当成成功的空回复，客户端只会看到「输出完成却什么都没有」。
+     */
+    fun isEmptyCompletion(completion: String): Boolean {
+        val obj = runCatching { JsonParser.parseString(completion).asJsonObject }.getOrNull() ?: return true
+        val message = obj.arrayOrNull("choices")?.firstOrNull()?.asObjectOrNull()?.objOrNull("message") ?: return true
+        val content = message.stringOrNull("content").orEmpty()
+        val reasoning = message.stringOrNull("reasoning_content").orEmpty()
+        val toolCalls = message.arrayOrNull("tool_calls")?.size() ?: 0
+        return content.isEmpty() && reasoning.isEmpty() && toolCalls == 0
+    }
+
+    /**
+     * 把上游整段返回的 `chat.completion` JSON 包成 SSE 流（单 chunk + [DONE]）。
+     *
+     * 客户端请求 stream=true 而 upstream 不支持流式、直接回了 JSON 时用：
+     * OpenAI 协议要求 stream=true 必须以 SSE 响应；把 JSON 原样发回，
+     * 严格实现的客户端会把整包当成无效事件丢弃——表现就是「调用成功却零输出」。
+     */
+    fun completionAsSse(completion: String): String {
+        val obj = runCatching { JsonParser.parseString(completion).asJsonObject }.getOrNull()
+        val chunk = if (obj == null) {
+            // 上游连 JSON 都不是：把原文塞进 content，至少让客户端看得见东西
+            JsonObject().apply {
+                addProperty("id", "chatcmpl-wrapped")
+                addProperty("object", "chat.completion.chunk")
+                addProperty("created", System.currentTimeMillis() / 1000)
+                add("choices", JsonArray().apply {
+                    add(JsonObject().apply {
+                        addProperty("index", 0)
+                        add("delta", JsonObject().apply { addProperty("content", completion) })
+                        addProperty("finish_reason", "stop")
+                    })
+                })
+            }
+        } else {
+            val choice = obj.arrayOrNull("choices")?.firstOrNull()?.asObjectOrNull()
+            JsonObject().apply {
+                addProperty("id", obj.stringOrNull("id").orEmpty().ifEmpty { "chatcmpl-wrapped" })
+                addProperty("object", "chat.completion.chunk")
+                addProperty("created", obj.longOrNull("created") ?: System.currentTimeMillis() / 1000)
+                addProperty("model", obj.stringOrNull("model").orEmpty())
+                add("choices", JsonArray().apply {
+                    add(JsonObject().apply {
+                        addProperty("index", 0)
+                        add("delta", choice?.objOrNull("message") ?: JsonObject())
+                        addProperty("finish_reason", choice?.stringOrNull("finish_reason").orEmpty().ifEmpty { "stop" })
+                    })
+                })
+                obj.objOrNull("usage")?.let { add("usage", it) }
+            }
+        }
+        return "data: $chunk\n\ndata: [DONE]\n\n"
+    }
 }

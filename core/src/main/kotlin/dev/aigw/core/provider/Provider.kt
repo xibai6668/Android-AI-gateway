@@ -104,6 +104,14 @@ interface Provider {
     fun creditPacks(account: ProviderAccount): List<QuotaPack> = emptyList()
 
     /**
+     * 成长任务明细（可选）；不支持任务中心的 provider 返回 null。
+     *
+     * 与 [performAction] 的 `ACTION_TASKS` 不同：这里只**读取**任务列表与完成度，
+     * 不发任何写操作，供 UI 展示「有哪些任务、哪些做了、哪些没做」。
+     */
+    fun taskList(account: ProviderAccount): ProviderTaskListView? = null
+
+    /**
      * 该供应商用到的上游域名后缀（不带子域前缀）。
      *
      * 代理设置按「供应商」开关，实际判定就是拿目标域名与这里的后缀匹配，
@@ -117,4 +125,23 @@ interface Provider {
 
     /** 粘贴 JSON 凭证导入；不支持则返回 null。 */
     fun importCredentials(raw: String): ProviderAccount? = null
+}
+
+/** 原生支持 Google Gemini 协议的供应商（如 Antigravity）。 */
+interface GeminiNativeSupport {
+    fun openGeminiNative(account: ProviderAccount, model: String, geminiBody: String, streaming: Boolean): ChatCall
+}
+
+/**
+ * 账号有区域之分的供应商（如 WorkBuddy 的国内 cn / 国外 global）。
+ *
+ * 区域型供应商在模型页拆成多个独立前缀（`codebuddy-cn`、`codebuddy-global`），
+ * 网关选号时只取指定区域的账号；实现方负责判断单个账号属于哪个区域。
+ */
+interface RegionAwareSupport {
+    /** 判断一个账号属于哪个区域（如 cn/global）；无法判定时返回 null。 */
+    fun regionOf(account: ProviderAccount): String?
+
+    /** 该供应商支持的区域列表（如 [cn, global]）。 */
+    fun regions(): List<String>
 }

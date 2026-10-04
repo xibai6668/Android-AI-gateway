@@ -21,6 +21,8 @@ import dev.aigw.core.provider.ProviderActionResult
 import dev.aigw.core.provider.ProviderCapability
 import dev.aigw.core.provider.ProviderModel
 import dev.aigw.core.provider.ProviderModelCatalogView
+import dev.aigw.core.provider.ProviderTask
+import dev.aigw.core.provider.ProviderTaskListView
 import dev.aigw.core.provider.QuotaPack
 import dev.aigw.core.provider.StreamingChatCall
 import dev.aigw.core.provider.UpstreamError
@@ -46,7 +48,7 @@ import java.util.Locale
 class CodeBuddyProvider(
     private val region: () -> String = { REGION_CN },
     private val nowMillis: () -> Long = System::currentTimeMillis,
-) : Provider, DeviceCodeSupport {
+) : Provider, DeviceCodeSupport, dev.aigw.core.provider.RegionAwareSupport {
 
     override val id: String = ID
     override val displayName: String = "WorkBuddy"
@@ -177,10 +179,21 @@ class CodeBuddyProvider(
         account: ProviderAccount,
         action: String,
         payload: JsonObject,
-    ): ProviderActionResult = when (action) {
-        ACTION_CHECKIN -> checkin(account)
-        ACTION_TASKS -> growth(account)
-        else -> ProviderActionResult.unsupported(action)
+    ): ProviderActionResult {
+        // 国际版（workbuddy.ai）没有签到制度与成长中心，这两个操作只对国内版有意义
+        val credential = parse(account)
+        if (credential != null && regionOf(credential) == REGION_GLOBAL) {
+            return when (action) {
+                ACTION_CHECKIN, ACTION_TASKS ->
+                    ProviderActionResult.failure("国际版没有签到与成长中心")
+                else -> ProviderActionResult.unsupported(action)
+            }
+        }
+        return when (action) {
+            ACTION_CHECKIN -> checkin(account)
+            ACTION_TASKS -> growth(account)
+            else -> ProviderActionResult.unsupported(action)
+        }
     }
 
     /**
@@ -304,6 +317,58 @@ class CodeBuddyProvider(
             if (code !in 200..299) return@runCatching
             val credit = jsonOf(text)?.firstLong("credit", "reward_credit") ?: 0L
             parts.add(if (credit > 0) "开盲盒 +$credit" else "已开盲盒")
+        }
+    }
+
+    /**
+     * 成长任务明细：读 `/v2/activity/growth/tasks`，把 `tasks[]` 映射成 [ProviderTask]。
+     *
+     * 只读，不触发任何领取动作，供任务中心展示「哪些做了、哪些没做」。
+     * 国际版（workbuddy.ai）没有成长中心，直接返回空列表。
+     */
+    override fun taskList(account: ProviderAccount): ProviderTaskListView? {
+        val credential = parse(account) ?: return ProviderTaskListView(emptyList(), error = "凭证无法解析")
+        if (regionOf(credential) == REGION_GLOBAL) return ProviderTaskListView(emptyList())
+        return try {
+            val (status, body) = getJson("${chatBase(credential)}$PATH_GROWTH/tasks", billingHeaders(credential))
+            if (status !in 200..299) {
+                return ProviderTaskListView(emptyList(), error = "上游 HTTP $status" + describeBody(body))
+            }
+            val obj = jsonOf(body) ?: return ProviderTaskListView(emptyList(), error = "响应不是合法 JSON")
+            val inPeriod = obj.get("in_period")?.asBoolean ?: false
+            val array = obj.arrayOrNull("tasks")
+                ?: return ProviderTaskListView(emptyList(), inPeriod = inPeriod)
+            val tasks = array.mapNotNull { element ->
+                val task = runCatching { element.asJsonObject }.getOrNull() ?: return@mapNotNull null
+                val code = task.firstString("task_code")
+                if (code.isEmpty()) return@mapNotNull null
+                // 进度既可能在顶层 current/target，也可能藏在 progress 对象里，后者优先
+                var current = task.firstLong("current")
+                var target = task.firstLong("target")
+                task.objOrNull("progress")?.let { progress ->
+                    val pc = progress.firstLong("current")
+                    val pt = progress.firstLong("target")
+                    if (pt > 0 || pc > 0) {
+                        current = pc
+                        target = pt
+                    }
+                }
+                val acceptStatus = task.firstString("accept_status")
+                ProviderTask(
+                    code = code,
+                    title = task.firstString("title").ifEmpty { code },
+                    description = task.firstString("description"),
+                    current = current,
+                    target = target,
+                    status = acceptStatus,
+                    locked = task.get("locked")?.asBoolean ?: false,
+                    claimed = acceptStatus == "claimed",
+                    rewardCredit = task.firstLong("reward_credit"),
+                )
+            }
+            ProviderTaskListView(tasks, inPeriod = inPeriod)
+        } catch (e: Exception) {
+            ProviderTaskListView(emptyList(), error = e.message ?: "拉取任务列表失败")
         }
     }
 
@@ -601,6 +666,11 @@ class CodeBuddyProvider(
         if (domain.isNotEmpty()) return REGION_CN
         return region()
     }
+
+    /** 网关按账号区域选号用的公开入口（见 [RegionAwareSupport]）。 */
+    override fun regionOf(account: ProviderAccount): String? = regionOf(parse(account))
+
+    override fun regions(): List<String> = listOf(REGION_CN, REGION_GLOBAL)
 
     private fun chatBase(credential: Credential?): String =
         if (regionOf(credential) == REGION_GLOBAL) GLOBAL_CHAT_BASE else CN_CHAT_BASE

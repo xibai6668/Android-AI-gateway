@@ -16,7 +16,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import dev.aigw.core.pool.coolingText
 
 /**
  * 额度中心：列出有账号的供应商，点进去看该供应商各账号的额度包明细。
@@ -30,7 +29,7 @@ fun CreditCenterScreen(state: AppUiState, onOpen: (String) -> Unit, onBack: () -
     ) {
         val providers = state.providers.filter { state.accountsOf(it.id).isNotEmpty() }
         if (providers.isEmpty()) {
-            SectionCard {
+            SectionCard(enterIndex = 0) {
                 EmptyHint("还没有账号", "先去「供应商」页添加账号。")
             }
             return@PageScaffold
@@ -90,7 +89,7 @@ fun ProviderCreditsScreen(
         leading = { BackButton(onBack) },
     ) {
         if (accounts.isEmpty()) {
-            SectionCard {
+            SectionCard(enterIndex = 1) {
                 EmptyHint("还没有账号", "先去该供应商页添加账号。")
             }
             return@PageScaffold
@@ -98,10 +97,10 @@ fun ProviderCreditsScreen(
 
         for (account in accounts) {
             val packs = state.creditPacks["$providerId/${account.uid}"].orEmpty()
-            SectionCard {
+            SectionCard(enterIndex = 2) {
                 SectionLabel(account.nickname.ifEmpty { account.uid })
                 Text(
-                    text = "余额 ${if (account.creditsKnown) account.credits.toString() else "—"} · ${account.coolingText()}",
+                    text = "余额 ${if (account.creditsKnown) account.credits.toString() else "—"} · ${accountStatusText(account)}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

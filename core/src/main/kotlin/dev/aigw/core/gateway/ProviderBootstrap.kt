@@ -43,7 +43,10 @@ internal fun registerBuiltinProviders(engine: GatewayEngine) {
     )
 
     registry.register(
-        AntigravityProvider(nowMillis = { engine.now() }),
+        AntigravityProvider(
+            hooks = engine.hooks,
+            nowMillis = { engine.now() },
+        ),
     )
 
     registry.register(

@@ -8,11 +8,13 @@ import dev.aigw.core.provider.ChatCall
 import dev.aigw.core.provider.CreditInfo
 import dev.aigw.core.provider.ErrorKind
 import dev.aigw.core.provider.FailedChatCall
+import dev.aigw.core.provider.GeminiNativeSupport
 import dev.aigw.core.provider.LineTransformStream
 import dev.aigw.core.provider.LoopbackOAuthSupport
 import dev.aigw.core.provider.OpenAiSseAggregator
 import dev.aigw.core.provider.Provider
 import dev.aigw.core.provider.ProviderAccount
+import dev.aigw.core.provider.ProviderHooks
 import dev.aigw.core.provider.ProviderModel
 import dev.aigw.core.provider.ProviderModelCatalogView
 import dev.aigw.core.provider.QuotaPack
@@ -20,7 +22,10 @@ import dev.aigw.core.provider.StreamingChatCall
 import dev.aigw.core.provider.UpstreamError
 import dev.aigw.core.provider.queryParam
 import dev.aigw.core.protocol.OpenAiGemini
+import dev.aigw.core.util.arrayOrNull
+import dev.aigw.core.util.longOrNull
 import dev.aigw.core.util.objOrNull
+import dev.aigw.core.util.stringOrNull
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.net.HttpURLConnection
@@ -39,11 +44,12 @@ import kotlin.math.roundToLong
  * 由 [OpenAiGemini] 做双向转换。
  */
 class AntigravityProvider(
+    private val hooks: ProviderHooks = ProviderHooks(),
     private val nowMillis: () -> Long = System::currentTimeMillis,
     private val apiBase: String = API_BASE,
     private val quotaBase: String = QUOTA_BASE,
     private val tokenEndpoint: String = TOKEN_ENDPOINT,
-) : Provider, LoopbackOAuthSupport {
+) : Provider, LoopbackOAuthSupport, GeminiNativeSupport {
 
     override val id: String = ID
     override val displayName: String = "Antigravity"
@@ -51,17 +57,106 @@ class AntigravityProvider(
 
     // ------------------------------------------------------------------ 模型
 
-    override fun listModels(account: ProviderAccount?): ProviderModelCatalogView =
-        ProviderModelCatalogView(
-            models = FALLBACK_MODELS,
-            fromFallback = true,
-            error = "",
+    /** 云端拉取的模型清单缓存；null = 还没拉过或拉取失败。 */
+    @Volatile
+    private var fetchedModels: List<ProviderModel>? = null
+
+    private var fetchedAtMillis = 0L
+
+    override fun listModels(account: ProviderAccount?): ProviderModelCatalogView {
+        val parsed = account?.let { runCatching { parse(it) }.getOrNull() }
+        if (parsed != null) {
+            val cached = fetchedModels
+            if (cached != null && nowMillis() - fetchedAtMillis < MODEL_CACHE_TTL_MILLIS) {
+                return ProviderModelCatalogView(models = cached, fromFallback = false, error = "")
+            }
+            // 不主动刷新（凭证策略同 openChat），直接用当前 Token；过期则走 fallback
+            var lastErr = ""
+            val fetched = try {
+                fetchAvailableModels(parsed)
+            } catch (e: Exception) {
+                lastErr = e.message ?: "拉取失败"
+                null
+            }
+            if (!fetched.isNullOrEmpty()) {
+                fetchedModels = fetched
+                fetchedAtMillis = nowMillis()
+                return ProviderModelCatalogView(models = fetched, fromFallback = false, error = "")
+            }
+            // 若云端拉取失败但之前有成功缓存，继续回退使用之前的缓存，避免列表突然变空
+            val previous = fetchedModels
+            if (!previous.isNullOrEmpty()) {
+                return ProviderModelCatalogView(models = previous, fromFallback = false, error = "")
+            }
+            return ProviderModelCatalogView(models = emptyList(), fromFallback = false, error = lastErr)
+        }
+        return ProviderModelCatalogView(models = emptyList(), fromFallback = false, error = "")
+    }
+
+    /**
+     * 从云端拉取可用模型（优先 daily 端点，失败降级 prod，与 CLIProxyAPI 一致）：
+     * `POST /v1internal:fetchAvailableModels`，响应 `models` 是
+     * `{模型id: {displayName, maxTokens, maxOutputTokens}}` 的 map。
+     * 跳过上游保留的内部/实验模型。
+     */
+    private fun fetchAvailableModels(credential: Credential): List<ProviderModel> {
+        val payload = if (credential.projectId.isNotEmpty()) {
+            JsonObject().apply { addProperty("project", credential.projectId) }.toString()
+        } else {
+            "{}"
+        }
+        val endpoints = listOf(
+            "$quotaBase/$API_VERSION:fetchAvailableModels",
+            "$apiBase/$API_VERSION:fetchAvailableModels",
         )
+        var lastStatus = 0
+        var lastBody = ""
+        for (url in endpoints) {
+            val (status, text) = try {
+                postJson(url, credential.accessToken, payload, connectTimeout = 8_000, readTimeout = 12_000)
+            } catch (e: Exception) {
+                lastBody = e.message ?: "连接失败"
+                continue
+            }
+            lastStatus = status
+            lastBody = text
+            if (status in 200..299) {
+                val root = runCatching { JsonParser.parseString(text).asJsonObject }.getOrNull()
+                    ?: continue
+                val models = root.get("models")?.takeIf { it.isJsonObject }?.asJsonObject
+                    ?: continue
+                val result = ArrayList<ProviderModel>()
+                for ((id, value) in models.entrySet()) {
+                    val modelId = id.trim()
+                    if (modelId.isEmpty() || EXCLUDED_MODELS.contains(modelId)) continue
+                    val meta = value as? JsonObject
+                    val displayName = meta?.stringOrNull("displayName").orEmpty().ifEmpty { modelId }
+                    val contextLength = meta?.longOrNull("maxTokens")?.takeIf { it > 0 } ?: DEFAULT_CONTEXT_LENGTH
+                    result.add(ProviderModel(modelId, displayName, contextLength))
+                }
+                if (result.isNotEmpty()) {
+                    result.sortBy { it.id }
+                    return result
+                }
+            }
+        }
+        throw IllegalStateException("从云端获取模型失败（HTTP $lastStatus）：${lastBody.take(160)}")
+    }
 
     override fun resolveModel(requested: String): String {
-        val model = requested.trim()
-        if (model.isEmpty() || model == "auto") return FALLBACK_MODELS.first().id
-        return model
+        val model = requested.trim().removePrefix("models/").trim()
+        val mapped = MODEL_ALIASES[model.lowercase()]
+        if (mapped != null) return mapped
+        if (model.isEmpty() || model.equals("auto", ignoreCase = true)) {
+            return fetchedModels?.firstOrNull()?.id ?: "gemini-3.8-flash-high"
+        }
+        val lower = model.lowercase()
+        return when {
+            lower.contains("flash") -> "gemini-3.8-flash-high"
+            lower.contains("pro") -> "gemini-pro-agent"
+            lower.contains("claude") || lower.contains("sonnet") || lower.contains("opus") -> "claude-sonnet-4-6"
+            else -> model
+        }
     }
 
     /** 全部走 Google 域名（含 cloudcode-pa / oauth2 / www.googleapis.com）。 */
@@ -69,6 +164,12 @@ class AntigravityProvider(
 
     // ------------------------------------------------------------------ 对话
 
+    /**
+     * 对话凭证策略（回归 0.1.39 的稳定行为）：
+     * provider 内部**绝不主动刷新 Token**——刷新由网关在请求前统一调 [refreshAccount]（有
+     * settings.refreshSkewSeconds 控制频率，默认临期才刷）。每次对话前都打 OAuth 会触发
+     * Google 风控吊销 refresh_token，这是「越修越频繁失效」的根因，严禁回退。
+     */
     override fun openChat(account: ProviderAccount, openAiBody: String): ChatCall {
         val credential = parse(account) ?: return FailedChatCall(401, "凭证无法解析")
         if (credential.projectId.isEmpty()) {
@@ -77,10 +178,18 @@ class AntigravityProvider(
         val streaming = isStreaming(openAiBody)
         val model = resolveModel(requestedModel(openAiBody))
         val request = OpenAiGemini.toGeminiRequest(openAiBody)
+        // 非 claude 模型删 maxOutputTokens（上游 gemini 系不接受该字段，会 400）
+        val isClaude = model.contains("claude", ignoreCase = true)
+        if (!isClaude) {
+            request.objOrNull("generationConfig")?.remove("maxOutputTokens")
+        }
         val body = OpenAiGemini.envelope(credential.projectId, model, request, OpenAiGemini.newRequestId())
+        // 对话走 daily 端点（与 CLIProxyAPI v7 默认一致）：prod 端点对消费级账号（含 Gemini Pro 会员）
+        // 会直接回 429 RESOURCE_EXHAUSTED，与额度无关
+        hooks.onVerbose?.invoke("Antigravity 发送内容", "$quotaBase/$API_VERSION:streamGenerateContent?alt=sse\n$body")
 
         val conn = try {
-            open("$apiBase/$API_VERSION:streamGenerateContent?alt=sse", credential.accessToken, body)
+            open("$quotaBase/$API_VERSION:streamGenerateContent?alt=sse", credential.accessToken, body)
         } catch (e: Exception) {
             return FailedChatCall(0, e.message ?: "连接失败")
         }
@@ -113,12 +222,104 @@ class AntigravityProvider(
         return AggregatedChatCall(status, aggregated)
     }
 
+    /**
+     * 原生处理 Google Gemini 协议请求（用于支持各类 Agent 客户端直接配置为 Google Gemini 协议连接网关）：
+     * 客户端发送原生的 Gemini Request JSON（含 contents、generationConfig 等），
+     * 网关直接打包 Antigravity envelope 发给 Google 上游，返回原生的 Gemini 响应。
+     * 凭证策略与 [openChat] 一致：不主动刷新，由网关统一管理。
+     */
+    override fun openGeminiNative(account: ProviderAccount, model: String, geminiBody: String, streaming: Boolean): ChatCall {
+        val credential = parse(account) ?: return FailedChatCall(401, "凭证无法解析")
+        if (credential.projectId.isEmpty()) {
+            return FailedChatCall(400, "该账号缺少 project id，请重新登录以获取")
+        }
+        val resolved = resolveModel(model)
+        val requestObj = runCatching { JsonParser.parseString(geminiBody).asJsonObject }.getOrNull()
+            ?: return FailedChatCall(400, "请求体不是合法 JSON")
+
+        if (!requestObj.has("safetySettings")) {
+            requestObj.add("safetySettings", OpenAiGemini.defaultSafetySettings())
+        }
+
+        val envelopeBody = OpenAiGemini.envelope(credential.projectId, resolved, requestObj, OpenAiGemini.newRequestId())
+        hooks.onVerbose?.invoke("Antigravity 发送内容（原生 Gemini）", "$quotaBase/$API_VERSION:streamGenerateContent?alt=sse\n$envelopeBody")
+
+        val conn = try {
+            open("$quotaBase/$API_VERSION:streamGenerateContent?alt=sse", credential.accessToken, envelopeBody)
+        } catch (e: Exception) {
+            return FailedChatCall(0, e.message ?: "连接失败")
+        }
+        val status = try {
+            conn.responseCode
+        } catch (e: Exception) {
+            conn.disconnect()
+            return FailedChatCall(0, e.message ?: "连接失败")
+        }
+
+        if (status !in 200..299) {
+            val errorBody = runCatching { readLimited(conn.errorStream) }.getOrDefault("")
+            conn.disconnect()
+            return FailedChatCall(status, errorBody)
+        }
+
+        if (streaming) {
+            val transformed = LineTransformStream(
+                source = conn.inputStream,
+                transform = { line ->
+                    if (!line.startsWith("data:")) return@LineTransformStream emptyList()
+                    val payload = line.removePrefix("data:").trim()
+                    if (payload.isEmpty() || payload == "[DONE]") return@LineTransformStream emptyList()
+                    val root = runCatching { JsonParser.parseString(payload).asJsonObject }.getOrNull()
+                        ?: return@LineTransformStream emptyList()
+                    val response = root.objOrNull("response") ?: root
+                    listOf("data: $response\n\n")
+                },
+                onFinish = { emptyList() },
+            )
+            return StreamingChatCall(status, transformed) { conn.disconnect() }
+        }
+
+        val aggregated = try {
+            aggregateGeminiNative(conn.inputStream)
+        } finally {
+            conn.disconnect()
+        }
+        return AggregatedChatCall(status, aggregated)
+    }
+
+    private fun aggregateGeminiNative(stream: InputStream): String {
+        val candidates = com.google.gson.JsonArray()
+        var usage: JsonObject? = null
+        var modelVersion = ""
+        stream.bufferedReader(StandardCharsets.UTF_8).use { reader ->
+            while (true) {
+                val line = reader.readLine() ?: break
+                if (!line.startsWith("data:")) continue
+                val payload = line.removePrefix("data:").trim()
+                if (payload.isEmpty() || payload == "[DONE]") continue
+                val root = runCatching { JsonParser.parseString(payload).asJsonObject }.getOrNull() ?: continue
+                val response = root.objOrNull("response") ?: root
+                response.stringOrNull("modelVersion")?.let { modelVersion = it }
+                response.objOrNull("usageMetadata")?.let { usage = it }
+                response.arrayOrNull("candidates")?.forEach { candidates.add(it) }
+            }
+        }
+        return JsonObject().apply {
+            add("candidates", candidates)
+            usage?.let { add("usageMetadata", it) }
+            if (modelVersion.isNotEmpty()) addProperty("modelVersion", modelVersion)
+        }.toString()
+    }
+
     override fun classify(status: Int, body: String): UpstreamError {
         val message = extractMessage(body).ifEmpty { "上游 HTTP $status" }
         val lower = message.lowercase()
         val kind = when {
+            // 与 0.1.39 语义一致：凭证失效明确报出需要重新登录，不隐藏。
+            // 注意不要把 401/403 降级成短冷却——那会导致反复触发 OAuth 刷新，
+            // 加速 Google 风控吊销 refresh_token（「越修越频繁失效」的根因）。
             status == 401 || status == 403 -> ErrorKind.SESSION_DEAD
-            status == 404 -> ErrorKind.NOT_FOUND
+            status == 404 -> ErrorKind.CLIENT // 模型不存在属于客户端入参错误，不连累账号被冷却
             status == 429 && (lower.contains("quota") || lower.contains("capacity")) -> ErrorKind.QUOTA
             status == 429 -> ErrorKind.SOFT_RATE
             status in 500..599 -> ErrorKind.SERVER
@@ -131,6 +332,7 @@ class AntigravityProvider(
      * 额度信息：先读 `loadCodeAssist` 里的订阅层级（paidTier，Gemini 会员 = Google AI Pro）
      * 与 Google One 积分；没有积分条目时回退到 `retrieveUserQuotaSummary` 的模型组配额，
      * detail 里始终标注订阅层级，避免把会员配额误认为免费额度。
+     * 凭证策略：不主动刷新（避免 OAuth 高频刷新触发风控），额度刷新失败时只报状态。
      */
     override fun creditInfo(account: ProviderAccount): CreditInfo? {
         val credential = parse(account) ?: return null
@@ -179,23 +381,24 @@ class AntigravityProvider(
 
     private val refreshLock = Any()
 
-    /**
-     * 覆盖全局 skew（默认 24h）：Google access token 寿命约 1 小时，若按全局 skew 判断，
-     * 每次对话都会刷新一次，高频刷新会触发 Google 风控吊销 refresh_token（表现为账号
-     * 登录后几分钟就失效）。与 CLIProxyAPI 一致，只在临近过期 5 分钟内才刷新。
-     *
-     * token 已过期且刷新失败时抛异常（而非返回 null 拿旧 token 硬闯 401——那会触发
-     * SESSION_DEAD 硬禁用）：对话路径会捕获并换下一个账号，只记短冷却。
-     */
     override fun refreshAccount(account: ProviderAccount, skewSeconds: Long): ProviderAccount? {
         val credential = parse(account) ?: throw IllegalStateException("凭证无法解析，请重新登录")
-        val expired = credential.expiresAt <= nowMillis() / 1000
-        if (!expired && credential.expiresAt - nowMillis() / 1000 > REQUEST_SAFETY_WINDOW_SECONDS) return null
+        val nowSec = nowMillis() / 1000
+        val hasExpiry = credential.expiresAt > 0
+        val isExpired = hasExpiry && credential.expiresAt <= nowSec
+        val isNearExpiry = hasExpiry && (credential.expiresAt - nowSec <= REQUEST_SAFETY_WINDOW_SECONDS)
+
+        if (!isExpired && !isNearExpiry) return null
+
         synchronized(refreshLock) {
             val refreshed = refreshAccessToken(credential)
-            if (refreshed != null) return toProviderAccount(refreshed)
+            if (refreshed != null) {
+                val updated = toProviderAccount(refreshed, account)
+                hooks.onAccountUpdated(updated)
+                return updated
+            }
         }
-        if (expired) {
+        if (isExpired) {
             throw IllegalStateException("凭证已过期且刷新失败，稍后重试或重新登录")
         }
         return null
@@ -272,10 +475,14 @@ class AntigravityProvider(
         )
         val (status, body) = try {
             postForm(tokenEndpoint, form)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            hooks.onLog("Antigravity 刷新 Token 网络异常：${e.message}")
             return null
         }
-        if (status !in 200..299) return null
+        if (status !in 200..299) {
+            hooks.onLog("Antigravity 刷新 Token 失败（HTTP $status）：${body.take(160)}")
+            return null
+        }
         val obj = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull() ?: return null
         val access = obj.get("access_token")?.asString.orEmpty()
         if (access.isEmpty()) return null
@@ -335,11 +542,8 @@ class AntigravityProvider(
             readTimeout = READ_TIMEOUT_MS
             instanceFollowRedirects = false
             setRequestProperty("Accept-Encoding", "identity")
-            setRequestProperty("Accept", "text/event-stream, application/json")
             setRequestProperty("Authorization", "Bearer $accessToken")
             setRequestProperty("User-Agent", USER_AGENT)
-            setRequestProperty("X-Goog-Api-Client", API_CLIENT)
-            setRequestProperty("Client-Metadata", CLIENT_METADATA)
         }
         if (body != null) {
             conn.doOutput = true
@@ -362,8 +566,21 @@ class AntigravityProvider(
         }
     }
 
-    private fun postJson(url: String, accessToken: String, body: String): Pair<Int, String> {
-        val conn = open(url, accessToken, body)
+    private fun postJson(url: String, accessToken: String, body: String, connectTimeout: Int = CONNECT_TIMEOUT_MS, readTimeout: Int = READ_TIMEOUT_MS): Pair<Int, String> {
+        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            this.connectTimeout = connectTimeout
+            this.readTimeout = readTimeout
+            instanceFollowRedirects = false
+            setRequestProperty("Accept-Encoding", "identity")
+            setRequestProperty("Authorization", "Bearer $accessToken")
+            setRequestProperty("User-Agent", USER_AGENT)
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json")
+            val bytes = body.toByteArray(StandardCharsets.UTF_8)
+            setFixedLengthStreamingMode(bytes.size)
+            outputStream.use { it.write(bytes) }
+        }
         return try {
             val status = conn.responseCode
             val response = if (status in 200..299) readLimited(conn.inputStream) else readLimited(conn.errorStream)
@@ -380,7 +597,9 @@ class AntigravityProvider(
             connectTimeout = CONNECT_TIMEOUT_MS
             readTimeout = READ_TIMEOUT_MS
             doOutput = true
+            setRequestProperty("Host", "oauth2.googleapis.com")
             setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+            setRequestProperty("User-Agent", "Go-http-client/2.0")
             setRequestProperty("Accept-Encoding", "identity")
         }
         return try {
@@ -410,7 +629,7 @@ class AntigravityProvider(
         )
     }
 
-    private fun toProviderAccount(credential: Credential): ProviderAccount {
+    private fun toProviderAccount(credential: Credential, existingAccount: ProviderAccount? = null): ProviderAccount {
         val secret = JsonObject().apply {
             addProperty("accessToken", credential.accessToken)
             addProperty("refreshToken", credential.refreshToken)
@@ -418,8 +637,13 @@ class AntigravityProvider(
             addProperty("email", credential.email)
             addProperty("projectId", credential.projectId)
         }.toString()
-        val uid = credential.email.ifEmpty { "antigravity-" + credential.accessToken.hashCode().toUInt().toString(16) }
-        return ProviderAccount(id, uid, credential.email, secret)
+        // 稳定 UID：已有账号严格沿用旧 UID，绝不因 Token 刷新而漂移；新账号优先 email，无 email 用稳定 refreshToken
+        val uid = existingAccount?.uid?.takeIf { it.isNotEmpty() }
+            ?: credential.email.takeIf { it.isNotEmpty() }
+            ?: ("antigravity-" + credential.refreshToken.hashCode().toUInt().toString(16))
+        val nickname = credential.email.takeIf { it.isNotEmpty() }
+            ?: existingAccount?.nickname.orEmpty().ifEmpty { uid }
+        return ProviderAccount(id, uid, nickname, secret)
     }
 
     private fun redirectUri(): String = "http://localhost:$CALLBACK_PORT$CALLBACK_PATH"
@@ -656,12 +880,22 @@ class AntigravityProvider(
         const val API_BASE = "https://cloudcode-pa.googleapis.com"
         const val API_VERSION = "v1internal"
 
-        /** 配额查询专用域名：daily- 前缀才返回实时配额，非前缀域名 Gemini 组恒为 100% 剩余。 */
+        /**
+         * daily- 域名：对话与配额查询都走它。prod（API_BASE）对消费级账号的对话请求
+         * 会回 429 RESOURCE_EXHAUSTED（与额度无关），只留作 loadCodeAssist 等账号类接口。
+         */
         const val QUOTA_BASE = "https://daily-cloudcode-pa.googleapis.com"
 
-        const val USER_AGENT = "antigravity/1.15.8 windows/amd64"
-        const val API_CLIENT = "google-cloud-sdk vscode_cloudshelleditor/0.1"
-        const val CLIENT_METADATA = """{"ideType":"ANTIGRAVITY","platform":"MACOS","pluginType":"GEMINI"}"""
+        /** 上游保留的内部/实验模型，不对外暴露（清单与 CLIProxyAPI fetch_antigravity_models 一致）。 */
+        private val EXCLUDED_MODELS = setOf(
+            "chat_20706", "chat_23310", "tab_flash_lite_preview", "tab_jump_flash_lite_preview",
+            "gemini-2.5-flash-thinking", "gemini-2.5-pro",
+        )
+
+        private const val MODEL_CACHE_TTL_MILLIS = 10L * 60 * 1000
+        private const val DEFAULT_CONTEXT_LENGTH = 1_048_576L
+
+        const val USER_AGENT = "antigravity/hub/2.9.1 darwin/arm64"
 
         val SCOPES = listOf(
             "https://www.googleapis.com/auth/cloud-platform",
@@ -671,13 +905,38 @@ class AntigravityProvider(
             "https://www.googleapis.com/auth/experimentsandconfigs",
         )
 
-        /** 内置模型快照（来源：Antigravity API spec，实测可用）。 */
-        val FALLBACK_MODELS: List<ProviderModel> = listOf(
-            ProviderModel("claude-sonnet-4-6", "Claude Sonnet 4.6", 200_000),
-            ProviderModel("claude-opus-4-6-thinking", "Claude Opus 4.6 Thinking", 200_000),
-            ProviderModel("gemini-3-pro-high", "Gemini 3 Pro High", 1_000_000),
-            ProviderModel("gemini-3-pro-low", "Gemini 3 Pro Low", 1_000_000),
-            ProviderModel("gpt-oss-120b-medium", "GPT-OSS 120B Medium", 128_000),
+        /** 智能别名映射：允许客户端请求简写（如 gemini-3.8-flash 映射到 gemini-3.8-flash-high）。 */
+        val MODEL_ALIASES: Map<String, String> = mapOf(
+            "gemini-3.8-flash" to "gemini-3.8-flash-high",
+            "gemini-3.7-flash" to "gemini-3.7-flash-high",
+            "gemini-3.6-flash" to "gemini-3.6-flash-high",
+            "gemini-3.5-flash" to "gemini-3.5-flash-lite",
+            "gemini-3.1-flash" to "gemini-3.1-flash-lite",
+            "gemini-3.1-pro" to "gemini-pro-agent",
+            "gemini-3-pro" to "gemini-pro-agent",
+            "gemini-pro" to "gemini-pro-agent",
+            "gemini-2.5-pro" to "gemini-pro-agent",
+            "gemini-2.0-pro" to "gemini-pro-agent",
+            "gemini-2.5-flash" to "gemini-3.8-flash-high",
+            "gemini-2.5-flash-preview" to "gemini-3.8-flash-high",
+            "gemini-2.0-flash" to "gemini-3.8-flash-high",
+            "gemini-2.0-flash-exp" to "gemini-3.8-flash-high",
+            "gemini-1.5-flash" to "gemini-3.8-flash-high",
+            "gemini-1.5-flash-latest" to "gemini-3.8-flash-high",
+            "gemini-flash" to "gemini-3.8-flash-high",
+            "gemini-flash-1.5" to "gemini-3.8-flash-high",
+            "gemini-flash-2.0" to "gemini-3.8-flash-high",
+            "claude-opus" to "claude-opus-4-6-thinking",
+            "claude-3-opus" to "claude-opus-4-6-thinking",
+            "claude-sonnet" to "claude-sonnet-4-6",
+            "claude-3-7-sonnet" to "claude-sonnet-4-6",
+            "claude-3-7-sonnet-20250219" to "claude-sonnet-4-6",
+            "claude-3-5-sonnet" to "claude-sonnet-4-6",
+            "claude-3-5-sonnet-20241022" to "claude-sonnet-4-6",
+            "claude-3-5-sonnet-latest" to "claude-sonnet-4-6",
+            "claude-3-5-haiku" to "gemini-3.5-flash-lite",
+            "claude-3-haiku" to "gemini-3.5-flash-lite",
+            "gpt-oss" to "gpt-oss-120b-medium",
         )
 
         private const val CONNECT_TIMEOUT_MS = 30_000

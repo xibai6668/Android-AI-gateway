@@ -27,5 +27,8 @@ sealed interface SubPage {
     /** 接入设置：端口与 API Key。 */
     data object ApiSettings : SubPage
 
+    /** 安全防护：反审核脱敏与账号级限速。 */
+    data object SecurityProtection : SubPage
+
     data object DataManagement : SubPage
 }

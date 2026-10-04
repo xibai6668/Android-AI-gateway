@@ -23,6 +23,9 @@ class TraeChatClient(
     /**
      * 发起 `llm_utils_chat`。返回的对象里 [TraeChatCall.stream] 是 SOLO 的 SSE 原始字节流，
      * 调用方负责解析与关闭。
+     *
+     * 上游 200 但没回 event-stream（签名失效时常直接回 JSON 错误体）时，
+     * 不能把非 SSE 字节流交给 SSE 解析器——那会被静默忽略成「成功但零输出」。
      */
     fun openStream(account: TraeAccount, openAiBody: String): TraeChatCall {
         val payload = TraePayload.prepare(openAiBody)
@@ -37,6 +40,15 @@ class TraeChatClient(
         if (status >= 400) {
             val raw = TraeHttp.readBody(conn)
             return TraeChatCall(status, null, raw)
+        }
+        val contentType = conn.contentType.orEmpty()
+        if (!contentType.contains("event-stream", ignoreCase = true)) {
+            val raw = TraeHttp.readBody(conn)
+            return TraeChatCall(
+                status,
+                null,
+                "上游未返回 SSE 流（Content-Type: ${contentType.ifEmpty { "—" }}）：${raw.trim().take(200).ifEmpty { "<空响应>" }}",
+            )
         }
         return TraeChatCall(status, conn.inputStream, "")
     }

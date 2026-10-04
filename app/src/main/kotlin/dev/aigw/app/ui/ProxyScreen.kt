@@ -36,7 +36,7 @@ fun ProxyScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
         subtitle = if (settings.usable) "已启用 ${settings.host}:${settings.port}" else "未启用",
         leading = { BackButton(onBack) },
     ) {
-        SectionCard {
+        SectionCard(enterIndex = 0) {
             SectionLabel("代理")
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -94,7 +94,7 @@ fun ProxyScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
             }
         }
 
-        SectionCard {
+        SectionCard(enterIndex = 1) {
             SectionLabel("走代理的供应商")
             if (state.providers.isEmpty()) {
                 EmptyHint("还没有供应商", "内置供应商会在启动时自动登记。")

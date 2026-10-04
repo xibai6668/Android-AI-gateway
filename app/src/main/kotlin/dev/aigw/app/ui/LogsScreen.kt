@@ -6,14 +6,18 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -53,18 +57,16 @@ fun LogsScreen(state: AppUiState, viewModel: AppViewModel) {
     var tab by remember { mutableStateOf(LogTab.Calls) }
     var filter by remember { mutableStateOf(StatusFilter.ALL) }
     var detail by remember { mutableStateOf<CallRecord?>(null) }
-    var tick by remember { mutableStateOf(0) }
 
     // 停留在本页时自动刷新（只刷记录，不动低频数据）
     LaunchedEffect(tab) {
         while (true) {
             delay(5_000)
             viewModel.refreshRecords()
-            tick++
         }
     }
 
-    val calls = remember(state.calls, filter, tick) {
+    val calls = remember(state.calls, filter) {
         state.calls.filter {
             when (filter) {
                 StatusFilter.ALL -> true
@@ -75,75 +77,98 @@ fun LogsScreen(state: AppUiState, viewModel: AppViewModel) {
         }
     }
 
-    PageScaffold(
-        title = "记录",
-        subtitle = "调用与请求日志",
-        actions = {
-            IconButton(onClick = { viewModel.refresh() }) {
-                Icon(Icons.Filled.Refresh, contentDescription = "刷新")
-            }
-            StatusChip(state.running)
-        },
-    ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            ChoiceChip(LogTab.Calls.label, tab == LogTab.Calls) { tab = LogTab.Calls }
-            ChoiceChip(LogTab.Requests.label, tab == LogTab.Requests) { tab = LogTab.Requests }
-        }
+    // 本页自带骨架：筛选区固定在顶部，列表用 LazyColumn 懒加载。
+    // 记录最多数百条、每条含大段原文，一次性组合全部卡片会明显卡顿；
+    // 而 LazyColumn 不能嵌在 PageScaffold 的 verticalScroll 里（无限高度约束会崩），所以这里不走 PageScaffold。
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        PageHeader(
+            title = "记录",
+            subtitle = "调用与请求日志",
+            actions = {
+                IconButton(onClick = { viewModel.refresh() }) {
+                    Icon(Icons.Filled.Refresh, contentDescription = "刷新")
+                }
+                StatusChip(state.running)
+            },
+        )
 
-        if (tab == LogTab.Calls) {
-            Text(
-                text = "共 ${state.calls.size} 条记录",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                StatusFilter.entries.forEach { option ->
-                    ChoiceChip(option.label, filter == option, { filter = option })
-                }
+                ChoiceChip(LogTab.Calls.label, tab == LogTab.Calls) { tab = LogTab.Calls }
+                ChoiceChip(LogTab.Requests.label, tab == LogTab.Requests) { tab = LogTab.Requests }
             }
-            Text(
-                text = "点卡片看原文 · 长按删除 · 停留本页自动刷新",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            if (calls.isEmpty()) {
-                SectionCard {
-                    EmptyHint(
-                        title = "暂无调用记录",
-                        message = "用任一 API Key 调用本地网关后，记录会出现在这里。",
-                    )
-                }
-            } else {
-                SectionCard {
-                    calls.forEachIndexed { index, record ->
-                        if (index > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        CallRow(record, onClick = { detail = record }, onLongClick = { viewModel.deleteCall(record.id) })
+            if (tab == LogTab.Calls) {
+                Text(
+                    text = "共 ${state.calls.size} 条记录",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    StatusFilter.entries.forEach { option ->
+                        ChoiceChip(option.label, filter == option, { filter = option })
                     }
                 }
-            }
-        } else {
-            Text(
-                text = "共 ${state.logs.size} 条日志",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Text(
-                text = "网关与上游交互的流水，仅保留最近若干条。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            if (state.logs.isEmpty()) {
-                SectionCard { EmptyHint("暂无请求日志", "启动服务并发起调用后，这里会记录每次转发与换号。") }
+                Text(
+                    text = "点卡片看原文 · 长按删除 · 停留本页自动刷新",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             } else {
-                SectionCard {
-                    state.logs.forEachIndexed { index, line ->
-                        if (index > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        Text(
-                            text = line.render(),
-                            style = MaterialTheme.typography.bodySmall,
-                            fontFamily = FontFamily.Monospace,
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                        )
+                Text(
+                    text = "共 ${state.logs.size} 条日志",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = "网关与上游交互的流水，仅保留最近若干条。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        LazyColumn(
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            if (tab == LogTab.Calls) {
+                if (calls.isEmpty()) {
+                    item(key = "empty-calls") {
+                        SectionCard {
+                            EmptyHint(
+                                title = "暂无调用记录",
+                                message = "用任一 API Key 调用本地网关后，记录会出现在这里。",
+                            )
+                        }
+                    }
+                } else {
+                    items(calls, key = { it.id }) { record ->
+                        SectionCard {
+                            CallRow(record, onClick = { detail = record }, onLongClick = { viewModel.deleteCall(record.id) })
+                        }
+                    }
+                }
+            } else {
+                if (state.logs.isEmpty()) {
+                    item(key = "empty-logs") {
+                        SectionCard {
+                            EmptyHint("暂无请求日志", "启动服务并发起调用后，这里会记录每次转发与换号。")
+                        }
+                    }
+                } else {
+                    itemsIndexed(state.logs) { _, line ->
+                        SectionCard {
+                            Text(
+                                text = line.render(),
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = FontFamily.Monospace,
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                            )
+                        }
                     }
                 }
             }
@@ -218,6 +243,9 @@ private fun CallDetailSheet(record: CallRecord) {
         )
         DetailBlock("请求原文", record.requestBody) { clipboard.setText(AnnotatedString(record.requestBody)) }
         DetailBlock("响应原文", record.responseBody) { clipboard.setText(AnnotatedString(record.responseBody)) }
+        if (record.rawResponse.isNotEmpty()) {
+            DetailBlock("返回原文（上游报文）", record.rawResponse) { clipboard.setText(AnnotatedString(record.rawResponse)) }
+        }
         if (record.error.isNotEmpty()) DetailBlock("错误", record.error) { clipboard.setText(AnnotatedString(record.error)) }
     }
 }

@@ -41,7 +41,7 @@ object AntigravityUi : ProviderUi {
 
     @Composable
     override fun LoginEntry(accounts: List<AccountStatus>, actions: ProviderUiActions) {
-        SectionCard {
+        SectionCard(enterIndex = 0) {
             SectionLabel("登录")
             Button(
                 onClick = { actions.onWebLogin(id) },

@@ -13,7 +13,11 @@ class ProviderRegistry {
         providers[provider.id] = provider
     }
 
-    fun get(id: String): Provider? = providers[id]
+    fun get(id: String): Provider? {
+        val exact = providers[id]
+        if (exact != null) return exact
+        return providers.values.firstOrNull { it.id.equals(id, ignoreCase = true) }
+    }
 
     fun unregister(id: String) {
         providers.remove(id)

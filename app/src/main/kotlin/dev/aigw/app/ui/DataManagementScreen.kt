@@ -44,7 +44,7 @@ fun DataManagementScreen(state: AppUiState, viewModel: AppViewModel, onBack: () 
         subtitle = "存储与清理",
         leading = { BackButton(onBack) },
     ) {
-        SectionCard {
+        SectionCard(enterIndex = 0) {
             Text("使用记录", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Text(
                 text = "记录会保存每次请求的输入/输出/思考链，是应用数据体积的主要来源；服务运行时按保留天数每日自动清理。",
@@ -65,12 +65,11 @@ fun DataManagementScreen(state: AppUiState, viewModel: AppViewModel, onBack: () 
         }
 
         SectionLabel("清理")
-        SectionCard {
+        SectionCard(enterIndex = 1) {
             OutlineActionButton("查看存储占用明细") { showDetail = !showDetail }
             if (showDetail) {
                 StorageDetail(state)
             }
-            OutlineActionButton("清理 WebView 缓存") { viewModel.clearWebViewCache() }
             OutlineActionButton("截断超长记录内容") { viewModel.truncateLongRecords() }
             OutlineActionButton("清理过期记录") { viewModel.purgeExpiredRecords() }
         }
@@ -141,14 +140,6 @@ private fun StorageDetail(state: AppUiState) {
             }
         }
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("WebView 缓存", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-            Text(
-                text = StorageAudit.formatSize(state.webViewCacheBytes),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.primary,
-            )
-        }
         Text(
             text = "统计在应用内完成，不联网；「账号与凭证」含 token，请勿外传。",
             style = MaterialTheme.typography.bodySmall,

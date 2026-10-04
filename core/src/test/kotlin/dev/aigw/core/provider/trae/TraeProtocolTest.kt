@@ -206,6 +206,23 @@ class OpenAiSseTranslatorTest {
     }
 
     @Test
+    fun `流内错误输出 OpenAI 标准错误帧`() {
+        // 额度耗尽（code 1005）曾被转成私有格式（event: error + 字符串 body），
+        // 网关的 parseChunk 识别不了，客户端看到的是「正常结束」——错误被静默吞掉
+        val translator = OpenAiSseTranslator("id1", "m")
+        val chunks = translator.translate(SoloEvent.Failure(1005, "额度已耗尽"))
+        assertEquals(2, chunks.size, "错误帧 + DONE")
+        assertTrue(chunks[0].startsWith("data: {"), "必须是 JSON 对象帧而非字符串：${chunks[0]}")
+
+        val obj = JsonParser.parseString(chunks[0].removePrefix("data: ").trim()).asJsonObject
+        val error = obj.getAsJsonObject("error")
+        assertEquals(1005L, error.get("code").asLong)
+        assertEquals("额度已耗尽", error.get("message").asString)
+        assertEquals("QUOTA", error.get("type").asString, "PLAN_LIMIT 映射到统一错误分类 QUOTA")
+        assertEquals("data: [DONE]\n\n", chunks[1])
+    }
+
+    @Test
     fun `tool_call 的 function_call 字段被改名为 function`() {
         val translator = OpenAiSseTranslator("id1", "m")
         val raw = JsonParser.parseString(

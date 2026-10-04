@@ -154,6 +154,20 @@ class GatewayHttpServerTest {
             assertTrue(response.contains("POST"))
         }
     }
+
+    @Test
+    fun `credits 端点返回 providers 列表结构`() {
+        withServer { port ->
+            val response = send(
+                port,
+                "GET /v1/credits HTTP/1.1\r\n" +
+                    "Host: 127.0.0.1\r\n" +
+                    "Connection: close\r\n\r\n",
+            )
+            assertTrue(response.startsWith("HTTP/1.1 200 OK"), response.lineSequence().first())
+            assertTrue(response.contains("\"providers\":"))
+        }
+    }
 }
 
 class ChunkWriterTest {
@@ -187,7 +201,12 @@ class SseResponseTest {
     @Test
     fun `流式响应自带 CORS 头并以分块结束`() {
         val out = ByteArrayOutputStream()
-        SseResponse { writer -> writer.write("data: [DONE]\n\n") }.send(out)
+        val scheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor()
+        try {
+            SseResponse(scheduler) { writer -> writer.write("data: [DONE]\n\n") }.send(out)
+        } finally {
+            scheduler.shutdownNow()
+        }
 
         val text = out.toString("UTF-8")
         assertTrue(text.contains("Content-Type: text/event-stream"), text)

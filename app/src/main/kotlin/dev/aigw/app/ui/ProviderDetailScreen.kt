@@ -20,7 +20,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.aigw.app.ui.providers.ProviderUiActions
 import dev.aigw.app.ui.providers.ProviderUiRegistry
-import dev.aigw.core.pool.coolingText
 /**
  * 供应商详情：登录入口 + 账号列表 + 专属设置。
  *
@@ -52,12 +51,11 @@ fun ProviderDetailScreen(
             }
         },
         onImport = { id, raw -> viewModel.importCredentials(id, raw) },
-        onAddCustomAccount = { id, nickname, apiKey -> viewModel.addCustomAccount(id, nickname, apiKey) },
+        onAddCustomAccount = { id, nickname, apiKey, models -> viewModel.addCustomAccount(id, nickname, apiKey, models) },
         onRenameAccount = { id, uid, nickname -> viewModel.renameAccount(id, uid, nickname) },
         accountApiKeyOf = { id, uid -> viewModel.accountApiKey(id, uid) },
         customModelsOf = { id -> viewModel.customModels(id) },
         customBaseUrlOf = { id -> viewModel.customBaseUrl(id) },
-        onUpdateCustomModels = { id, models -> viewModel.updateCustomModels(id, models) },
         onFetchCustomModels = { baseUrl, apiKey, onResult ->
             viewModel.fetchCustomModels(baseUrl, apiKey, onResult)
         },
@@ -66,7 +64,6 @@ fun ProviderDetailScreen(
         onCheckDeviceAuth = { id, region -> viewModel.checkDeviceAuth(id, region) },
         onToggleAccount = { id, uid, enabled -> viewModel.setAccountEnabled(id, uid, enabled) },
         onRemoveAccount = { id, uid -> viewModel.removeAccount(id, uid) },
-        onClearCooldown = { id, uid -> viewModel.clearCooldown(id, uid) },
         onUpdateSecret = { id, uid, secret, notice ->
             viewModel.updateAccountSecret(id, uid, secret)
             viewModel.notice(notice)
@@ -79,6 +76,8 @@ fun ProviderDetailScreen(
             state.creditPacks["$id/$uid"].orEmpty()
         },
         onLoadCreditPacks = { id, uid -> viewModel.loadCreditPacks(id, uid) },
+        taskListOf = { id, uid -> state.taskLists["$id/$uid"] },
+        onLoadTaskList = { id, uid -> viewModel.loadTaskList(id, uid) },
         onRegenerateDeviceId = { id, uid -> viewModel.regenerateDeviceId(id, uid) },
         onSetDeviceId = { id, uid, value -> viewModel.setDeviceId(id, uid, value) },
         onNotice = { viewModel.notice(it) },
@@ -115,10 +114,10 @@ fun ProviderDetailScreen(
 
         // 账号列表由供应商组件自管（如 WorkBuddy 按国内外分区）时，不再重复渲染通用账号卡
         if (accounts.isNotEmpty() && !ui.managesOwnAccounts) {
-            SectionCard {
+            SectionCard(enterIndex = 0) {
                 SectionLabel("账号")
-                for (account in accounts) {
-                    AccountRow(account, ui, actions)
+                accounts.forEachIndexed { index, account ->
+                    AccountRow(account, ui, actions, index = index)
                 }
                 OutlineActionButton("刷新额度") { actions.onRefreshCredits(providerId, null) }
             }
@@ -135,9 +134,10 @@ private fun AccountRow(
     account: dev.aigw.core.pool.AccountStatus,
     ui: dev.aigw.app.ui.providers.ProviderUi,
     actions: ProviderUiActions,
+    index: Int,
 ) {
     Column(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().staggeredAppear(index),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Row(
@@ -152,7 +152,7 @@ private fun AccountRow(
                 )
                 // 额度与明细交给各供应商自己的组件展示（它们知道该怎么解读），这里只报状态
                 Text(
-                    text = account.coolingText(),
+                    text = accountStatusText(account),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -166,9 +166,6 @@ private fun AccountRow(
         ui.AccountExtra(account, actions)
 
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            if (account.cooling) {
-                LinkText("解除冷却") { actions.onClearCooldown(account.providerId, account.uid) }
-            }
             LinkText("删除账号") { actions.onRemoveAccount(account.providerId, account.uid) }
         }
     }
