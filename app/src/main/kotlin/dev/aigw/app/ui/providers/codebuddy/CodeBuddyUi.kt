@@ -1,18 +1,16 @@
 package dev.aigw.app.ui.providers.codebuddy
 
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Language
@@ -20,16 +18,19 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.padding
@@ -38,6 +39,7 @@ import dev.aigw.app.ui.ChoiceChip
 import dev.aigw.app.ui.OutlineActionButton
 import dev.aigw.app.ui.SectionCard
 import dev.aigw.app.ui.SectionLabel
+import dev.aigw.app.ui.bouncyClick
 import dev.aigw.app.ui.accountStatusText
 import dev.aigw.app.ui.providers.ProviderUi
 import dev.aigw.app.ui.providers.ProviderUiActions
@@ -74,13 +76,35 @@ object CodeBuddyUi : ProviderUi {
             mutableStateOf(actions.providerOptionOf(id, "region", CodeBuddyProvider.REGION_CN) == CodeBuddyProvider.REGION_GLOBAL)
         }
         SectionCard(enterIndex = 0) {
-            RegionSlider(
-                global = global,
-                onGlobalChange = {
-                    global = it
-                    actions.onUpdateProviderOption(id, "region", if (it) CodeBuddyProvider.REGION_GLOBAL else CodeBuddyProvider.REGION_CN)
-                },
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(
+                        Icons.Filled.Language,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp),
+                    )
+                    SectionLabel("服务区域")
+                }
+                RegionSelector(
+                    isGlobal = global,
+                    onSelectGlobal = { isGlobal ->
+                        global = isGlobal
+                        actions.onUpdateProviderOption(
+                            id,
+                            "region",
+                            if (isGlobal) CodeBuddyProvider.REGION_GLOBAL else CodeBuddyProvider.REGION_CN,
+                        )
+                    },
+                )
+            }
         }
         LoginSection(global, actions)
         if (accounts.isNotEmpty()) {
@@ -108,7 +132,7 @@ object CodeBuddyUi : ProviderUi {
     @Composable
     private fun AccountRegionSection(global: Boolean, accounts: List<AccountStatus>, actions: ProviderUiActions) {
         val current = if (global) CodeBuddyProvider.REGION_GLOBAL else CodeBuddyProvider.REGION_CN
-        val scoped = accounts.filter { actions.regionOf(id, it.uid) == current }
+        val scoped = remember(accounts, current) { accounts.filter { actions.regionOf(id, it.uid) == current } }
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             if (scoped.isEmpty()) {
                 SectionCard(enterIndex = 2) {
@@ -195,8 +219,10 @@ object CodeBuddyUi : ProviderUi {
     @Composable
     private fun TaskListSection(status: AccountStatus, actions: ProviderUiActions) {
         val view = actions.taskListOf(id, status.uid)
-        // 进入账号块时自动拉一次；账号变化时重拉
-        LaunchedEffect(status.uid) { actions.onLoadTaskList(id, status.uid) }
+        // 进入账号块时若无缓存则拉一次；账号变化时重拉
+        LaunchedEffect(status.uid) {
+            if (view == null) actions.onLoadTaskList(id, status.uid)
+        }
 
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             SectionLabel("任务中心")
@@ -303,63 +329,50 @@ object CodeBuddyUi : ProviderUi {
     /**
      * 国内/国外分段滑块：长条一分为二，蓝色背景块在两半之间滑动指示选中侧。
      */
+    /**
+     * 优雅的微胶囊分段滑块（MiniMax 同款，高弹性物理动效）。
+     */
     @Composable
-    private fun RegionSlider(
-        global: Boolean,
-        onGlobalChange: (Boolean) -> Unit,
+    private fun RegionSelector(
+        isGlobal: Boolean,
+        onSelectGlobal: (Boolean) -> Unit,
     ) {
-        val corner = RoundedCornerShape(12.dp)
-        BoxWithConstraints(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(80.dp)
-                .background(MaterialTheme.colorScheme.surfaceVariant, corner),
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+            modifier = Modifier.clip(CircleShape),
         ) {
-            // 蓝色指示块：宽度与偏移都是轨道的一半，切换时在两半之间滑动过渡
-            val indicatorX by animateDpAsState(
-                targetValue = if (global) maxWidth / 2 else 0.dp,
-                animationSpec = tween(200),
-                label = "regionIndicator",
-            )
-            Box(
-                modifier = Modifier
-                    .align(Alignment.CenterStart)
-                    .fillMaxWidth(0.5f)
-                    .fillMaxSize()
-                    .offset(x = indicatorX)
-                    .background(MaterialTheme.colorScheme.primary, corner),
-            )
-            Row(modifier = Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
-                RegionSliderHalf(
-                    text = "国内",
-                    selected = !global,
-                    modifier = Modifier.weight(1f).fillMaxSize(),
-                    onClick = { onGlobalChange(false) },
-                )
-                RegionSliderHalf(
-                    text = "国外",
-                    selected = global,
-                    modifier = Modifier.weight(1f).fillMaxSize(),
-                    onClick = { onGlobalChange(true) },
-                )
+            Row(
+                modifier = Modifier.padding(2.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                val items = listOf("国内", "国外")
+                items.forEachIndexed { index, label ->
+                    val selected = (index == 1) == isGlobal
+                    val animProgress by animateFloatAsState(
+                        targetValue = if (selected) 1f else 0f,
+                        animationSpec = spring(dampingRatio = 0.72f, stiffness = 600f),
+                        label = "regionIndicator$index",
+                    )
+                    Box(
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .background(
+                                MaterialTheme.colorScheme.primary.copy(alpha = animProgress),
+                            )
+                            .clickable { onSelectGlobal(index == 1) }
+                            .padding(horizontal = 12.dp, vertical = 4.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                            color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
             }
-        }
-    }
-
-    @Composable
-    private fun RegionSliderHalf(
-        text: String,
-        selected: Boolean,
-        modifier: Modifier = Modifier,
-        onClick: () -> Unit,
-    ) {
-        Box(modifier = modifier.clickable(onClick = onClick), contentAlignment = Alignment.Center) {
-            Text(
-                text = text,
-                style = MaterialTheme.typography.titleLarge.copy(fontSize = MaterialTheme.typography.titleLarge.fontSize * 2),
-                fontWeight = FontWeight.Bold,
-                color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
     }
 }
