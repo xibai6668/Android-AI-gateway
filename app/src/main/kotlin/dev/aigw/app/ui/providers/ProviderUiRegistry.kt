@@ -4,6 +4,7 @@ import dev.aigw.app.ui.providers.antigravity.AntigravityUi
 import dev.aigw.app.ui.providers.codebuddy.CodeBuddyUi
 import dev.aigw.app.ui.providers.custom.CustomUi
 import dev.aigw.app.ui.providers.loomy.LoomyUi
+import dev.aigw.app.ui.providers.minimax.MiniMaxUi
 import dev.aigw.app.ui.providers.trae.TraeUi
 
 /**
@@ -19,6 +20,7 @@ object ProviderUiRegistry {
         LoomyUi,
         CodeBuddyUi,
         AntigravityUi,
+        MiniMaxUi,
     ).associateBy { it.id }
 
     fun of(providerId: String): ProviderUi? = when {
