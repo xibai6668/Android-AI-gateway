@@ -3,6 +3,7 @@ package dev.aigw.core.usage
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import dev.aigw.core.store.KeyValueStore
+import dev.aigw.core.util.startOfDay
 
 /** 一次调用的结果。 */
 enum class CallStatus { SUCCESS, FAILED, ABORTED }
@@ -56,6 +57,13 @@ class CallLogStore(
 ) {
     private val records = ArrayDeque<CallRecord>()
 
+    /** 累计聚合：独立于调用记录持久化。记录有容量淘汰与过期清理，直接从记录里现算「累计」只会等于最近几条。 */
+    private var totalAgg = UsageStats()
+
+    /** 今日聚合；[todayKey] 是当天 00:00 的时间戳，无数据时为 [Long.MIN_VALUE]。 */
+    private var todayAgg = UsageStats()
+    private var todayKey = Long.MIN_VALUE
+
     init {
         load()
     }
@@ -68,6 +76,18 @@ class CallLogStore(
             val evicted = records.removeLast()
             store.delete(keyOf(evicted.id))
         }
+        totalAgg = totalAgg + record
+        store.write(TOTAL_KEY, totalAgg.toJson().toString())
+        val day = startOfDay(record.startedAtMillis)
+        if (day > todayKey) {
+            for (key in store.keys(DAY_PREFIX)) store.delete(key)
+            todayAgg = UsageStats()
+            todayKey = day
+        }
+        if (day == todayKey) {
+            todayAgg = todayAgg + record
+            store.write(dayKeyOf(todayKey), todayAgg.toJson().toString())
+        }
     }
 
     /** 最新在前。 */
@@ -76,8 +96,17 @@ class CallLogStore(
 
     @Synchronized
     fun delete(id: String) {
+        val removed = records.firstOrNull { it.id == id }
         records.removeAll { it.id == id }
         store.delete(keyOf(id))
+        if (removed != null) {
+            totalAgg = totalAgg - removed
+            store.write(TOTAL_KEY, totalAgg.toJson().toString())
+            if (startOfDay(removed.startedAtMillis) == todayKey) {
+                todayAgg = todayAgg - removed
+                store.write(dayKeyOf(todayKey), todayAgg.toJson().toString())
+            }
+        }
     }
 
     @Synchronized
@@ -86,25 +115,20 @@ class CallLogStore(
         // 否则「清空调用记录」后存储占用降不下去。
         for (key in store.keys(PREFIX)) store.delete(key)
         records.clear()
+        for (key in store.keys(USAGE_PREFIX)) store.delete(key)
+        totalAgg = UsageStats()
+        todayAgg = UsageStats()
+        todayKey = Long.MIN_VALUE
     }
 
-    /** 统计 [sinceMillis] 之后的调用。 */
+    /** 累计聚合：不受容量淘汰与过期清理影响，跨启动累加。 */
     @Synchronized
-    fun stats(sinceMillis: Long): UsageStats {
-        var stats = UsageStats()
-        for (record in records) {
-            if (record.startedAtMillis < sinceMillis) continue
-            stats = stats.copy(
-                requests = stats.requests + 1,
-                promptTokens = stats.promptTokens + record.promptTokens,
-                completionTokens = stats.completionTokens + record.completionTokens,
-                totalTokens = stats.totalTokens + record.totalTokens,
-                success = stats.success + if (record.status == CallStatus.SUCCESS) 1 else 0,
-                failed = stats.failed + if (record.status == CallStatus.FAILED) 1 else 0,
-            )
-        }
-        return stats
-    }
+    fun totalStats(): UsageStats = totalAgg
+
+    /** [nowMillis] 所在天的聚合；当天还没有记录时为全零。 */
+    @Synchronized
+    fun todayStats(nowMillis: Long): UsageStats =
+        if (todayKey == startOfDay(nowMillis)) todayAgg else UsageStats()
 
     /**
      * 删除 [cutoffMillis] 之前产生的记录，返回删除条数。
@@ -215,12 +239,35 @@ class CallLogStore(
         }
         loaded.sortByDescending { it.startedAtMillis }
         records.addAll(loaded.take(capacity))
+        totalAgg = store.read(TOTAL_KEY)?.let(::usageStatsFromJson) ?: aggregate(records)
+        val dayKey = store.keys(DAY_PREFIX).firstOrNull()
+        if (dayKey != null) {
+            todayKey = dayKey.removePrefix(DAY_PREFIX).toLongOrNull() ?: Long.MIN_VALUE
+            todayAgg = store.read(dayKey)?.let(::usageStatsFromJson) ?: UsageStats()
+        }
+        if (todayKey == Long.MIN_VALUE) {
+            // 老版本升级：存储里还没有聚合键，按已载入的记录兜底（更早的已随记录淘汰，不可考）
+            val todayStart = startOfDay(System.currentTimeMillis())
+            todayAgg = aggregate(records.filter { it.startedAtMillis >= todayStart })
+            todayKey = todayStart
+        }
+    }
+
+    private fun aggregate(records: List<CallRecord>): UsageStats {
+        var stats = UsageStats()
+        for (record in records) stats = stats + record
+        return stats
     }
 
     private fun keyOf(id: String) = "$PREFIX$id"
 
+    private fun dayKeyOf(day: Long) = "$DAY_PREFIX$day"
+
     companion object {
         const val PREFIX = "logs/calls/"
+        private const val USAGE_PREFIX = "usage/"
+        private const val TOTAL_KEY = "usage/total"
+        private const val DAY_PREFIX = "usage/day/"
 
         /** 截断标记，让用户在记录详情里看得出这条已被截过。 */
         const val TRUNCATE_MARK = "\n…（内容已截断）"
@@ -249,4 +296,43 @@ private fun CallRecord.toJson(): JsonObject = JsonObject().apply {
     addProperty("requestBody", requestBody)
     addProperty("responseBody", responseBody)
     addProperty("rawResponse", rawResponse)
+}
+
+private operator fun UsageStats.plus(record: CallRecord) = copy(
+    requests = requests + 1,
+    promptTokens = promptTokens + record.promptTokens,
+    completionTokens = completionTokens + record.completionTokens,
+    totalTokens = totalTokens + record.totalTokens,
+    success = success + if (record.status == CallStatus.SUCCESS) 1 else 0,
+    failed = failed + if (record.status == CallStatus.FAILED) 1 else 0,
+)
+
+private operator fun UsageStats.minus(record: CallRecord) = copy(
+    requests = (requests - 1).coerceAtLeast(0),
+    promptTokens = (promptTokens - record.promptTokens).coerceAtLeast(0),
+    completionTokens = (completionTokens - record.completionTokens).coerceAtLeast(0),
+    totalTokens = (totalTokens - record.totalTokens).coerceAtLeast(0),
+    success = (success - if (record.status == CallStatus.SUCCESS) 1 else 0).coerceAtLeast(0),
+    failed = (failed - if (record.status == CallStatus.FAILED) 1 else 0).coerceAtLeast(0),
+)
+
+private fun UsageStats.toJson(): JsonObject = JsonObject().apply {
+    addProperty("requests", requests)
+    addProperty("promptTokens", promptTokens)
+    addProperty("completionTokens", completionTokens)
+    addProperty("totalTokens", totalTokens)
+    addProperty("success", success)
+    addProperty("failed", failed)
+}
+
+private fun usageStatsFromJson(raw: String): UsageStats {
+    val obj = runCatching { JsonParser.parseString(raw).asJsonObject }.getOrNull() ?: return UsageStats()
+    return UsageStats(
+        requests = obj.get("requests")?.asLong ?: 0L,
+        promptTokens = obj.get("promptTokens")?.asLong ?: 0L,
+        completionTokens = obj.get("completionTokens")?.asLong ?: 0L,
+        totalTokens = obj.get("totalTokens")?.asLong ?: 0L,
+        success = obj.get("success")?.asLong ?: 0L,
+        failed = obj.get("failed")?.asLong ?: 0L,
+    )
 }

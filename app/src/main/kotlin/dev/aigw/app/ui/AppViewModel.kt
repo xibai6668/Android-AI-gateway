@@ -42,7 +42,6 @@ import dev.aigw.core.usage.LogLine
 import dev.aigw.core.usage.StorageAudit
 import dev.aigw.core.usage.StorageReport
 import dev.aigw.core.usage.UsageStats
-import dev.aigw.core.util.startOfDay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -226,8 +225,8 @@ class AppViewModel(
                     localUrl = engine.localUrl(),
                     lanUrls = engine.lanUrls(),
                     pool = engine.pool.summary(),
-                    today = engine.callLogStore.stats(startOfDay(System.currentTimeMillis())),
-                    total = engine.callLogStore.stats(0L),
+                    today = engine.callLogStore.todayStats(System.currentTimeMillis()),
+                    total = engine.callLogStore.totalStats(),
                     providers = engine.providers(),
                     accounts = engine.accounts(),
                     customProviders = engine.settingsRepository.loadCustomProviders(),

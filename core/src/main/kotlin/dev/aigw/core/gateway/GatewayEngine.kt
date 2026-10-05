@@ -32,7 +32,6 @@ import dev.aigw.core.usage.RequestLog
 import dev.aigw.core.usage.StorageAudit
 import dev.aigw.core.usage.StorageReport
 import dev.aigw.core.usage.UsageStats
-import dev.aigw.core.util.startOfDay
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
@@ -380,7 +379,7 @@ class GatewayEngine(
         lanUrls = lanUrls(),
         pool = pool.summary(),
         // 用注入的 nowMillis（而非系统时钟），“今天”才能在固定时钟的测试里可控
-        today = callLogStore.stats(startOfDay(nowMillis())),
+        today = callLogStore.todayStats(nowMillis()),
         missingApiKey = !settings.allowNoKey && settings.apiKey.isEmpty(),
         providerCount = registry.all().count { providerSettings(it.id).enabled },
     )

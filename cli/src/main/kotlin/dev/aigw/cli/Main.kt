@@ -186,7 +186,7 @@ private fun models(engine: GatewayEngine) {
 }
 
 private fun usage(engine: GatewayEngine) {
-    val stats = engine.callLogStore.stats(0)
+    val stats = engine.callLogStore.totalStats()
     println("累计请求 ${stats.requests}，成功 ${stats.success}，失败 ${stats.failed}，tokens ${stats.totalTokens}")
     for (record in engine.callLogStore.list().take(20)) {
         println(
