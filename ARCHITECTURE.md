@@ -101,6 +101,25 @@
 | `ui/ModelsScreen.kt` | 模型列表：点击复制、Q弹测速按钮 |
 | `ui/Motion.kt` | 全局动效参数与Modifier |
 
+#### 模型目录流式加载（UI 交接要点）
+
+模型页不再等最慢的供应商拉完才显示：`GatewayEngine.modelsStreaming(onChunk)` 每个供应商
+一就绪就回调一条 `ProviderModelsChunk(providerId, models, error?)`（后台线程），
+`AppViewModel.refreshModels` 把它合并进 `AppUiState`（主线程串行，代次防并发错乱）。
+
+供 UI 动画使用的状态字段（`AppUiState`）：
+
+| 字段 | 含义 |
+|---|---|
+| `modelsLoading` | 是否有一轮流式加载在进行 |
+| `modelLoadStates: Map<String, ModelLoadState>` | 每个供应商的进度：`Loading` / `Done(count)` / `Failed(reason)`；发起时先置全部参与供应商为 Loading |
+| `models` | 各供应商就绪即增量合并（同供应商旧条目被替换）；一轮结束时整体覆盖为最终聚合 |
+| `modelsError` | 整体异常 + 各失败供应商汇总（`供应商：原因`）；带内置快照的回退不算失败 |
+
+可做的动画：按 `modelLoadStates` 画每供应商骨架屏、`Done` 后逐组点亮、`Failed` 组内错误态；
+`ModelsScreen` 现在的空态「还没有模型」在 `modelsLoading` 时应替换为骨架屏。
+注意：刷新发起时若已有旧目录，本次为静默刷新（不弹全屏 busy），旧数据先可见、新数据逐组替换。
+
 ### 存储键布局（EncryptedSharedPreferences）
 
 ```

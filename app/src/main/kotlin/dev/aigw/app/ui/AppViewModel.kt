@@ -19,7 +19,9 @@ import dev.aigw.core.gateway.CustomProviderConfig
 import dev.aigw.core.gateway.GatewayEngine
 import dev.aigw.core.gateway.GatewaySettings
 import dev.aigw.core.gateway.LoginOutcome
+import dev.aigw.core.gateway.ModelsCatalog
 import dev.aigw.core.gateway.ProviderInfo
+import dev.aigw.core.gateway.ProviderModelsChunk
 import dev.aigw.core.gateway.ProviderSettings
 import dev.aigw.core.gateway.ProxySettings
 import dev.aigw.core.pool.AccountStatus
@@ -71,6 +73,19 @@ sealed interface ModelTestStatus {
     data object Timeout : ModelTestStatus
 }
 
+/**
+ * 单个供应商模型目录的流式加载状态（键为 providerId，见 [AppUiState.modelLoadStates]）。
+ * 模型页可用它画骨架屏/逐组点亮的动画，而不必等全部供应商拉完。
+ */
+sealed interface ModelLoadState {
+    /** 已发起、尚未就绪。 */
+    data object Loading : ModelLoadState
+    /** 就绪，[count] 为该供应商贡献的模型条数（区域型供应商按区域拆分后合计）。 */
+    data class Done(val count: Int) : ModelLoadState
+    /** 拉取失败，[reason] 为异常消息或供应商自报的目录错误。 */
+    data class Failed(val reason: String) : ModelLoadState
+}
+
 data class AppUiState(
     val running: Boolean = false,
     val port: Int = GatewaySettings.DEFAULT_PORT,
@@ -85,6 +100,10 @@ data class AppUiState(
     val customProviders: List<CustomProviderConfig> = emptyList(),
     val models: List<RoutedModel> = emptyList(),
     val modelsError: String = "",
+    /** 模型目录是否正在流式加载（各供应商就绪即增量写入 [models]）。 */
+    val modelsLoading: Boolean = false,
+    /** 进行中这轮加载里每个供应商的状态，键为 providerId；加载结束后保留终态供回看。 */
+    val modelLoadStates: Map<String, ModelLoadState> = emptyMap(),
     /** 模型测速状态，键为 `model.fullId`。 */
     val modelTestLatencies: Map<String, ModelTestStatus> = emptyMap(),
     val calls: List<CallRecord> = emptyList(),
@@ -165,6 +184,10 @@ class AppViewModel(
 
     /** 账号集合签名：判断账号变化是否真的影响模型目录，避免刷新凭证也重复拉取。 */
     private var lastAccountSignature: String = ""
+
+    /** 流式加载代次：连发多次刷新时，只有最新一轮的增量与终态能写入 state。 */
+    @Volatile
+    private var modelsGeneration = 0
 
     init {
         // 登录在浏览器里完成、由网关的回调监听落池，这里接住通知刷新界面。
@@ -272,18 +295,55 @@ class AppViewModel(
     }
 
     fun refreshModels(silent: Boolean = false) {
+        val gen = ++modelsGeneration
         viewModelScope.launch {
-            if (!silent) _state.value = _state.value.copy(busy = "正在拉取模型目录")
-            val (models, error) = withContext(Dispatchers.IO) {
-                runCatching { engine.models() }
-                    .fold({ it to "" }, { emptyList<RoutedModel>() to (it.message ?: "拉取失败") })
+            // 已有目录可展示时降级为静默：旧数据立即可见，新数据分批到货逐组替换，不弹全屏 busy
+            val quiet = silent || _state.value.models.isNotEmpty()
+            if (!quiet) _state.value = _state.value.copy(busy = "正在拉取模型目录")
+            val participants = withContext(Dispatchers.IO) {
+                engine.providers().filter { it.enabled }.map { it.id }
             }
+            if (gen != modelsGeneration) return@launch
             _state.value = _state.value.copy(
-                models = models,
-                modelsError = error,
-                busy = if (silent) _state.value.busy else "",
+                modelsLoading = true,
+                modelsError = "",
+                modelLoadStates = participants.associateWith { ModelLoadState.Loading as ModelLoadState },
+            )
+            val (catalog, error) = withContext(Dispatchers.IO) {
+                runCatching {
+                    engine.modelsStreaming { chunk ->
+                        viewModelScope.launch {
+                            if (gen == modelsGeneration) applyModelsChunk(chunk)
+                        }
+                    }
+                }.fold(
+                    { it to "" },
+                    { ModelsCatalog(emptyList()) to (it.message ?: "拉取失败") },
+                )
+            }
+            if (gen != modelsGeneration) return@launch
+            // 全部完成后用最终聚合覆盖：失败供应商的旧条目随之清除（与整体刷新语义一致）
+            val providerError = catalog.failures.entries.joinToString("；") { "${it.key}：${it.value}" }
+            _state.value = _state.value.copy(
+                models = catalog.models,
+                modelsLoading = false,
+                modelsError = listOf(error, providerError).filter { it.isNotEmpty() }.joinToString("；"),
+                busy = if (quiet) _state.value.busy else "",
             )
         }
+    }
+
+    /** 流式增量：把一个供应商就绪的目录合并进 state（已在主线程串行执行，替换该供应商旧条目）。 */
+    private fun applyModelsChunk(chunk: ProviderModelsChunk) {
+        val current = _state.value
+        val states = current.modelLoadStates.toMutableMap()
+        val failure = chunk.error
+        states[chunk.providerId] =
+            if (failure != null) ModelLoadState.Failed(failure) else ModelLoadState.Done(chunk.models.size)
+        _state.value = current.copy(
+            models = current.models.filter { it.providerId != chunk.providerId } + chunk.models,
+            modelLoadStates = states,
+        )
     }
 
     /** 对指定模型执行一次轻量连通性与延迟探测。 */

@@ -64,6 +64,21 @@ data class CreditRefreshResult(
     val error: String,
 )
 
+/** 流式拉取模型目录时，单个供应商的就绪事件（成功带 models，失败带 error）。 */
+data class ProviderModelsChunk(
+    val providerId: String,
+    val models: List<RoutedModel>,
+    /** 非空表示该供应商拉取失败（异常消息或供应商自报的目录错误），此时 models 为空。 */
+    val error: String? = null,
+)
+
+/** 全部供应商模型目录的最终聚合结果。 */
+data class ModelsCatalog(
+    val models: List<RoutedModel>,
+    /** 拉取失败的供应商与原因，键为 providerId。 */
+    val failures: Map<String, String> = emptyMap(),
+)
+
 /** 供应商概览，供「供应商」列表展示。 */
 data class ProviderInfo(
     val id: String,
@@ -725,68 +740,92 @@ class GatewayEngine(
 
     // ------------------------------------------------------------------ 模型
 
-    /** 汇总所有启用供应商的模型（id 带 `provider/` 前缀；区域型供应商按区域拆成多组；并发并行拉取提速）。 */
-    fun models(): List<RoutedModel> {
+    /**
+     * 流式拉取全部启用供应商的模型目录：每个供应商一就绪立即回调 [onChunk]，
+     * 不等最慢的供应商（整体耗时从「最慢者」降到「最快者」即可见）。
+     *
+     * 回调在 ioPool 后台线程发出（多个供应商并发、顺序不保证），回调里不要碰 UI，
+     * 调用方自行保证线程安全。返回值在全部完成后给出聚合目录与每个失败供应商的原因。
+     *
+     * [models] 等价于本函数丢弃回调、只取最终聚合的阻塞版本。
+     */
+    fun modelsStreaming(onChunk: (ProviderModelsChunk) -> Unit): ModelsCatalog {
         val enabledProviders = registry.all().filter { providerSettings(it.id).enabled }
-        if (enabledProviders.isEmpty()) return emptyList()
+        if (enabledProviders.isEmpty()) return ModelsCatalog(emptyList())
 
-        // 对启用的各 Provider 并行同时拉取模型，消除串行累加等待；复用共享线程池，不再每请求新建
         val futures = enabledProviders.map { provider ->
-            ioPool.submit<List<RoutedModel>> {
-                try {
-                    val picked = pool.pick(provider.id)
-                    var account = picked
-                    // 若选中的账号凭证临期或已过期，在拉取前执行一次安全的 refreshAccount 保鲜
-                    if (account != null) {
-                        try {
-                            val refreshed = provider.refreshAccount(account, settings.refreshSkewSeconds)
-                            if (refreshed != null) {
-                                pool.saveAccount(refreshed)
-                                account = refreshed
-                            }
-                        } catch (_: Exception) {}
-                    }
-                    val view = provider.listModels(account)
-                    val pModels = ArrayList<RoutedModel>()
-                    val regionAware = provider as? dev.aigw.core.provider.RegionAwareSupport
-                    for (model in view.models) {
-                        if (settings.onlyUsableModels && provider.isInternalModel(model.id)) continue
-                        if (regionAware != null) {
-                            for (region in regionAware.regions()) {
-                                val label = when (region) {
-                                    "cn" -> "国内"
-                                    "global" -> "国外"
-                                    else -> region
-                                }
-                                pModels.add(
-                                    RoutedModel(
-                                        provider.id,
-                                        "${provider.displayName}（$label）",
-                                        model,
-                                        routePrefix = "${provider.id}-$region",
-                                        region = region,
-                                    ),
-                                )
-                            }
-                        } else {
-                            pModels.add(RoutedModel(provider.id, provider.displayName, model))
-                        }
-                    }
-                    pModels
-                } catch (e: Exception) {
-                    logWarn("拉取模型目录失败（${provider.id}）：${e.message}")
-                    emptyList()
-                }
+            ioPool.submit<ProviderModelsChunk> {
+                val chunk = fetchProviderModels(provider)
+                onChunk(chunk)
+                chunk
             }
         }
 
-        val result = ArrayList<RoutedModel>()
+        val aggregated = ArrayList<RoutedModel>()
+        val failures = LinkedHashMap<String, String>()
         for (future in futures) {
-            try {
-                result.addAll(future.get())
-            } catch (_: Exception) {}
+            val chunk = try {
+                future.get()
+            } catch (_: Exception) {
+                continue
+            }
+            aggregated.addAll(chunk.models)
+            chunk.error?.let { failures[chunk.providerId] = it }
         }
-        return result
+        return ModelsCatalog(aggregated, failures)
+    }
+
+    /** 阻塞聚合版：HTTP `/v1/models`、CLI 等需要一次性完整列表的场景使用。 */
+    fun models(): List<RoutedModel> = modelsStreaming { }.models
+
+    /** 拉取单个供应商的模型目录（id 带 `provider/` 前缀；区域型供应商按区域拆成多组）。 */
+    private fun fetchProviderModels(provider: Provider): ProviderModelsChunk {
+        return try {
+            val picked = pool.pick(provider.id)
+            var account = picked
+            // 若选中的账号凭证临期或已过期，在拉取前执行一次安全的 refreshAccount 保鲜
+            if (account != null) {
+                try {
+                    val refreshed = provider.refreshAccount(account, settings.refreshSkewSeconds)
+                    if (refreshed != null) {
+                        pool.saveAccount(refreshed)
+                        account = refreshed
+                    }
+                } catch (_: Exception) {}
+            }
+            val view = provider.listModels(account)
+            val models = ArrayList<RoutedModel>()
+            val regionAware = provider as? dev.aigw.core.provider.RegionAwareSupport
+            for (model in view.models) {
+                if (settings.onlyUsableModels && provider.isInternalModel(model.id)) continue
+                if (regionAware != null) {
+                    for (region in regionAware.regions()) {
+                        val label = when (region) {
+                            "cn" -> "国内"
+                            "global" -> "国外"
+                            else -> region
+                        }
+                        models.add(
+                            RoutedModel(
+                                provider.id,
+                                "${provider.displayName}（$label）",
+                                model,
+                                routePrefix = "${provider.id}-$region",
+                                region = region,
+                            ),
+                        )
+                    }
+                } else {
+                    models.add(RoutedModel(provider.id, provider.displayName, model))
+                }
+            }
+            // 供应商自报错误只在拿不到任何模型时才算失败；带内置快照的回退
+            // （如 CodeBuddy 无账号时显示 FALLBACK_MODELS）不是故障，报红反而吓人
+            ProviderModelsChunk(provider.id, models, if (models.isEmpty()) view.error.ifEmpty { null } else null)
+        } catch (e: Exception) {
+            logWarn("拉取模型目录失败（${provider.id}）：${e.message}")
+            ProviderModelsChunk(provider.id, emptyList(), e.message ?: "拉取失败")
+        }
     }
 
     /**
