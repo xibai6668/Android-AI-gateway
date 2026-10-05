@@ -118,6 +118,8 @@ internal class GatewayProxySelector(
             // Loomy（讯飞）
             "xfinfr.com",
             "xunfei.cn",
+            // MiniMax Agent 国内站
+            "minimaxi.com",
         )
     }
 }
