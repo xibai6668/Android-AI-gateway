@@ -1,22 +1,53 @@
 package dev.aigw.core.provider.minimax
 
 /**
- * MiniMax Agent（国内网页端 agent.minimaxi.com）的上游常量。
+ * MiniMax 供应商的常量配置。
  *
- * 协议要点来自公开逆向实现（xiaoY233/MiniMax-Free-API 与 JMJAJ/minimax-wrapper）：
- * `/v1/api/` 前缀是用户/设备/文件等老接口（响应包裹 `statusInfo`），
- * `/matrix/api/v1/` 前缀是 Agent 聊天/商务接口（响应包裹 `base_resp`）。
+ * 覆盖：
+ * 1. 官方 OAuth 2.0 Device Authorization Grant（RFC 8628 + PKCE）：
+ *    国内 `https://account.minimaxi.com`，国际 `https://account.minimax.io`
+ * 2. 官方 API Base：
+ *    国内 `https://api.minimax.cn`，国际 `https://api.minimax.io`
+ * 3. 官方 Coding Plan / Token Plan 额度接口 `/v1/token_plan/remains`
+ * 4. 网页端私有接口备用端点
  */
 object MiniMaxConstants {
-    const val API_BASE = "https://agent.minimaxi.com"
+    const val CLIENT_ID = "659cf4c1-615c-45f6-a5f6-4bf15eb476e5"
+    const val CLIENT_NAME = "MiniMax CLI"
+    val SCOPES = listOf("openid", "profile", "coding_plan")
 
+    const val REGION_CN = "cn"
+    const val REGION_GLOBAL = "global"
+
+    // OAuth 授权服务域名
+    const val OAUTH_BASE_CN = "https://account.minimaxi.com"
+    const val OAUTH_BASE_GLOBAL = "https://account.minimax.io"
+
+    // API 网关服务域名
+    const val API_BASE_CN = "https://api.minimax.cn"
+    const val API_BASE_GLOBAL = "https://api.minimax.io"
+
+    // 网页端 Agent 基地址（备用）
+    const val AGENT_BASE_CN = "https://agent.minimaxi.com"
+    const val AGENT_BASE_GLOBAL = "https://agent.minimax.io"
+    const val API_BASE = AGENT_BASE_CN
+
+    // OAuth 2.0 端点
+    const val PATH_DEVICE_CODE = "/oauth2/device/code"
+    const val PATH_OAUTH_TOKEN = "/oauth2/token"
+
+    // 官方对话与额度端点
+    const val PATH_CHAT_COMPLETIONS = "/v1/chat/completions"
+    const val PATH_TOKEN_PLAN_REMAINS = "/v1/token_plan/remains"
+
+    // 网页端私有端点（备用）
     const val PATH_DEVICE_REGISTER = "/v1/api/user/device/register"
     const val PATH_USER_INFO = "/v1/api/user/info"
     const val PATH_CHAT_SEND = "/matrix/api/v1/chat/send_msg"
     const val PATH_MEMBERSHIP = "/matrix/api/v1/commerce/get_membership_info"
     const val PATH_CHAT_DELETE = "/v1/api/chat/history/"
 
-    // ---- 伪装 query（对齐国内版网页端；顺序参与签名，不要调整） ----
+    // 网页端伪装参数（备用）
     const val DEVICE_PLATFORM = "web"
     const val BIZ_ID = "3"
     const val APP_ID = "3001"
@@ -31,23 +62,16 @@ object MiniMaxConstants {
     const val SCREEN_HEIGHT = "1080"
     const val LANG = "zh"
 
-    // ---- 请求签名 ----
-    /** yy 的固定尾盐。 */
     const val SIGN_SALT = "ooui"
-
-    /**
-     * x-signature 的静态密钥（JMJAJ/minimax-wrapper 声明逆向自网页 minified JS）。
-     * xiaoY233 的国内版实现用的是 `md5(ts + token + body)`；两实现冲突，先按 JS 逆向版，
-     * 真机 403/业务签名错误时把 [MiniMaxSign.xSignature] 换成 token 版再试。
-     */
     const val SECRET_KEY = "I*7Cf%WZ#S&%1RlZJ&C2"
-
-    /** 设备信息有效期（秒），过期后重新注册。 */
     const val DEVICE_INFO_TTL_SECONDS = 3 * 3600L
 
-    // ---- 对话 ----
-    /** Lightning（快速模式）。 */
     const val CHAT_TYPE_LIGHTNING = 1L
-    /** Pro（Agent 模式，消耗积分更多）。 */
     const val CHAT_TYPE_PRO = 0L
+
+    fun oauthBase(region: String): String =
+        if (region.equals(REGION_GLOBAL, ignoreCase = true)) OAUTH_BASE_GLOBAL else OAUTH_BASE_CN
+
+    fun apiBase(region: String): String =
+        if (region.equals(REGION_GLOBAL, ignoreCase = true)) API_BASE_GLOBAL else API_BASE_CN
 }

@@ -86,12 +86,13 @@ class MiniMaxProtocolTest {
     }
 
     @Test
-    fun `裸 JWT 缺 userId 拒绝导入`() {
-        assertNull(MiniMaxAccount.import("eyJhbGciOiJIUzI1NiJ9.sig"))
+    fun `裸 API Key 导入自适应生成 UID`() {
+        val account = MiniMaxAccount.import("sk-api-test-key-123456")
+        assertNotNull(account)
+        assertEquals("sk-api-test-key-123456", account.token)
+        assertTrue(account.userId.startsWith("mm-"))
         assertNull(MiniMaxAccount.import(""))
-        assertNull(MiniMaxAccount.import("乱七八糟"))
-        assertNull(MiniMaxAccount.import("""{"token":"eyJx"}"""))
-        assertNull(MiniMaxAccount.import("""{"userId":"1"}"""))
+        assertNull(MiniMaxAccount.import("""{"token":""}"""))
     }
 
     @Test
@@ -453,6 +454,118 @@ class MiniMaxProtocolTest {
         val imported = provider.importCredentials("450234567894+eyJtoken") ?: error("导入失败")
         assertEquals(MiniMaxProvider.ID, imported.providerId)
         assertEquals("450234567894", imported.uid)
-        assertNull(provider.importCredentials("not-valid"))
+        assertNull(provider.importCredentials(""))
+    }
+
+    // ------------------------------------------------------------------ 官方 OAuth 设备码流
+
+    @Test
+    fun `OAuth 设备码发起与轮询成功自动拾取 Token`() {
+        val deviceCodeResp = """
+            {
+                "user_code": "ABCD-1234",
+                "verification_uri": "https://account.minimaxi.com/verify?code=ABCD-1234",
+                "expired_in": 1799999999000,
+                "interval": 3000,
+                "state": "test-state-123"
+            }
+        """.trimIndent()
+
+        val tokenResp = """
+            {
+                "status": "success",
+                "access_token": "mmx_access_token_abc_123",
+                "refresh_token": "mmx_refresh_token_xyz_789",
+                "expired_in": 1799999999000
+            }
+        """.trimIndent()
+
+        withUpstream(
+            mapOf(
+                MiniMaxConstants.PATH_DEVICE_CODE to deviceCodeResp,
+                MiniMaxConstants.PATH_OAUTH_TOKEN to tokenResp,
+            ),
+        ) { base ->
+            val authClient = MiniMaxAuthClient(oauthBaseProvider = { base })
+            val provider = MiniMaxProvider(
+                authClient = authClient,
+                apiBaseProvider = { base },
+            )
+
+            // 第一步：生成设备码与登录 URL
+            val ticket = provider.startDeviceAuth(MiniMaxConstants.REGION_CN)
+            assertEquals("https://account.minimaxi.com/verify?code=ABCD-1234", ticket.loginUrl)
+            assertTrue(ticket.state.isNotEmpty())
+
+            // 第二步：轮询自动拾取 Token 并落池
+            val pollResult = provider.pollDeviceAuth(ticket.state, MiniMaxConstants.REGION_CN)
+            assertTrue(pollResult is dev.aigw.core.provider.DeviceAuthPoll.Success)
+            val account = pollResult.account
+            assertEquals(MiniMaxProvider.ID, account.providerId)
+            assertTrue(account.uid.startsWith("mmx-"))
+
+            val secret = MiniMaxAccount.parse(account.secret)
+            assertNotNull(secret)
+            assertEquals("mmx_access_token_abc_123", secret.token)
+            assertEquals("mmx_refresh_token_xyz_789", secret.refreshToken)
+        }
+    }
+
+    @Test
+    fun `OAuth 轮询返回 pending 时正确处理等待状态`() {
+        val deviceCodeResp = """
+            {
+                "user_code": "ABCD-1234",
+                "verification_uri": "https://account.minimaxi.com/verify",
+                "state": "s-pending"
+            }
+        """.trimIndent()
+
+        val tokenResp = """{"status": "pending"}"""
+
+        withUpstream(
+            mapOf(
+                MiniMaxConstants.PATH_DEVICE_CODE to deviceCodeResp,
+                MiniMaxConstants.PATH_OAUTH_TOKEN to tokenResp,
+            ),
+        ) { base ->
+            val authClient = MiniMaxAuthClient(oauthBaseProvider = { base })
+            val ticket = authClient.startDeviceAuth(MiniMaxConstants.REGION_CN)
+            val poll = authClient.pollDeviceAuth(ticket.state, MiniMaxConstants.REGION_CN)
+            assertTrue(poll is dev.aigw.core.provider.DeviceAuthPoll.Pending)
+        }
+    }
+
+    @Test
+    fun `官方 Token Plan 余额查询成功映射`() {
+        val quotaResp = """
+            {
+                "base_resp": { "status_code": 0 },
+                "data": {
+                    "total_remains_tokens": 5000000,
+                    "plan_name": "Coding Plan Pro"
+                }
+            }
+        """.trimIndent()
+
+        withUpstream(
+            mapOf(MiniMaxConstants.PATH_TOKEN_PLAN_REMAINS to quotaResp),
+        ) { base ->
+            val provider = MiniMaxProvider(apiBaseProvider = { base })
+            val oauthAcc = ProviderAccount(
+                providerId = MiniMaxProvider.ID,
+                uid = "u-oauth",
+                nickname = "OAuth用户",
+                secret = MiniMaxAccount(
+                    token = "sk-api-token",
+                    userId = "u-oauth",
+                    refreshToken = "ref-1",
+                ).toJson().toString(),
+            )
+            val info = provider.creditInfo(oauthAcc)
+            assertTrue(info.known)
+            assertEquals(5000000L, info.balance)
+            assertTrue(info.detail.contains("Coding Plan Pro"))
+        }
     }
 }
