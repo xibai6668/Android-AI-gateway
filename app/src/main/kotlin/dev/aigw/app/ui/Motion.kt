@@ -12,9 +12,17 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -22,8 +30,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.dp
 
 /** 全局动效参数：一处调整全局生效。 */
 object Motion {
@@ -133,4 +147,31 @@ fun Modifier.bouncyClick(
             }
         }
     }
+}
+
+/**
+ * 优雅流光微光动效（Shimmer），用于骨架屏占位。
+ */
+@Composable
+fun Modifier.shimmer(
+    shape: Shape = RoundedCornerShape(4.dp),
+    baseColor: Color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+    highlightColor: Color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+): Modifier {
+    val transition = rememberInfiniteTransition(label = "shimmerTransition")
+    val translateAnim by transition.animateFloat(
+        initialValue = -300f,
+        targetValue = 900f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1200, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "shimmerTranslation",
+    )
+    val brush = Brush.linearGradient(
+        colors = listOf(baseColor, highlightColor, baseColor),
+        start = Offset(translateAnim, translateAnim),
+        end = Offset(translateAnim + 300f, translateAnim + 300f),
+    )
+    return this.clip(shape).background(brush)
 }
