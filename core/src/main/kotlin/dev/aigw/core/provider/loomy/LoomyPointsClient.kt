@@ -39,6 +39,18 @@ data class PointsSnapshot(
 }
 
 /**
+ * 个人积分总览的解析结果。[error] 非空 = 拿不到（原因带在 error 里，两数均为 -1），
+ * 由调用方决定展示；不要把这个结果静默吞掉——0.1.18 的教训就是失败全程无感。
+ */
+data class PointsSummary(
+    val permanent: Long,
+    val daily: Long,
+    val error: String,
+) {
+    val ok: Boolean get() = error.isEmpty()
+}
+
+/**
  * 积分服务客户端（`loomyad.xunfei.cn`）。
  *
  * 认证方式是裸 `token` 头（就是登录 session），不是 Bearer——这与对话接口不同。
@@ -78,14 +90,24 @@ class LoomyPointsClient(
 
     /**
      * 个人积分总览：永久积分 + 每日积分（Web 版客户端积分详情弹窗的两行口径）。
-     * 路径来自 Web 版 bundle，桌面端协议未实测；拿不到（接口不存在/字段缺失）
-     * 返回 null，由调用方回退 records 的 balance。
+     * 路径来自 Web 版 bundle，桌面端协议未实测；失败不抛异常，原因带回 [PointsSummary.error]。
      */
-    fun summary(session: String): Pair<Long, Long>? {
-        val raw = runCatching { getRaw(LoomyConstants.PATH_POINTS_SUMMARY, session, "") }.getOrNull() ?: return null
-        val data = raw.objOrNull("data") ?: return null
-        if (!data.has("permanent")) return null
-        return data.long("permanent") to if (data.has("daily")) data.long("daily") else -1L
+    fun summary(session: String): PointsSummary {
+        val raw = try {
+            getRaw(LoomyConstants.PATH_POINTS_SUMMARY, session, "")
+        } catch (e: Exception) {
+            return PointsSummary(-1L, -1L, e.message ?: "请求失败")
+        }
+        val data = raw.objOrNull("data")
+            ?: return PointsSummary(-1L, -1L, "响应无 data（原文前 80 字：${raw.toString().take(80)}）")
+        if (!data.has("permanent")) {
+            return PointsSummary(-1L, -1L, "data 缺 permanent 字段（原文前 80 字：${data.toString().take(80)}）")
+        }
+        return PointsSummary(
+            permanent = data.long("permanent"),
+            daily = if (data.has("daily")) data.long("daily") else -1L,
+            error = "",
+        )
     }
 
     /** 用邀请码兑换积分（对应客户端「设置 → 邀请码 → 兑换积分」）。 */

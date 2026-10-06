@@ -133,16 +133,33 @@ class LoomyProvider(
             ?: throw IllegalStateException("账号凭证无法解析，请重新登录")
         return try {
             val snapshot = pointsClient.balance(loomy.session)
-            CreditInfo(
-                balance = snapshot.balance,
-                known = snapshot.known,
-                detail = if (snapshot.known) {
-                    "来源=${snapshot.source}，当日剩余=${formatOrDash(snapshot.dailyRemaining)}"
-                } else {
-                    // 两个账本都没拿到数：带响应片段，便于区分 session 失效与接口口径变化
-                    "未取到余额（响应片段：${snapshot.personalRaw.take(120)}）"
-                },
-            )
+            // 对话扣的是每日赠送账本，records 的 balance（永久账本）不动，直接用它会出现
+            // 「余额永远不变」；官方余额口径是 points-summary 的永久+每日，优先用它。
+            val summary = pointsClient.summary(loomy.session)
+            if (summary.ok) {
+                CreditInfo(
+                    balance = summary.permanent.coerceAtLeast(0) + summary.daily.coerceAtLeast(0),
+                    known = true,
+                    detail = if (summary.daily >= 0) {
+                        "永久=${summary.permanent}，每日=${summary.daily}"
+                    } else {
+                        "永久=${summary.permanent}，每日未知"
+                    },
+                )
+            } else {
+                CreditInfo(
+                    balance = snapshot.balance,
+                    known = snapshot.known,
+                    detail = when {
+                        !snapshot.known ->
+                            // 两个账本都没拿到数：带响应片段，便于区分 session 失效与接口口径变化
+                            "未取到余额（响应片段：${snapshot.personalRaw.take(120)}）；总览接口失败（${summary.error}）"
+                        else ->
+                            // 回退 records 口径可用，但要说明它不含每日赠送，免得「余额不动」再次被当成 bug
+                            "总览接口失败（${summary.error}）；余额=records ${snapshot.source} 积分（不含每日赠送），当日剩余=${formatOrDash(snapshot.dailyRemaining)}"
+                    },
+                )
+            }
         } catch (e: LoomyApiException) {
             CreditInfo(0, known = false, detail = e.message ?: "刷新积分失败")
         } catch (e: Exception) {
@@ -158,27 +175,44 @@ class LoomyProvider(
             val snapshot = pointsClient.balance(loomy.session)
             buildList {
                 // Web 版官方的积分详情是「永久 + 每日」两行（points-summary），比 records 的
-                // balance 口径更准：对话扣每日赠送时 balance 不动、这里能看到。拿不到就回退旧条目。
-                val summary = runCatching { pointsClient.summary(loomy.session) }.getOrNull()
-                if (summary != null) {
-                    add(QuotaPack(name = "永久积分", group = "个人", remain = summary.first))
-                    if (summary.second >= 0) {
-                        add(QuotaPack(name = "每日积分", group = "个人", remain = summary.second))
+                // balance 口径更准：对话扣每日赠送时 balance 不动、这里能看到。
+                val summary = pointsClient.summary(loomy.session)
+                if (summary.ok) {
+                    add(QuotaPack(name = "永久积分", group = "个人", remain = summary.permanent))
+                    if (summary.daily >= 0) {
+                        add(QuotaPack(name = "每日积分", group = "个人", remain = summary.daily))
                     }
-                } else if (snapshot.personal >= 0) {
-                    add(QuotaPack(name = "个人积分", group = "个人", remain = snapshot.personal))
+                } else {
+                    // 失败不再静默：原因直接列在额度包里，用户刷新一次就能看到接口到底怎么了
+                    if (snapshot.personal >= 0) {
+                        add(QuotaPack(name = "个人积分", group = "个人", remain = snapshot.personal))
+                    }
+                    add(
+                        QuotaPack(
+                            name = "每日积分",
+                            group = "个人",
+                            remain = -1L,
+                            note = "总览接口失败：${summary.error}",
+                        ),
+                    )
                 }
                 if (snapshot.team >= 0) {
                     add(QuotaPack(name = "团队积分", group = "团队", remain = snapshot.team))
                 }
-                if (snapshot.dailyRemaining >= 0) {
+                // 官方 Web 版读的是 dailyBalance；桌面 records 可能只回 dailyRemainingPoints，两者任一存在都列出
+                val dailyRemain = when {
+                    snapshot.dailyRemaining >= 0 -> snapshot.dailyRemaining
+                    snapshot.dailyBalance >= 0 -> snapshot.dailyBalance
+                    else -> -1L
+                }
+                if (dailyRemain >= 0) {
                     add(
                         QuotaPack(
                             name = "当日赠送",
                             group = "每日",
                             limit = snapshot.dailyLimit.coerceAtLeast(0),
                             used = snapshot.dailyConsumed.coerceAtLeast(0),
-                            remain = snapshot.dailyRemaining,
+                            remain = dailyRemain,
                         ),
                     )
                 }

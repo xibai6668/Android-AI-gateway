@@ -124,14 +124,25 @@ fun ProviderCreditsScreen(
                             )
                             Text(
                                 text = buildString {
-                                    append("剩余 ")
-                                    append(pack.remain)
+                                    if (pack.remain >= 0) {
+                                        append("剩余 ")
+                                        append(pack.remain)
+                                    } else {
+                                        append("剩余 —")
+                                    }
                                     if (pack.limit > 0) append(" / ").append(pack.limit)
                                     if (pack.used > 0) append(" · 已用 ").append(pack.used)
                                 },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                            if (pack.note.isNotEmpty()) {
+                                Text(
+                                    text = pack.note,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                            }
                         }
                     }
                 }
