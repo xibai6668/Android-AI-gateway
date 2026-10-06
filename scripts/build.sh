@@ -19,6 +19,6 @@ fi
 TASK="${1:-:app:assembleRelease}"
 # 本项目交付一律用 release 签名（buildTypes.release 已挂 keystore.properties 的密钥），
 # 不再产 debug 签名包——避免两种签名交替安装时「签名不一致无法覆盖升级」。
-# 附加参数固定由脚本带，调用者不传任务时也不会把选项误当任务。
-shift 2>/dev/null || true
+# --console=plain 固定由脚本带；gradle 对重复选项会直接打 usage 退出，调用者不要再传。
+shift 2>/dev/null
 exec gradle "$TASK" --console=plain "$@"

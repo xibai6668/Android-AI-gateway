@@ -12,6 +12,9 @@ import kotlin.test.assertTrue
 /**
  * 额度链路的假上游测试：个人/团队账本的聚合规则、session 失效的可读报错、
  * 以及「上游没回余额字段」时诊断信息必须透出（不能让界面无声地空）。
+ *
+ * 口径说明（0.1.83 实测结论）：对话扣的是当日赠送账本（records 的 dailyRemainingPoints），
+ * balance 字段是永久账本不动；Web 版 /api/auth/points-summary 在桌面端 base 下 404，不取数。
  */
 class LoomyPointsClientTest {
 
@@ -88,6 +91,34 @@ class LoomyPointsClientTest {
     }
 
     @Test
+    fun `creditInfo 余额是个人加当日剩余`() = withUpstream(
+        mapOf(
+            LoomyConstants.PATH_POINTS_RECORDS to
+                """{"code":"000000","data":{"balance":10000,"dailyRemainingPoints":2992}}""",
+            LoomyConstants.PATH_TEAM_POINTS_BALANCE to """{"code":"000000","data":{}}""",
+        ),
+    ) { base ->
+        // 对话扣当日赠送；只有加上 dailyRemaining 余额才会跟着消耗下降
+        val info = provider(base).creditInfo(account())!!
+        assertTrue(info.known)
+        assertEquals(12992L, info.balance)
+        assertTrue(info.detail.contains("个人=10000"), "detail：${info.detail}")
+        assertTrue(info.detail.contains("当日剩余=2992"), "detail：${info.detail}")
+    }
+
+    @Test
+    fun `creditInfo 缺当日剩余字段时余额就是主账本`() = withUpstream(
+        mapOf(
+            LoomyConstants.PATH_POINTS_RECORDS to """{"code":"000000","data":{"balance":120}}""",
+            LoomyConstants.PATH_TEAM_POINTS_BALANCE to """{"code":"000000","data":{"currentBalance":7}}""",
+        ),
+    ) { base ->
+        val info = provider(base).creditInfo(account())!!
+        assertTrue(info.known)
+        assertEquals(120L, info.balance)
+    }
+
+    @Test
     fun `creditInfo 在两个账本都未知时带响应片段`() = withUpstream(
         mapOf(
             LoomyConstants.PATH_POINTS_RECORDS to """{"code":"000000","data":{"list":[]}}""",
@@ -110,115 +141,10 @@ class LoomyPointsClientTest {
     }
 
     @Test
-    fun `creditInfo 优先用 summary 的永久加每日口径`() = withUpstream(
-        mapOf(
-            LoomyConstants.PATH_POINTS_SUMMARY to
-                """{"code":"000000","data":{"permanent":8000,"daily":500}}""",
-            LoomyConstants.PATH_POINTS_RECORDS to
-                """{"code":"000000","data":{"balance":120,"dailyRemainingPoints":30}}""",
-            LoomyConstants.PATH_TEAM_POINTS_BALANCE to
-                """{"code":"000000","data":{"currentBalance":7}}""",
-        ),
-    ) { base ->
-        val info = provider(base).creditInfo(account())!!
-        assertTrue(info.known)
-        // 对话扣每日账本，余额必须是永久+每日之和才会跟着动
-        assertEquals(8500L, info.balance)
-        assertTrue(info.detail.contains("永久=8000"), "detail：${info.detail}")
-        assertTrue(info.detail.contains("每日=500"), "detail：${info.detail}")
-    }
-
-    @Test
-    fun `creditInfo summary 失败时回退 records 且 detail 带原因`() = withUpstream(
-        mapOf(
-            LoomyConstants.PATH_POINTS_SUMMARY to """{"code":"000000","data":{}}""",
-            LoomyConstants.PATH_POINTS_RECORDS to
-                """{"code":"000000","data":{"balance":120,"dailyRemainingPoints":30}}""",
-            LoomyConstants.PATH_TEAM_POINTS_BALANCE to
-                """{"code":"000000","data":{"currentBalance":7}}""",
-        ),
-    ) { base ->
-        val info = provider(base).creditInfo(account())!!
-        assertTrue(info.known)
-        assertEquals(120L, info.balance)
-        assertTrue(info.detail.contains("总览接口失败"), "detail：${info.detail}")
-        assertTrue(info.detail.contains("records"), "detail：${info.detail}")
-    }
-
-    @Test
-    fun `creditPacks summary 失败时回退 records 口径并附诊断行`() = withUpstream(
+    fun `creditPacks 汇出三个额度包`() = withUpstream(
         mapOf(
             LoomyConstants.PATH_POINTS_RECORDS to
                 """{"code":"000000","data":{"balance":120,"dailyRemainingPoints":30,"dailyLimitPoints":100,"dailyConsumedPoints":70}}""",
-            LoomyConstants.PATH_TEAM_POINTS_BALANCE to
-                """{"code":"000000","data":{"currentBalance":7}}""",
-        ),
-    ) { base ->
-        // summary 未配置 → 假上游默认回空 data → 失败：个人积分 + 每日积分诊断行 + 团队 + 当日赠送
-        val packs = provider(base).creditPacks(account())
-        assertEquals(4, packs.size)
-        assertEquals("个人积分" to 120L, packs[0].name to packs[0].remain)
-        assertEquals("每日积分", packs[1].name)
-        assertEquals(-1L, packs[1].remain)
-        assertTrue(packs[1].note.isNotEmpty(), "note：${packs[1].note}")
-        assertEquals("团队积分" to 7L, packs[2].name to packs[2].remain)
-        assertEquals("当日赠送" to 30L, packs[3].name to packs[3].remain)
-        assertEquals(100L, packs[3].limit)
-    }
-
-    @Test
-    fun `summary 解析永久与每日两个数`() = withUpstream(
-        mapOf(LoomyConstants.PATH_POINTS_SUMMARY to """{"code":"000000","data":{"permanent":8000,"daily":500}}"""),
-    ) { base ->
-        val s = LoomyPointsClient(base).summary("st")
-        assertTrue(s.ok)
-        assertEquals(8000L, s.permanent)
-        assertEquals(500L, s.daily)
-    }
-
-    @Test
-    fun `summary 缺 permanent 字段时带回失败原因`() = withUpstream(
-        mapOf(LoomyConstants.PATH_POINTS_SUMMARY to """{"code":"000000","data":{}}"""),
-    ) { base ->
-        val s = LoomyPointsClient(base).summary("st")
-        assertTrue(!s.ok)
-        assertTrue(s.error.contains("permanent"), "error：${s.error}")
-        assertEquals(-1L, s.permanent)
-    }
-
-    @Test
-    fun `summary 请求异常时不拋错只报原因`() = withUpstream(emptyMap()) { base ->
-        // 假上游对未知路径回 200+空 data，不会拋；这里验证 data 缺失路径同样安全
-        val s = LoomyPointsClient(base).summary("st")
-        assertTrue(!s.ok)
-        assertTrue(s.error.isNotEmpty())
-    }
-
-    @Test
-    fun `creditPacks 优先用 points-summary 的永久与每日口径`() = withUpstream(
-        mapOf(
-            LoomyConstants.PATH_POINTS_SUMMARY to
-                """{"code":"000000","data":{"permanent":8000,"daily":500}}""",
-            LoomyConstants.PATH_POINTS_RECORDS to
-                """{"code":"000000","data":{"balance":120,"dailyRemainingPoints":30,"dailyLimitPoints":100,"dailyConsumedPoints":70}}""",
-            LoomyConstants.PATH_TEAM_POINTS_BALANCE to
-                """{"code":"000000","data":{"currentBalance":7}}""",
-        ),
-    ) { base ->
-        val packs = provider(base).creditPacks(account())
-        assertEquals(4, packs.size)
-        assertEquals("永久积分" to 8000L, packs[0].name to packs[0].remain)
-        assertEquals("每日积分" to 500L, packs[1].name to packs[1].remain)
-        assertEquals("团队积分" to 7L, packs[2].name to packs[2].remain)
-        assertEquals("当日赠送" to 30L, packs[3].name to packs[3].remain)
-    }
-
-    @Test
-    fun `creditPacks summary 失败且 records 无每日字段时不出当日赠送行`() = withUpstream(
-        mapOf(
-            LoomyConstants.PATH_POINTS_SUMMARY to """{"code":"000000","data":{}}""",
-            LoomyConstants.PATH_POINTS_RECORDS to
-                """{"code":"000000","data":{"balance":120}}""",
             LoomyConstants.PATH_TEAM_POINTS_BALANCE to
                 """{"code":"000000","data":{"currentBalance":7}}""",
         ),
@@ -226,40 +152,46 @@ class LoomyPointsClientTest {
         val packs = provider(base).creditPacks(account())
         assertEquals(3, packs.size)
         assertEquals("个人积分" to 120L, packs[0].name to packs[0].remain)
-        // 诊断行：每日积分未知（remain=-1），失败原因随 note 透出，不再静默
-        assertEquals("每日积分", packs[1].name)
-        assertEquals(-1L, packs[1].remain)
-        assertTrue(packs[1].note.contains("总览接口失败"), "note：${packs[1].note}")
-        assertEquals("团队积分" to 7L, packs[2].name to packs[2].remain)
+        assertEquals("团队积分" to 7L, packs[1].name to packs[1].remain)
+        assertEquals("当日赠送" to 30L, packs[2].name to packs[2].remain)
+        assertEquals(100L, packs[2].limit)
     }
 
     @Test
-    fun `creditPacks 缺 dailyRemainingPoints 时用 dailyBalance 兔底`() = withUpstream(
+    fun `creditPacks 缺 dailyRemainingPoints 时用 dailyBalance 兜底`() = withUpstream(
         mapOf(
             LoomyConstants.PATH_POINTS_RECORDS to
                 """{"code":"000000","data":{"balance":120,"dailyBalance":25}}""",
             LoomyConstants.PATH_TEAM_POINTS_BALANCE to """{"code":"000000","data":{}}""",
         ),
     ) { base ->
-        // summary 未配置 → 假上游默认回空 data → 失败；个人积分 + 诊断行 + 当日赠送（取 dailyBalance）
         val packs = provider(base).creditPacks(account())
+        assertEquals(2, packs.size)
         val daily = packs.last { it.name == "当日赠送" }
         assertEquals(25L, daily.remain)
         assertEquals(0L, daily.limit)
     }
 
     @Test
-    fun `creditPacks 两账本都未知时只剩诊断行`() = withUpstream(
+    fun `creditPacks records 无每日字段时不出当日赠送行`() = withUpstream(
+        mapOf(
+            LoomyConstants.PATH_POINTS_RECORDS to """{"code":"000000","data":{"balance":120}}""",
+            LoomyConstants.PATH_TEAM_POINTS_BALANCE to """{"code":"000000","data":{"currentBalance":7}}""",
+        ),
+    ) { base ->
+        val packs = provider(base).creditPacks(account())
+        assertEquals(2, packs.size)
+        assertEquals("个人积分" to 120L, packs[0].name to packs[0].remain)
+        assertEquals("团队积分" to 7L, packs[1].name to packs[1].remain)
+    }
+
+    @Test
+    fun `creditPacks 两账本都未知时为空`() = withUpstream(
         mapOf(
             LoomyConstants.PATH_POINTS_RECORDS to """{"code":"000000","data":{"list":[]}}""",
             LoomyConstants.PATH_TEAM_POINTS_BALANCE to """{"code":"000000","data":{}}""",
         ),
     ) { base ->
-        // 两账本都未知 + summary 也失败：列表只剩「每日积分」诊断行，不空也不出数字
-        val packs = provider(base).creditPacks(account())
-        assertEquals(1, packs.size)
-        assertEquals("每日积分", packs[0].name)
-        assertEquals(-1L, packs[0].remain)
-        assertTrue(packs[0].note.isNotEmpty())
+        assertTrue(provider(base).creditPacks(account()).isEmpty())
     }
 }

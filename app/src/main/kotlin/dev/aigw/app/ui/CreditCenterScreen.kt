@@ -136,13 +136,6 @@ fun ProviderCreditsScreen(
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
-                            if (pack.note.isNotEmpty()) {
-                                Text(
-                                    text = pack.note,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.error,
-                                )
-                            }
                         }
                     }
                 }

@@ -44,12 +44,6 @@ object LoomyConstants {
     /** 团队积分余额（账号加入团队时，消耗走的是这里）。 */
     const val PATH_TEAM_POINTS_BALANCE = "/api/v1/team-points/balance"
 
-    /**
-     * 个人积分总览（Web 版客户端积分详情弹窗的口径：permanent 永久 + daily 每日）。
-     * 路径来自 Web 版 bundle（index-BqbAcjtL.js），桌面端协议未实测，拿不到就回退 records。
-     */
-    const val PATH_POINTS_SUMMARY = "/api/auth/points-summary"
-
     /** 新手任务：列表与完成。 */
     const val PATH_ONBOARDING_TASKS = "/api/v1/onboarding/tasks"
     const val PATH_ONBOARDING_COMPLETE = "/api/v1/onboarding/tasks/complete"

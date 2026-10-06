@@ -58,8 +58,6 @@ data class QuotaPack(
     val remain: Long = 0,
     /** 过期时间（秒，0 表示不过期/未知）。 */
     val expireAt: Long = 0,
-    /** 诊断说明（如上游接口失败原因），非空时界面灰字展示；空 = 无异常。 */
-    val note: String = "",
 )
 
 /**
