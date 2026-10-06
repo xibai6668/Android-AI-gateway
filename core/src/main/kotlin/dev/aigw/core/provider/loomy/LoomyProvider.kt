@@ -133,15 +133,22 @@ class LoomyProvider(
             ?: throw IllegalStateException("账号凭证无法解析，请重新登录")
         return try {
             val snapshot = pointsClient.balance(loomy.session)
-            // 对话扣的是当日赠送账本（records 的 dailyRemainingPoints，实测会随消耗下降），
-            // 而 balance 字段是永久账本不动；可用总余额 = 主账本 + 当日剩余，两者都来自 records。
+            // 对话扣的是当日赠送账本（实测会随消耗下降），而 balance 字段是永久账本不动；
+            // 可用总余额 = 主账本 + 当日剩余，两者都来自 records。
+            // 当日剩余的取值必须与 creditPacks 的「当日赠送」行完全一致：
+            // 上游实测只回 dailyBalance 不回 dailyRemainingPoints，这里漏兑底就会出现
+            // 「额度包有 2992、余额还是一万」的不同步（0.1.83 就是这个 bug）。
             // （Web 版的 /api/auth/points-summary 在桌面端 base 下实测 404，不要再用。）
-            val daily = snapshot.dailyRemaining.coerceAtLeast(0)
+            val daily = when {
+                snapshot.dailyRemaining >= 0 -> snapshot.dailyRemaining
+                snapshot.dailyBalance >= 0 -> snapshot.dailyBalance
+                else -> 0L
+            }
             CreditInfo(
                 balance = snapshot.balance + daily,
                 known = snapshot.known,
                 detail = when {
-                    snapshot.known -> "${snapshot.source}=${snapshot.balance}，当日剩余=${formatOrDash(snapshot.dailyRemaining)}"
+                    snapshot.known -> "${snapshot.source}=${snapshot.balance}，当日剩余=${formatOrDash(if (daily > 0) daily else -1L)}"
                     // 两个账本都没拿到数：带响应片段，便于区分 session 失效与接口口径变化
                     else -> "未取到余额（响应片段：${snapshot.personalRaw.take(120)}）"
                 },

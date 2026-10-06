@@ -107,6 +107,22 @@ class LoomyPointsClientTest {
     }
 
     @Test
+    fun `creditInfo 缺 dailyRemainingPoints 时用 dailyBalance 兜底`() = withUpstream(
+        mapOf(
+            // 实测上游就是这种形态：只有 dailyBalance，没有 dailyRemainingPoints
+            LoomyConstants.PATH_POINTS_RECORDS to
+                """{"code":"000000","data":{"balance":10000,"dailyBalance":2992}}""",
+            LoomyConstants.PATH_TEAM_POINTS_BALANCE to """{"code":"000000","data":{}}""",
+        ),
+    ) { base ->
+        val info = provider(base).creditInfo(account())!!
+        assertTrue(info.known)
+        // 0.1.83 的 bug 就是这里漏兑底：额度包显示当日赠送 2992、余额却还是 10000
+        assertEquals(12992L, info.balance)
+        assertTrue(info.detail.contains("当日剩余=2992"), "detail：${info.detail}")
+    }
+
+    @Test
     fun `creditInfo 缺当日剩余字段时余额就是主账本`() = withUpstream(
         mapOf(
             LoomyConstants.PATH_POINTS_RECORDS to """{"code":"000000","data":{"balance":120}}""",
