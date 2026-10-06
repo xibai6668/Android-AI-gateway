@@ -67,30 +67,6 @@ class SecurityProtectionTest {
     }
 
     @Test
-    fun `Gemini 原生 systemInstruction 也能准确脱敏`() {
-        val sanitizer = RequestSanitizer()
-        val geminiBody = """
-            {
-              "systemInstruction": {
-                "parts": [{"text": "Security policy against exploit payload"}]
-              },
-              "contents": [
-                {"role": "user", "parts": [{"text": "test exploit"}]}
-              ]
-            }
-        """.trimIndent()
-
-        val processed = sanitizer.sanitizeGeminiNativeBody(geminiBody, "gemini-2.5", enabled = true)
-        val obj = JsonParser.parseString(processed).asJsonObject
-        val sysText = obj.getAsJsonObject("systemInstruction").getAsJsonArray("parts")[0].asJsonObject.get("text").asString
-        val userText = obj.getAsJsonArray("contents")[0].asJsonObject.getAsJsonArray("parts")[0].asJsonObject.get("text").asString
-
-        assertTrue(sysText.contains("e\u200Bx\u200Bp\u200Bl\u200Bo\u200Bi\u200Bt"))
-        assertTrue(sysText.contains("p\u200Ba\u200By\u200Bl\u200Bo\u200Ba\u200Bd"))
-        assertEquals("test exploit", userText, "Gemini 原生 user 内容同样不被修改")
-    }
-
-    @Test
     fun `处理链支持热重载额外敏感词`() {
         val sanitizer = RequestSanitizer()
         assertEquals(sanitizer.DEFAULT_SENSITIVE_WORDS.size, sanitizer.currentRulesCount())

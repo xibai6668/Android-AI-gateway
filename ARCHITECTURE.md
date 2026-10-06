@@ -71,7 +71,7 @@
 | 文件 | 职责 | 关键约束 |
 |---|---|---|
 | `gateway/GatewayEngine.kt` | 总调度器：持有 AccountPool/Registry/Settings，`resolveRoute`/`resolveCandidateRoutes` 路由解析，`applyCooling` 错误→冷却策略 | 路由逻辑改动必须同步 `SmartRoutingTest` |
-| `gateway/GatewayHttpServer.kt` | NanoHTTPD 服务器：`/v1/chat/completions`（含 Failover 循环）、`/v1/models`、原生 Gemini 端点（`/v1beta/models/*`）、`/authorize`（Trae 回调） | 鉴权兼容 Bearer/x-goog-api-key/?key= |
+| `gateway/GatewayHttpServer.kt` | NanoHTTPD 服务器：`/v1/chat/completions`（含 Failover 循环）、`/v1/models`、`/authorize`（Trae 回调） | 鉴权兼容 Bearer/x-goog-api-key/?key= |
 | `gateway/GatewaySettings.kt` | 全局设置（端口、maxRotate=换号上限、各种冷却时长、defaultProvider） | `maxRotate` 默认 3：单请求最多试 3 个账号 |
 | `gateway/ProxySettings.kt` | 代理开关 + `DOMESTIC_SUFFIXES` 国内域名强制直连白名单 | 白名单优先级 > 一切代理设置 |
 | `gateway/ProviderBootstrap.kt` | 内置 Provider 登记处 | 新增供应商在此加一行 |
@@ -80,7 +80,7 @@
 | `pool/AccountPool.kt` | 账号池：选号（余额最高者）、冷却（QUOTA 12h / SOFT 60s / ERROR 累计3次10min）、硬禁用（disabled）、持久化 | 冷却状态持久化在 `pool/state/<providerId>.json` |
 | `pool/CoolingText.kt` | 冷却状态→可读文案 | |
 | `protocol/OpenAiGemini.kt` | OpenAI⇄Gemini 双向转换（Antigravity 专用）：严格 user/model 角色交替、tool 聚合、thinking、safetySettings | **上游强制要求 contents 角色交替**，连续同 role 会 400 |
-| `provider/Provider.kt` | Provider 接口 + AuthKind 枚举 + `GeminiNativeSupport` | 抽象边界，勿随意扩接口 |
+| `provider/Provider.kt` | Provider 接口 + AuthKind 枚举 | 抽象边界，勿随意扩接口 |
 | `provider/ChatCall.kt` | 上游响应封装（stream/aggregated/failure 三态） | |
 | `provider/StreamSupport.kt` | `LineTransformStream`（逐行翻译）、`OpenAiSseAggregator`（SSE聚合/completionAsSse/isEmptyCompletion） | SSE 帧必须以 `\n\n` 结尾 |
 | `provider/antigravity/` | Google Antigravity（Gemini 协议）| **凭证策略见下文第 5 节，严禁回退** |
@@ -151,7 +151,7 @@ call/...                           # 调用日志
 这是本项目踩坑最深的地方，**0.1.40→0.1.57 的「登录频繁失效」全是违反以下原则造成的**：
 
 ### 正确策略（0.1.58 现状）
-1. **Provider 内部绝不主动刷新 Token**。`openChat`/`openGeminiNative`/`listModels`/`creditInfo` 只调 `parse(account)` 取当前凭证。
+1. **Provider 内部绝不主动刷新 Token**。`openChat`/`listModels`/`creditInfo` 只调 `parse(account)` 取当前凭证。
 2. **刷新唯一入口**：网关在每次请求前调 `provider.refreshAccount(account, settings.refreshSkewSeconds)`，而 `refreshAccount` 内部判断：只在 token 临期 5 分钟内（`REQUEST_SAFETY_WINDOW_SECONDS`）才真正调 OAuth。刷新频率天然 ≈ 1小时1次。
 3. **刷新成功必须落盘**：`refreshAccount` 内通过 `hooks.onAccountUpdated(toProviderAccount(refreshed, account))` 回存——Google 会轮换 refresh_token，不回存旧值作废后就是永久 invalid_grant。
 4. **UID 稳定性**：`toProviderAccount(refreshed, existing)` 必须沿用既有账号的 uid，否则账号池键漂移 = 账号"消失"。

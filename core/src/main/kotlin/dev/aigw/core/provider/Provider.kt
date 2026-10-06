@@ -127,11 +127,6 @@ interface Provider {
     fun importCredentials(raw: String): ProviderAccount? = null
 }
 
-/** 原生支持 Google Gemini 协议的供应商（如 Antigravity）。 */
-interface GeminiNativeSupport {
-    fun openGeminiNative(account: ProviderAccount, model: String, geminiBody: String, streaming: Boolean): ChatCall
-}
-
 /**
  * 账号有区域之分的供应商（如 WorkBuddy 的国内 cn / 国外 global）。
  *

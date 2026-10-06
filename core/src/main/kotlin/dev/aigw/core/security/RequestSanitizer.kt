@@ -144,51 +144,6 @@ class RequestSanitizer(
     }
 
     /**
-     * 针对 Google Gemini 原生格式进行脱敏：
-     * 仅修改 `systemInstruction` 对象内的 text 部件。
-     */
-    fun sanitizeGeminiNativeBody(body: String, model: String, enabled: Boolean): String {
-        if (!enabled) return body
-        val obj = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull() ?: return body
-        val sysInst = obj.objOrNull("systemInstruction") ?: return body
-        val parts = sysInst.arrayOrNull("parts") ?: return body
-
-        var modified = false
-        val allMatchedTerms = mutableListOf<String>()
-        var originalSample = ""
-        var sanitizedSample = ""
-
-        val newParts = JsonArray()
-        for (element in parts) {
-            val partObj = element.asObjectOrNull()
-            if (partObj != null && partObj.has("text")) {
-                val originalText = partObj.stringOrNull("text").orEmpty()
-                val (resultText, matches) = sanitizeText(originalText)
-                if (matches.isNotEmpty()) {
-                    modified = true
-                    allMatchedTerms.addAll(matches)
-                    if (originalSample.isEmpty()) {
-                        originalSample = originalText.take(300)
-                        sanitizedSample = resultText.take(300)
-                    }
-                    val copyPart = JsonObject()
-                    for ((k, v) in partObj.entrySet()) copyPart.add(k, v)
-                    copyPart.addProperty("text", resultText)
-                    newParts.add(copyPart)
-                    continue
-                }
-            }
-            newParts.add(element)
-        }
-
-        if (!modified) return body
-
-        sysInst.add("parts", newParts)
-        recordEvidence(model, allMatchedTerms.distinct(), originalSample, sanitizedSample)
-        return obj.toString()
-    }
-
-    /**
      * 将敏感词内部每两个相邻字符之间注入零宽空格。
      * 例：DoS -> D\u200Bo\u200BS
      */

@@ -8,7 +8,6 @@ import dev.aigw.core.provider.ChatCall
 import dev.aigw.core.provider.CreditInfo
 import dev.aigw.core.provider.ErrorKind
 import dev.aigw.core.provider.FailedChatCall
-import dev.aigw.core.provider.GeminiNativeSupport
 import dev.aigw.core.provider.LineTransformStream
 import dev.aigw.core.provider.LoopbackOAuthSupport
 import dev.aigw.core.provider.OpenAiSseAggregator
@@ -49,7 +48,7 @@ class AntigravityProvider(
     private val apiBase: String = API_BASE,
     private val quotaBase: String = QUOTA_BASE,
     private val tokenEndpoint: String = TOKEN_ENDPOINT,
-) : Provider, LoopbackOAuthSupport, GeminiNativeSupport {
+) : Provider, LoopbackOAuthSupport {
 
     override val id: String = ID
     override val displayName: String = "Antigravity"
@@ -220,95 +219,6 @@ class AntigravityProvider(
             conn.disconnect()
         }
         return AggregatedChatCall(status, aggregated)
-    }
-
-    /**
-     * 原生处理 Google Gemini 协议请求（用于支持各类 Agent 客户端直接配置为 Google Gemini 协议连接网关）：
-     * 客户端发送原生的 Gemini Request JSON（含 contents、generationConfig 等），
-     * 网关直接打包 Antigravity envelope 发给 Google 上游，返回原生的 Gemini 响应。
-     * 凭证策略与 [openChat] 一致：不主动刷新，由网关统一管理。
-     */
-    override fun openGeminiNative(account: ProviderAccount, model: String, geminiBody: String, streaming: Boolean): ChatCall {
-        val credential = parse(account) ?: return FailedChatCall(401, "凭证无法解析")
-        if (credential.projectId.isEmpty()) {
-            return FailedChatCall(400, "该账号缺少 project id，请重新登录以获取")
-        }
-        val resolved = resolveModel(model)
-        val requestObj = runCatching { JsonParser.parseString(geminiBody).asJsonObject }.getOrNull()
-            ?: return FailedChatCall(400, "请求体不是合法 JSON")
-
-        if (!requestObj.has("safetySettings")) {
-            requestObj.add("safetySettings", OpenAiGemini.defaultSafetySettings())
-        }
-
-        val envelopeBody = OpenAiGemini.envelope(credential.projectId, resolved, requestObj, OpenAiGemini.newRequestId())
-        hooks.onVerbose?.invoke("Antigravity 发送内容（原生 Gemini）", "$quotaBase/$API_VERSION:streamGenerateContent?alt=sse\n$envelopeBody")
-
-        val conn = try {
-            open("$quotaBase/$API_VERSION:streamGenerateContent?alt=sse", credential.accessToken, envelopeBody)
-        } catch (e: Exception) {
-            return FailedChatCall(0, e.message ?: "连接失败")
-        }
-        val status = try {
-            conn.responseCode
-        } catch (e: Exception) {
-            conn.disconnect()
-            return FailedChatCall(0, e.message ?: "连接失败")
-        }
-
-        if (status !in 200..299) {
-            val errorBody = runCatching { readLimited(conn.errorStream) }.getOrDefault("")
-            conn.disconnect()
-            return FailedChatCall(status, errorBody)
-        }
-
-        if (streaming) {
-            val transformed = LineTransformStream(
-                source = conn.inputStream,
-                transform = { line ->
-                    if (!line.startsWith("data:")) return@LineTransformStream emptyList()
-                    val payload = line.removePrefix("data:").trim()
-                    if (payload.isEmpty() || payload == "[DONE]") return@LineTransformStream emptyList()
-                    val root = runCatching { JsonParser.parseString(payload).asJsonObject }.getOrNull()
-                        ?: return@LineTransformStream emptyList()
-                    val response = root.objOrNull("response") ?: root
-                    listOf("data: $response\n\n")
-                },
-                onFinish = { emptyList() },
-            )
-            return StreamingChatCall(status, transformed) { conn.disconnect() }
-        }
-
-        val aggregated = try {
-            aggregateGeminiNative(conn.inputStream)
-        } finally {
-            conn.disconnect()
-        }
-        return AggregatedChatCall(status, aggregated)
-    }
-
-    private fun aggregateGeminiNative(stream: InputStream): String {
-        val candidates = com.google.gson.JsonArray()
-        var usage: JsonObject? = null
-        var modelVersion = ""
-        stream.bufferedReader(StandardCharsets.UTF_8).use { reader ->
-            while (true) {
-                val line = reader.readLine() ?: break
-                if (!line.startsWith("data:")) continue
-                val payload = line.removePrefix("data:").trim()
-                if (payload.isEmpty() || payload == "[DONE]") continue
-                val root = runCatching { JsonParser.parseString(payload).asJsonObject }.getOrNull() ?: continue
-                val response = root.objOrNull("response") ?: root
-                response.stringOrNull("modelVersion")?.let { modelVersion = it }
-                response.objOrNull("usageMetadata")?.let { usage = it }
-                response.arrayOrNull("candidates")?.forEach { candidates.add(it) }
-            }
-        }
-        return JsonObject().apply {
-            add("candidates", candidates)
-            usage?.let { add("usageMetadata", it) }
-            if (modelVersion.isNotEmpty()) addProperty("modelVersion", modelVersion)
-        }.toString()
     }
 
     override fun classify(status: Int, body: String): UpstreamError {
