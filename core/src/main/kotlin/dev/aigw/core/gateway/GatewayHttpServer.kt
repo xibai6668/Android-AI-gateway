@@ -738,12 +738,13 @@ class GatewayHttpServer(
 
     private enum class BodyReadResult { COMPLETE, INCOMPLETE, OVER_LIMIT }
 
-    /** 非法请求体的诊断现场：记录关键 header 与前 256 字节，用于定位客户端到底发了什么。 */
+    /** 非法请求体的诊断现场：摘要行含关键 header；详细日志开启时另分段记录完整原文。 */
     private fun logInvalidBody(session: NanoHTTPD.IHTTPSession, body: String, reason: String) {
         val headers = listOf("content-length", "transfer-encoding", "content-type", "content-encoding", "connection")
             .mapNotNull { key -> session.headers[key]?.let { "$key=$it" } }
             .joinToString(" ")
         log("请求体异常（$reason）：$headers 已收 ${body.length} 字符，前 256 字节=${body.take(256).escapeControl()}")
+        engine.logVerbose("请求原文（$reason）", body)
     }
 
     private fun String.escapeControl(): String = buildString {
