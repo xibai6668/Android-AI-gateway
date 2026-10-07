@@ -1,13 +1,20 @@
 package dev.aigw.app.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -17,6 +24,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import dev.aigw.core.gateway.ProxyType
 
 /**
  * 代理设置：境外供应商（如 Antigravity）需要走代理。
@@ -30,6 +38,10 @@ fun ProxyScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
     var port by remember(settings.port) { mutableStateOf(settings.port.toString()) }
     var username by remember(settings.username) { mutableStateOf(settings.username) }
     var password by remember(settings.password) { mutableStateOf(settings.password) }
+    var excludedText by remember(settings.excludedHosts) {
+        mutableStateOf(settings.excludedHosts.joinToString(","))
+    }
+    var showTypeDialog by remember { mutableStateOf(false) }
 
     PageScaffold(
         title = "代理设置",
@@ -46,6 +58,24 @@ fun ProxyScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
                 Switch(
                     checked = settings.enabled,
                     onCheckedChange = { viewModel.updateProxySettings(settings.copy(enabled = it)) },
+                )
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { showTypeDialog = true },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("代理类型", modifier = Modifier.weight(1f))
+                Text(
+                    text = settings.type.label,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.outline,
                 )
             }
             OutlinedTextField(
@@ -76,17 +106,38 @@ fun ProxyScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
+            OutlinedTextField(
+                value = excludedText,
+                onValueChange = { excludedText = it },
+                label = { Text("不走代理的地址") },
+                minLines = 2,
+                maxLines = 5,
+                modifier = Modifier.fillMaxWidth(),
+                supportingText = {
+                    Text(
+                        text = "逗号分隔；支持通配符 *、host:port、CIDR 网段",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                },
+            )
             OutlineActionButton("保存") {
                 val parsed = port.toIntOrNull()
                 if (parsed == null || parsed !in 1..65535) {
                     viewModel.notice("端口需要在 1~65535 之间")
                 } else {
+                    val excludedHosts = excludedText
+                        .split(Regex("[,，\\n\\s]+"))
+                        .filter { it.isNotEmpty() }
+                        .distinct()
                     viewModel.updateProxySettings(
                         settings.copy(
                             host = host.trim(),
                             port = parsed,
                             username = username.trim(),
                             password = password,
+                            type = settings.type,
+                            excludedHosts = excludedHosts,
                         ),
                     )
                     viewModel.notice("代理设置已保存")
@@ -133,4 +184,51 @@ fun ProxyScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
             }
         }
     }
+
+    if (showTypeDialog) {
+        ProxyTypeDialog(
+            current = settings.type,
+            onSelect = { selected ->
+                showTypeDialog = false
+                viewModel.updateProxySettings(settings.copy(type = selected))
+                viewModel.notice("代理设置已保存")
+            },
+            onDismiss = { showTypeDialog = false },
+        )
+    }
+}
+
+@Composable
+private fun ProxyTypeDialog(
+    current: ProxyType,
+    onSelect: (ProxyType) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("代理类型") },
+        text = {
+            Column(Modifier.fillMaxWidth()) {
+                for (type in ProxyType.entries) {
+                    Text(
+                        text = type.label,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = if (type == current) FontWeight.SemiBold else null,
+                        color = if (type == current) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelect(type) }
+                            .padding(vertical = 12.dp),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        },
+    )
 }

@@ -12,25 +12,40 @@ import java.net.ProxySelector
 import java.net.SocketAddress
 import java.net.URI
 
+/** 代理协议类型。 */
+enum class ProxyType(val label: String) {
+    HTTP("HTTP"),
+    SOCKS("SOCKS5");
+
+    fun toJavaType(): Proxy.Type = when (this) {
+        HTTP -> Proxy.Type.HTTP
+        SOCKS -> Proxy.Type.SOCKS
+    }
+}
+
 /**
  * 代理设置。
  *
- * 境外供应商（Antigravity 等）通常需要代理才能访问，所以支持「总开关 + 按供应商排除」：
- * 打开总开关后默认所有上游都走代理，个别不需要的可以单独关掉。
+ * 境外供应商（Antigravity 等）通常需要代理才能访问，所以支持「总开关 + 按供应商排除 + 按地址排除」：
+ * 打开总开关后默认所有上游都走代理，个别供应商或地址可以单独直连。
  */
 data class ProxySettings(
     val enabled: Boolean = false,
+    val type: ProxyType = ProxyType.HTTP,
     val host: String = "",
     val port: Int = 8080,
     val username: String = "",
     val password: String = "",
     /** 不走代理的供应商 id（默认空 = 全部走代理）。 */
     val excludedProviderIds: Set<String> = emptySet(),
+    /** 不走代理的地址规则：纯域名（含子域）、* 通配、host:port、IPv4 CIDR。 */
+    val excludedHosts: List<String> = DEFAULT_EXCLUDED_HOSTS,
 ) {
     val usable: Boolean get() = enabled && host.isNotBlank() && port in 1..65535
 
     fun toJson(): JsonObject = JsonObject().apply {
         addProperty("enabled", enabled)
+        addProperty("type", type.name)
         addProperty("host", host)
         addProperty("port", port)
         addProperty("username", username)
@@ -38,10 +53,18 @@ data class ProxySettings(
         add("excludedProviderIds", com.google.gson.JsonArray().apply {
             excludedProviderIds.forEach { add(it) }
         })
+        add("excludedHosts", com.google.gson.JsonArray().apply {
+            excludedHosts.forEach { add(it) }
+        })
     }
 
     companion object {
         const val STORE_KEY = "settings/proxy.json"
+
+        /** 与系统级代理工具一致的兜底：本机与内网段直连，防止内网上游被误送进代理。 */
+        val DEFAULT_EXCLUDED_HOSTS = listOf(
+            "localhost", "127.0.0.1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+        )
 
         fun fromJson(raw: String?): ProxySettings {
             if (raw.isNullOrEmpty()) return ProxySettings()
@@ -51,13 +74,22 @@ data class ProxySettings(
                 ?.mapNotNull { runCatching { it.asString }.getOrNull() }
                 ?.toSet()
                 .orEmpty()
+            // 字段缺失（旧配置）才回退默认值；显式存过空数组则尊重用户清空的选择
+            val excludedHosts = obj.get("excludedHosts")?.takeIf { it.isJsonArray }
+                ?.let { array ->
+                    array.asJsonArray.mapNotNull { runCatching { it.asString }.getOrNull() }
+                } ?: DEFAULT_EXCLUDED_HOSTS
             return ProxySettings(
                 enabled = obj.get("enabled")?.asBoolean ?: false,
+                type = obj.get("type")?.asString
+                    ?.let { name -> runCatching { ProxyType.valueOf(name) }.getOrNull() }
+                    ?: ProxyType.HTTP,
                 host = obj.get("host")?.asString.orEmpty().trim(),
                 port = obj.get("port")?.asInt ?: 8080,
                 username = obj.get("username")?.asString.orEmpty(),
                 password = obj.get("password")?.asString.orEmpty(),
                 excludedProviderIds = excluded,
+                excludedHosts = excludedHosts,
             )
         }
     }
@@ -84,7 +116,8 @@ internal class GatewayProxySelector(
         // 国内上游永远直连：走了代理反而慢或被拒（供应商区域、CDN 调度都是按来源 IP 的）
         if (isDomestic(host)) return NO_PROXY
         if (isExcluded(host, config)) return NO_PROXY
-        return listOf(Proxy(Proxy.Type.HTTP, InetSocketAddress(config.host, config.port)))
+        if (isExcludedByRule(host, uri, config.excludedHosts)) return NO_PROXY
+        return listOf(Proxy(config.type.toJavaType(), InetSocketAddress(config.host, config.port)))
     }
 
     private fun isDomestic(host: String): Boolean =
@@ -97,6 +130,56 @@ internal class GatewayProxySelector(
             if (suffixes.any { host == it || host.endsWith(".$it") }) return true
         }
         return false
+    }
+
+    private fun isExcludedByRule(host: String, uri: URI, rules: List<String>): Boolean {
+        for (raw in rules) {
+            val rule = raw.trim().lowercase()
+            if (rule.isEmpty()) continue
+            if (rule.contains('/')) {
+                if (matchesCidr(host, rule)) return true
+                continue
+            }
+            val portSuffix = rule.substringAfterLast(':', "")
+            val rulePort = portSuffix.toIntOrNull()
+            val hostRule = if (rulePort != null) rule.substringBeforeLast(':') else rule
+            if (rulePort != null && rulePort != effectivePort(uri)) continue
+            when {
+                hostRule.contains('*') ->
+                    if (Regex(hostRule.split('*').joinToString(".*") { Regex.escape(it) }).matches(host)) return true
+                host == hostRule || host.endsWith(".$hostRule") -> return true
+            }
+        }
+        return false
+    }
+
+    /** URI 未写端口时按 scheme 补默认值，让 example.com:443 能匹配 https://example.com/x。 */
+    private fun effectivePort(uri: URI): Int =
+        uri.port.takeIf { it != -1 } ?: if (uri.scheme.equals("http", ignoreCase = true)) 80 else 443
+
+    /** 仅支持 IPv4 CIDR；host 非 IPv4 字面量或规则非法时一律不匹配。 */
+    private fun matchesCidr(host: String, rule: String): Boolean {
+        val slash = rule.indexOf('/')
+        if (slash <= 0) return false
+        val network = ipv4ToInt(rule.substring(0, slash)) ?: return false
+        val prefix = rule.substring(slash + 1).toIntOrNull() ?: return false
+        if (prefix !in 0..32) return false
+        val ip = ipv4ToInt(host) ?: return false
+        if (prefix == 0) return true
+        val mask = -(1 shl (32 - prefix))
+        return (ip and mask) == (network and mask)
+    }
+
+    private fun ipv4ToInt(value: String): Int? {
+        val parts = value.split('.')
+        if (parts.size != 4) return null
+        var result = 0
+        for (part in parts) {
+            val octet = part.toIntOrNull() ?: return null
+            if (octet !in 0..255 || (part.length > 1 && part.startsWith('0'))) return null
+            result = (result shl 8) or octet
+        }
+        return result
     }
 
     override fun connectFailed(uri: URI?, sa: SocketAddress?, ioe: IOException?) = Unit
