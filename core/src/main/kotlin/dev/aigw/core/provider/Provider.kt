@@ -65,7 +65,7 @@ data class QuotaPack(
  *
  * 抽象边界刻意定在「OpenAI 请求体 → OpenAI 格式响应」：[openChat] 接收标准 OpenAI 请求体，
  * 内部完成与上游私有协议的**双向**转换，返回的 [ChatCall] 已是 OpenAI 语义
- * （流式 SSE 或聚合后的 completion）。因此网关层（选号、冷却、透传）对 provider 差异零感知，
+ * （流式 SSE 或聚合后的 completion）。因此网关层（选号、容灾调度、透传）对 provider 差异零感知，
  * 新增供应商只需实现本接口并在 [ProviderRegistry] 登记一行。
  */
 interface Provider {
@@ -94,7 +94,7 @@ interface Provider {
     /** 预刷新凭证；返回新账号表示 token 发生轮换（调用方需原子写回）。 */
     fun refreshAccount(account: ProviderAccount, skewSeconds: Long): ProviderAccount? = null
 
-    /** 统一错误分类，供账号池决定冷却策略。 */
+    /** 统一错误分类，供调度层决定重试与换号策略。 */
     fun classify(status: Int, body: String): UpstreamError
 
     /** 账号额度/积分；无此能力返回 null。 */

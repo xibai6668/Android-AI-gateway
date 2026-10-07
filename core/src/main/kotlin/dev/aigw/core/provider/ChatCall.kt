@@ -17,7 +17,7 @@ interface ChatCall : AutoCloseable {
 
     /**
      * 流内业务错误（HTTP 200 但流里报了错）。
-     * 网关据此冷却账号；非流式时 [aggregated] 为 null，可以换号重试。
+     * 网关据此换号或切换供应商；非流式时 [aggregated] 为 null。
      */
     val failure: UpstreamError? get() = null
 }
@@ -43,7 +43,7 @@ class StreamingChatCall(
     override fun close() = onClose()
 }
 
-/** 流内业务错误：没有可用内容，网关应冷却账号并换号重试。 */
+/** 流内业务错误：没有可用内容，网关应换号或切换供应商。 */
 class StreamFailureChatCall(
     override val status: Int,
     override val failure: UpstreamError,

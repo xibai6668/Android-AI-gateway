@@ -167,22 +167,20 @@ class GatewayHttpServer(
         if (!authorized(session)) return unauthorized(session)
 
         val (body, readResult) = readBody(session)
+        if (readResult == BodyReadResult.OVER_LIMIT) {
+            return errorResponse(413, "payload_too_large", "请求体超过网关 ${MAX_BODY_BYTES / (1024 * 1024)}MB 上限")
+        }
         if (body.isEmpty()) {
             logInvalidBody(session, body, "请求体为空")
             return errorResponse(400, "invalid_request", "请求体为空")
         }
         val peek = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
         if (peek == null) {
-            return when (readResult) {
-                BodyReadResult.OVER_LIMIT ->
-                    errorResponse(413, "payload_too_large", "请求体超过网关 ${MAX_BODY_BYTES / (1024 * 1024)}MB 上限")
-                BodyReadResult.INCOMPLETE ->
-                    errorResponse(400, "invalid_request", "连接中断，请求体未接收完整（已收 ${body.length} 字节）")
-                BodyReadResult.COMPLETE -> {
-                    logInvalidBody(session, body, "JSON 解析失败")
-                    errorResponse(400, "invalid_request", "请求体不是合法 JSON")
-                }
+            if (readResult == BodyReadResult.INCOMPLETE) {
+                return errorResponse(400, "invalid_request", "连接中断，请求体未接收完整（已收 ${body.length} 字节）")
             }
+            logInvalidBody(session, body, "JSON 解析失败")
+            return errorResponse(400, "invalid_request", "请求体不是合法 JSON")
         }
 
         val settings = engine.settings()

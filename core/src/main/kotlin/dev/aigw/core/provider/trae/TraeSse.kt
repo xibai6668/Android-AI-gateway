@@ -228,7 +228,7 @@ class OpenAiAggregator(
     private var finishReason = "stop"
     private var usage: JsonObject? = null
 
-    /** 流内业务错误，非 null 时调用方应冷却账号并换号重试。 */
+    /** 流内业务错误，非 null 时调用方应换号或切换供应商。 */
     var failure: SoloStreamError? = null
         private set
 

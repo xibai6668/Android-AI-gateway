@@ -229,7 +229,7 @@ class AntigravityProvider(
             // 注意不要把 401/403 降级成短冷却——那会导致反复触发 OAuth 刷新，
             // 加速 Google 风控吊销 refresh_token（「越修越频繁失效」的根因）。
             status == 401 || status == 403 -> ErrorKind.SESSION_DEAD
-            status == 404 -> ErrorKind.CLIENT // 模型不存在属于客户端入参错误，不连累账号被冷却
+            status == 404 -> ErrorKind.CLIENT // 模型不存在属于客户端入参错误，不连累账号被禁用
             status == 429 && (lower.contains("quota") || lower.contains("capacity")) -> ErrorKind.QUOTA
             status == 429 -> ErrorKind.SOFT_RATE
             status in 500..599 -> ErrorKind.SERVER

@@ -37,7 +37,7 @@
 │  ④ 遍历候选：AccountPool.pick() 选号              │
 │     → provider.refreshAccount() 预刷新凭证         │
 │     → provider.openChat() 发起上游请求             │
-│     → 失败则冷却账号/换号/切下一个供应商 (Failover)  │
+│     → 失败则换号/切下一个供应商 (Failover，凭证失效硬禁用) │
 │  ⑤ 成功 → 透传 SSE / 回传 JSON，记调用日志          │
 └───────────────┬─────────────────────────────────┘
                 ▼
@@ -70,15 +70,14 @@
 
 | 文件 | 职责 | 关键约束 |
 |---|---|---|
-| `gateway/GatewayEngine.kt` | 总调度器：持有 AccountPool/Registry/Settings，`resolveRoute`/`resolveCandidateRoutes` 路由解析，`applyCooling` 错误→冷却策略 | 路由逻辑改动必须同步 `SmartRoutingTest` |
+| `gateway/GatewayEngine.kt` | 总调度器：持有 AccountPool/Registry/Settings，`resolveRoute`/`resolveCandidateRoutes` 路由解析，错误分类→重试/换号/跨供应商 Failover 决策（凭证失效才硬禁用） | 路由逻辑改动必须同步 `SmartRoutingTest` |
 | `gateway/GatewayHttpServer.kt` | NanoHTTPD 服务器：`/v1/chat/completions`（含 Failover 循环）、`/v1/models`、`/authorize`（Trae 回调） | 鉴权兼容 Bearer/x-goog-api-key/?key= |
-| `gateway/GatewaySettings.kt` | 全局设置（端口、maxRotate=换号上限、各种冷却时长、defaultProvider） | `maxRotate` 默认 3：单请求最多试 3 个账号 |
+| `gateway/GatewaySettings.kt` | 全局设置（端口、apiKey、allowNoKey、maxRotate=换号上限、refreshSkewSeconds、defaultProvider） | `maxRotate` 默认 3：单请求最多试 3 个账号 |
 | `gateway/ProxySettings.kt` | 代理开关 + `DOMESTIC_SUFFIXES` 国内域名强制直连白名单 | 白名单优先级 > 一切代理设置 |
 | `gateway/ProviderBootstrap.kt` | 内置 Provider 登记处 | 新增供应商在此加一行 |
 | `gateway/LoopbackCallbackServer.kt` | OAuth 登录回调监听（Trae 51120 / Antigravity 51121） | 临时端口，用完即释放 |
 | `gateway/OpenAiApi.kt` | OpenAI 报文拼装（error/modelList） | |
-| `pool/AccountPool.kt` | 账号池：选号（余额最高者）、冷却（QUOTA 12h / SOFT 60s / ERROR 累计3次10min）、硬禁用（disabled）、持久化 | 冷却状态持久化在 `pool/state/<providerId>.json` |
-| `pool/CoolingText.kt` | 冷却状态→可读文案 | |
+| `pool/AccountPool.kt` | 账号池：选号（余额最高者）、硬禁用（disabled）、持久化；不做本地冷却，上游错误由换号/Failover 应对 | 状态持久化在 `pool/state/<providerId>.json` |
 | `protocol/OpenAiGemini.kt` | OpenAI⇄Gemini 双向转换（Antigravity 专用）：严格 user/model 角色交替、tool 聚合、thinking、safetySettings | **上游强制要求 contents 角色交替**，连续同 role 会 400 |
 | `provider/Provider.kt` | Provider 接口 + AuthKind 枚举 | 抽象边界，勿随意扩接口 |
 | `provider/ChatCall.kt` | 上游响应封装（stream/aggregated/failure 三态） | |
@@ -124,7 +123,7 @@
 
 ```
 account/<providerId>/<uid>.json    # 账号凭证（ProviderAccount.toJson）
-pool/state/<providerId>.json       # 账号状态（冷却/禁用/额度）
+pool/state/<providerId>.json       # 账号状态（禁用/额度）
 settings/gateway.json              # 网关设置
 settings/provider/<id>.json        # 供应商设置（含 region 等 option）
 settings/proxy.json                # 代理设置
@@ -155,7 +154,7 @@ call/...                           # 调用日志
 2. **刷新唯一入口**：网关在每次请求前调 `provider.refreshAccount(account, settings.refreshSkewSeconds)`，而 `refreshAccount` 内部判断：只在 token 临期 5 分钟内（`REQUEST_SAFETY_WINDOW_SECONDS`）才真正调 OAuth。刷新频率天然 ≈ 1小时1次。
 3. **刷新成功必须落盘**：`refreshAccount` 内通过 `hooks.onAccountUpdated(toProviderAccount(refreshed, account))` 回存——Google 会轮换 refresh_token，不回存旧值作废后就是永久 invalid_grant。
 4. **UID 稳定性**：`toProviderAccount(refreshed, existing)` 必须沿用既有账号的 uid，否则账号池键漂移 = 账号"消失"。
-5. **classify 语义**：401/403 → `SESSION_DEAD`（硬禁用，提示重新登录）。**不要**降级成短冷却——短冷却会让账号 60 秒后回来再次触发刷新，形成刷新风暴加速风控。
+5. **classify 语义**：401/403 → `SESSION_DEAD`（硬禁用，提示重新登录）。**不要**降级成软重试——那会让账号很快回来再次触发刷新，形成刷新风暴加速风控。
 
 ### 为什么（根因链条）
 Google 对同一个 refresh_token 的高频 token 换新有风控。0.1.53~0.1.57 曾在每次对话前主动刷新 + 401 后"自愈重试"再刷 + 401 降级短冷却回来再刷——三次叠加让一个 token 几分钟内被换新十几次，Google 直接吊销。表现就是「反复需要重新登录」和后续的 503。

@@ -6,18 +6,18 @@ import dev.aigw.core.util.long
 import dev.aigw.core.util.objOrNull
 import dev.aigw.core.util.str
 
-/** 上游返回的业务错误分类，决定账号是长冷却、短冷却还是直接禁用。 */
+/** 上游返回的业务错误分类，决定重试策略、换号/切换供应商与硬禁用。 */
 enum class TraeErrorKind {
     /** 1005 / 4008：权益或额度不足，等待重置或签到。 */
     PLAN_LIMIT,
 
-    /** 4011 / 429：触发限流，短冷却。 */
+    /** 4011 / 429：触发限流，可退避重试。 */
     SOFT_RATE,
 
     /** 1001 / HTTP 401：凭证失效，必须重新登录。 */
     SESSION_DEAD,
 
-    /** HTTP 404：上游路由不存在，短冷却且不累计错误次数。 */
+    /** HTTP 404：上游路由不存在，可重试且不累计错误次数。 */
     NOT_FOUND,
 
     /** 参数或模型不合法（如 4001），通常是客户端问题。 */

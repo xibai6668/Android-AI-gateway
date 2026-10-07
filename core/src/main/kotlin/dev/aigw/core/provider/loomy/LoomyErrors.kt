@@ -4,7 +4,7 @@ import com.google.gson.JsonParser
 import dev.aigw.core.util.objOrNull
 import dev.aigw.core.util.str
 
-/** 上游错误分类，决定账号是长冷却、短冷却还是直接禁用。 */
+/** 上游错误分类，决定重试策略、换号/切换供应商与硬禁用。 */
 enum class LoomyErrorKind {
     /** token / session 失效，必须重新登录。 */
     SESSION_DEAD,
@@ -12,7 +12,7 @@ enum class LoomyErrorKind {
     /** 积分或当日额度耗尽，等待重置。 */
     QUOTA,
 
-    /** 429：限流，短冷却。 */
+    /** 429：限流，可退避重试。 */
     SOFT_RATE,
 
     /** HTTP 404：路由不存在。 */
