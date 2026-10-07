@@ -7,21 +7,30 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -31,6 +40,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.aigw.app.ui.ChoiceChip
+import dev.aigw.app.ui.EmptyHint
 import dev.aigw.app.ui.OutlineActionButton
 import dev.aigw.app.ui.SectionCard
 import dev.aigw.app.ui.SectionLabel
@@ -68,6 +78,8 @@ class CustomUi(override val id: String) : ProviderUi {
     @Composable
     private fun AddAccountSection(accounts: List<AccountStatus>, actions: ProviderUiActions) {
         var expanded by rememberSaveable { mutableStateOf(false) }
+        var fetchedModels by remember { mutableStateOf<List<String>?>(null) }
+        var models by rememberSaveable { mutableStateOf(actions.customModelsOf(id).joinToString("\n")) }
         SectionCard(modifier = Modifier.animateContentSize()) {
             if (!expanded) {
                 Button(
@@ -79,7 +91,6 @@ class CustomUi(override val id: String) : ProviderUi {
             SectionLabel("添加账号")
             var nickname by remember { mutableStateOf("") }
             var apiKey by remember { mutableStateOf("") }
-            var models by rememberSaveable { mutableStateOf(actions.customModelsOf(id).joinToString("\n")) }
             OutlinedTextField(
                 value = nickname,
                 onValueChange = { nickname = it },
@@ -94,7 +105,7 @@ class CustomUi(override val id: String) : ProviderUi {
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
-            ModelsSection(accounts, actions, apiKey.trim(), models) { models = it }
+            ModelsSection(accounts, actions, apiKey.trim(), models, onFetched = { fetchedModels = it }) { models = it }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -120,17 +131,31 @@ class CustomUi(override val id: String) : ProviderUi {
                 ) { Text("取消") }
             }
         }
+        fetchedModels?.let { fetched ->
+            ModelPickerSheet(
+                fetched = fetched,
+                currentModels = models,
+                onDismiss = { fetchedModels = null },
+                onConfirm = { selected ->
+                    models = selected.sorted().joinToString("\n")
+                    fetchedModels = null
+                    actions.onNotice("已选择 ${selected.size} 个模型")
+                },
+            )
+        }
     }
 
-    /** 模型管理：云端拉取 + 手动编辑。拉模型优先用填写的 key，否则用第一个已有账号的。 */
+    /** 模型管理：云端拉取 + 手动编辑。拉模型优先用填写的 key，否则用第一个已有账号的；成功后弹层勾选。 */
     @Composable
     private fun ModelsSection(
         accounts: List<AccountStatus>,
         actions: ProviderUiActions,
         apiKey: String,
         models: String,
+        onFetched: (List<String>) -> Unit,
         onModelsChange: (String) -> Unit,
     ) {
+        var loading by remember { mutableStateOf(false) }
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
@@ -138,7 +163,7 @@ class CustomUi(override val id: String) : ProviderUi {
             SectionLabel("模型")
             Spacer(Modifier.weight(1f))
             Row(
-                modifier = Modifier.clickable {
+                modifier = Modifier.clickable(enabled = !loading) {
                     val baseUrl = actions.customBaseUrlOf(id)
                     if (baseUrl.isEmpty()) {
                         actions.onNotice("先保存供应商的接口地址，再拉取模型")
@@ -151,12 +176,13 @@ class CustomUi(override val id: String) : ProviderUi {
                         actions.onNotice("先填写 API Key 再拉取模型")
                         return@clickable
                     }
+                    loading = true
                     actions.onFetchCustomModels(baseUrl, key) { fetched, error ->
+                        loading = false
                         if (error.isNotEmpty()) {
                             actions.onNotice(error)
                         } else {
-                            onModelsChange(fetched.joinToString("\n"))
-                            actions.onNotice("已拉取 ${fetched.size} 个模型")
+                            onFetched(fetched)
                         }
                     }
                 },
@@ -170,7 +196,7 @@ class CustomUi(override val id: String) : ProviderUi {
                     modifier = Modifier.size(20.dp),
                 )
                 Text(
-                    text = "拉取模型",
+                    text = if (loading) "拉取中..." else "拉取模型",
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                 )
@@ -183,6 +209,84 @@ class CustomUi(override val id: String) : ProviderUi {
             minLines = 3,
             modifier = Modifier.fillMaxWidth(),
         )
+    }
+
+    /** 拉取成功后的模型勾选弹层：搜索过滤、整行点选，保存时把选中项写回模型输入框。 */
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Composable
+    private fun ModelPickerSheet(
+        fetched: List<String>,
+        currentModels: String,
+        onDismiss: () -> Unit,
+        onConfirm: (List<String>) -> Unit,
+    ) {
+        val selected = remember(fetched) {
+            val initial = currentModels.lines().map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+            mutableStateMapOf<String, Boolean>().apply { initial.forEach { put(it, true) } }
+        }
+        var search by remember { mutableStateOf("") }
+        val selectedCount = selected.values.count { it }
+        val filtered = fetched.filter { it.contains(search, ignoreCase = true) }
+        ModalBottomSheet(onDismissRequest = onDismiss) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 24.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "选择模型",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        text = "已选 $selectedCount 个",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                OutlinedTextField(
+                    value = search,
+                    onValueChange = { search = it },
+                    label = { Text("搜索模型") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .heightIn(min = 240.dp),
+                ) {
+                    if (filtered.isEmpty()) {
+                        item { EmptyHint("没有匹配的模型", "换个关键词试试") }
+                    } else {
+                        items(filtered, key = { it }) { model ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { selected[model] = !(selected[model] ?: false) },
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(model, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                                Checkbox(
+                                    checked = selected[model] == true,
+                                    onCheckedChange = { checked -> selected[model] = checked },
+                                )
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                Button(
+                    onClick = { onConfirm(selected.filterValues { it }.keys.sorted()) },
+                    enabled = selectedCount > 0,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("保存所选 $selectedCount 个") }
+            }
+        }
     }
 
     /** 账号卡片：点击展开详情（名称编辑、启用开关、删除），展开收起带高度过渡。 */
