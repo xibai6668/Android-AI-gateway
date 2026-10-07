@@ -41,14 +41,19 @@ class GatewayHttpServer(
         val uri = session.uri.trimEnd('/').ifEmpty { "/" }
         val response = try {
             when {
-                session.method == NanoHTTPD.Method.OPTIONS -> preflight()
+                session.method == NanoHTTPD.Method.OPTIONS -> run { drainBody(session); preflight() }
                 session.method == NanoHTTPD.Method.POST && uri == "/v1/chat/completions" -> chatCompletions(session)
                 session.method == NanoHTTPD.Method.GET && uri == "/v1/models" -> models(session)
                 session.method == NanoHTTPD.Method.GET && (uri == "/v1/credits" || uri == "/credits" || uri == "/v1/v1/credits") -> credits(session)
                 session.method == NanoHTTPD.Method.GET && uri == "/healthz" ->
                     NanoHTTPD.newFixedLengthResponse(SimpleStatus(200, "OK"), "text/plain; charset=utf-8", "ok")
                 session.method == NanoHTTPD.Method.GET && uri == "/authorize" -> authorize(session)
-                else -> errorResponse(404, "not_found", "未知路径：$uri")
+                else -> run {
+                    // 错误响应前先消费掉请求体：残留字节会被 keep-alive 上的下一个请求当成请求行，
+                    // 客户端看到的就是 NanoHTTPD 的「BAD REQUEST: Missing URI. Usage: GET /example/file.html」
+                    drainBody(session)
+                    errorResponse(404, "not_found", "未知路径：$uri")
+                }
             }
         } catch (e: Exception) {
             engine.logError("处理 $uri 失败：${e.message}")
@@ -74,13 +79,13 @@ class GatewayHttpServer(
     // ------------------------------------------------------------------ 端点
 
     private fun models(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
-        if (!authorized(session)) return unauthorized()
+        if (!authorized(session)) return unauthorized(session)
         return json(200, OpenAiApi.modelList(engine.models()))
     }
 
     /** 聚合额度与配额查询端点：包含各供应商剩余额度及 Antigravity 的四个进度条指标。 */
     private fun credits(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
-        if (!authorized(session)) return unauthorized()
+        if (!authorized(session)) return unauthorized(session)
         val refresh = session.parms["refresh"] == "true"
         val providers = engine.registry.all().map { it.id }.distinct()
         val root = JsonObject()
@@ -159,12 +164,26 @@ class GatewayHttpServer(
     }
 
     private fun chatCompletions(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
-        if (!authorized(session)) return unauthorized()
+        if (!authorized(session)) return unauthorized(session)
 
-        val body = readBody(session)
-        if (body.isEmpty()) return errorResponse(400, "invalid_request", "请求体为空")
+        val (body, readResult) = readBody(session)
+        if (body.isEmpty()) {
+            logInvalidBody(session, body, "请求体为空")
+            return errorResponse(400, "invalid_request", "请求体为空")
+        }
         val peek = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
-            ?: return errorResponse(400, "invalid_request", "请求体不是合法 JSON")
+        if (peek == null) {
+            return when (readResult) {
+                BodyReadResult.OVER_LIMIT ->
+                    errorResponse(413, "payload_too_large", "请求体超过网关 ${MAX_BODY_BYTES / (1024 * 1024)}MB 上限")
+                BodyReadResult.INCOMPLETE ->
+                    errorResponse(400, "invalid_request", "连接中断，请求体未接收完整（已收 ${body.length} 字节）")
+                BodyReadResult.COMPLETE -> {
+                    logInvalidBody(session, body, "JSON 解析失败")
+                    errorResponse(400, "invalid_request", "请求体不是合法 JSON")
+                }
+            }
+        }
 
         val settings = engine.settings()
         val streaming = peek.get("stream")?.asBoolean ?: false
@@ -639,7 +658,8 @@ class GatewayHttpServer(
         )
     }
 
-    private fun unauthorized(): NanoHTTPD.Response {
+    private fun unauthorized(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
+        drainBody(session)
         val settings = engine.settings()
         val message = if (settings.apiKey.isEmpty()) {
             "网关已关闭「无 Key 调用」但尚未设置 API Key，请先在 App 里设置"
@@ -655,47 +675,86 @@ class GatewayHttpServer(
      * NanoHTTPD 自身不处理 `Transfer-Encoding: chunked` 的请求体，如果按「读到 EOF」去读会一直
      * 阻塞到连接关闭，所以这里自己解分块帧。
      */
-    private fun readBody(session: NanoHTTPD.IHTTPSession): String {
+    private fun readBody(session: NanoHTTPD.IHTTPSession): Pair<String, BodyReadResult> {
         val input: InputStream = session.inputStream
         val out = ByteArrayOutputStream()
         val transferEncoding = session.headers["transfer-encoding"].orEmpty()
         val declared = session.headers["content-length"]?.trim()?.toLongOrNull() ?: -1L
 
-        when {
+        val result = when {
             transferEncoding.contains("chunked", ignoreCase = true) -> readChunked(input, out)
             declared > 0 -> readExactly(input, out, declared)
-            else -> Unit
+            else -> BodyReadResult.COMPLETE
         }
-        return out.toString("UTF-8")
+        // Gson 不接受 UTF-8 BOM，客户端带上时合法 JSON 会被误判
+        return out.toString("UTF-8").removePrefix("\uFEFF") to result
     }
 
-    private fun readExactly(input: InputStream, out: ByteArrayOutputStream, length: Long) {
+    /** 把请求体读掉但不使用，避免 keep-alive 连接上的残留 body 污染下一个请求。 */
+    private fun drainBody(session: NanoHTTPD.IHTTPSession) {
+        val input: InputStream = session.inputStream
+        val sink = ByteArrayOutputStream()
+        val transferEncoding = session.headers["transfer-encoding"].orEmpty()
+        val declared = session.headers["content-length"]?.trim()?.toLongOrNull() ?: -1L
+        try {
+            when {
+                transferEncoding.contains("chunked", ignoreCase = true) -> readChunked(input, sink)
+                declared > 0 -> readExactly(input, sink, declared)
+            }
+        } catch (_: IOException) {}
+    }
+
+    private fun readExactly(input: InputStream, out: ByteArrayOutputStream, length: Long): BodyReadResult {
         val buffer = ByteArray(8192)
         var remaining = length
-        while (remaining > 0 && out.size() < MAX_BODY_BYTES) {
+        var discarded = false
+        while (remaining > 0) {
             val read = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
-            if (read < 0) return
-            out.write(buffer, 0, read)
+            if (read < 0) return if (discarded) BodyReadResult.OVER_LIMIT else BodyReadResult.INCOMPLETE
+            // 超限后继续读但丢弃，保证 Content-Length 范围内的字节被消费完，连接上不留残留
+            if (out.size() < MAX_BODY_BYTES) out.write(buffer, 0, read) else discarded = true
             remaining -= read
         }
+        return if (discarded) BodyReadResult.OVER_LIMIT else BodyReadResult.COMPLETE
     }
 
     /** 解 `大小\r\n数据\r\n` 直到 0 号结束块。 */
-    private fun readChunked(input: InputStream, out: ByteArrayOutputStream) {
+    private fun readChunked(input: InputStream, out: ByteArrayOutputStream): BodyReadResult {
         val buffer = ByteArray(8192)
-        while (out.size() < MAX_BODY_BYTES) {
-            val header = readAsciiLine(input) ?: return
+        var discarded = false
+        while (true) {
+            val header = readAsciiLine(input) ?: return BodyReadResult.INCOMPLETE
             // 允许 `1a;ext=1` 这种带扩展的块头
-            val size = header.substringBefore(';').trim().toIntOrNull(16) ?: return
-            if (size <= 0) return
+            val size = header.substringBefore(';').trim().toIntOrNull(16) ?: return BodyReadResult.INCOMPLETE
+            if (size <= 0) return if (discarded) BodyReadResult.OVER_LIMIT else BodyReadResult.COMPLETE
             var remaining = size
             while (remaining > 0) {
                 val read = input.read(buffer, 0, minOf(buffer.size, remaining))
-                if (read < 0) return
-                out.write(buffer, 0, read)
+                if (read < 0) return BodyReadResult.INCOMPLETE
+                if (out.size() < MAX_BODY_BYTES) out.write(buffer, 0, read) else discarded = true
                 remaining -= read
             }
             readAsciiLine(input)
+        }
+    }
+
+    private enum class BodyReadResult { COMPLETE, INCOMPLETE, OVER_LIMIT }
+
+    /** 非法请求体的诊断现场：记录关键 header 与前 256 字节，用于定位客户端到底发了什么。 */
+    private fun logInvalidBody(session: NanoHTTPD.IHTTPSession, body: String, reason: String) {
+        val headers = listOf("content-length", "transfer-encoding", "content-type", "content-encoding", "connection")
+            .mapNotNull { key -> session.headers[key]?.let { "$key=$it" } }
+            .joinToString(" ")
+        log("请求体异常（$reason）：$headers 已收 ${body.length} 字符，前 256 字节=${body.take(256).escapeControl()}")
+    }
+
+    private fun String.escapeControl(): String = buildString {
+        for (ch in this@escapeControl) {
+            when {
+                ch.code in 0x20..0x7e -> append(ch)
+                ch.code < 0x20 || ch.code == 0x7f -> append("\\x").append(ch.code.toString(16))
+                else -> append(ch)
+            }
         }
     }
 
@@ -771,7 +830,10 @@ class GatewayHttpServer(
         NanoHTTPD.newFixedLengthResponse(SimpleStatus(status, statusText(status)), "application/json; charset=utf-8", body)
 
     private fun errorResponse(status: Int, code: String, message: String): NanoHTTPD.Response =
-        json(status, OpenAiApi.errorBody(code, message))
+        json(status, OpenAiApi.errorBody(code, message)).apply {
+            // 错误响应一律关闭连接：请求体的消费状态未知时，残留字节会污染 keep-alive 连接
+            addHeader("Connection", "close")
+        }
 
     private fun statusText(status: Int): String = when (status) {
         200 -> "OK"
