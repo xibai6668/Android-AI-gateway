@@ -176,6 +176,39 @@ fun MeScreen(state: AppUiState, viewModel: AppViewModel, open: (SubPage) -> Unit
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+
+        EditorialRow(
+            "04.1",
+            "检查更新 · CHECK UPDATE",
+            "从 GitHub Releases 获取最新版本",
+            if (state.updateChecking) "检查中…" else "",
+        ) { if (!state.updateChecking) viewModel.checkUpdate() }
+
+        EditorialRow(
+            "04.2",
+            "项目地址 · GITHUB",
+            "在浏览器打开源码仓库",
+            "GitHub",
+        ) { viewModel.openProjectRepo() }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("自动检查更新", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "打开应用时后台检测，每天最多一次",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = state.autoCheckUpdate,
+                onCheckedChange = { viewModel.setAutoCheckUpdate(it) },
+            )
+        }
     }
 }
 

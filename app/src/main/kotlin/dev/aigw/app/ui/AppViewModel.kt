@@ -10,6 +10,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.gson.JsonObject
+import com.google.gson.JsonParser
 import dev.aigw.app.data.KeepAlive
 import dev.aigw.app.data.KeepAliveStatus
 import dev.aigw.app.gatewayEngine
@@ -49,9 +50,20 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.net.HttpURLConnection
+import java.net.URL
 
 /** 验证码重发间隔（秒）：上游有频率限制，连点只会被拒。 */
 private const val SMS_RESEND_INTERVAL_MS = 60_000L
+
+/** 项目仓库地址（GitHub）。 */
+private const val PROJECT_URL = "https://github.com/xibai6668/Android-AI-gateway"
+
+/** GitHub 最新 Release 接口。 */
+private const val RELEASES_API = "$PROJECT_URL/releases/latest"
+
+/** GitHub API 要求请求带 User-Agent。 */
+private const val UPDATE_UA = "ai-gateway-android"
 
 /** 外观偏好：是否跟随系统取色。 */
 class AppearanceStore(private val store: KeyValueStore) {
@@ -65,6 +77,31 @@ class AppearanceStore(private val store: KeyValueStore) {
         const val KEY = "settings/appearance.dynamicColor"
     }
 }
+
+/** 更新检查偏好与上次检查日期。 */
+class UpdateStore(private val store: KeyValueStore) {
+    /** 是否自动检查更新，默认开启。 */
+    fun autoCheck(): Boolean = store.read(KEY_AUTO) != "0"
+
+    fun setAutoCheck(enabled: Boolean) {
+        store.write(KEY_AUTO, if (enabled) "1" else "0")
+    }
+
+    /** 上次自动检查的日期（epoch day），从未检查过返回 Long.MIN_VALUE。 */
+    fun lastCheckEpochDay(): Long = store.read(KEY_LAST)?.toLongOrNull() ?: Long.MIN_VALUE
+
+    fun setLastCheckEpochDay(day: Long) {
+        store.write(KEY_LAST, day.toString())
+    }
+
+    private companion object {
+        const val KEY_AUTO = "settings/update.autoCheck"
+        const val KEY_LAST = "settings/update.lastCheckEpochDay"
+    }
+}
+
+/** 检查更新发现的新版本信息。 */
+data class UpdateInfo(val version: String, val url: String, val notes: String)
 
 sealed interface ModelTestStatus {
     data object Testing : ModelTestStatus
@@ -130,6 +167,12 @@ data class AppUiState(
     val sanitizerRulesCount: Int = 0,
     val busy: String = "",
     val notice: String = "",
+    /** 是否正在检查更新。 */
+    val updateChecking: Boolean = false,
+    /** 检查到的新版本；非空时界面弹更新窗。 */
+    val updateInfo: UpdateInfo? = null,
+    /** 是否自动检查更新（启动时每天最多一次）。 */
+    val autoCheckUpdate: Boolean = true,
 ) {
     /** 某个供应商的账号。 */
     fun accountsOf(providerId: String): List<AccountStatus> = accounts.filter { it.providerId == providerId }
@@ -168,8 +211,9 @@ class AppViewModel(
 ) : ViewModel() {
 
     private val appearance = AppearanceStore(engine.store())
+    private val updateStore = UpdateStore(engine.store())
 
-    private val _state = MutableStateFlow(AppUiState(dynamicColor = appearance.dynamicColor()))
+    private val _state = MutableStateFlow(AppUiState(dynamicColor = appearance.dynamicColor(), autoCheckUpdate = updateStore.autoCheck()))
     val state: StateFlow<AppUiState> = _state.asStateFlow()
 
     /** 短信验证码的 msgid，按供应商暂存（发送与登录是两次调用）。 */
@@ -208,6 +252,8 @@ class AppViewModel(
         refresh()
         // 启动时在后台静默预拉取一次模型，进入模型页直接秒开（不弹「正在拉取」提示）
         refreshModels(silent = true)
+        // 自动检查更新：默认开启，每天最多一次，失败静默
+        maybeAutoCheckUpdate()
     }
 
     private fun accountSignature(accounts: List<AccountStatus>): String =
@@ -934,6 +980,116 @@ class AppViewModel(
         engine.requestLog.clear()
         "请求日志已清空"
     }
+
+    // ------------------------------------------------------------------ 关于与更新
+
+    /** 手动检查更新：无论有无新版本都给出提示。 */
+    fun checkUpdate() = performUpdateCheck(manual = true)
+
+    /**
+     * 自动检查更新：默认开启，每天最多一次（当天检查过即跳过），失败静默。
+     * 启动进入主页时调用。
+     */
+    fun maybeAutoCheckUpdate() {
+        if (!_state.value.autoCheckUpdate) return
+        if (updateStore.lastCheckEpochDay() == currentEpochDay()) return
+        performUpdateCheck(manual = false)
+    }
+
+    fun setAutoCheckUpdate(enabled: Boolean) {
+        updateStore.setAutoCheck(enabled)
+        _state.value = _state.value.copy(autoCheckUpdate = enabled)
+    }
+
+    fun dismissUpdate() {
+        _state.value = _state.value.copy(updateInfo = null)
+    }
+
+    fun openProjectRepo() {
+        if (!openBrowser(PROJECT_URL)) {
+            _state.value = _state.value.copy(notice = "没有可用的浏览器，无法打开项目地址")
+        }
+    }
+
+    fun openReleasePage(url: String) {
+        if (!openBrowser(url)) {
+            _state.value = _state.value.copy(notice = "没有可用的浏览器，无法打开下载页")
+        }
+    }
+
+    /**
+     * 检查更新的统一实现。
+     *
+     * [manual] 为 true（用户点「检查更新」）时无论结果都给提示；false（自动检查）只在
+     * 发现新版本时弹窗，其余情况静默，避免打扰。
+     */
+    private fun performUpdateCheck(manual: Boolean) {
+        if (_state.value.updateChecking) return
+        _state.value = _state.value.copy(updateChecking = true)
+        viewModelScope.launch {
+            val outcome = withContext(Dispatchers.IO) { runCatching { fetchLatestRelease() } }
+            // 自动检查无论成败都记一次「今天已检查」，保证每天最多一次
+            if (!manual) updateStore.setLastCheckEpochDay(currentEpochDay())
+            outcome.fold(
+                onSuccess = { info ->
+                    if (isNewer(info.version, installedVersionName())) {
+                        _state.value = _state.value.copy(updateInfo = info)
+                    } else if (manual) {
+                        _state.value = _state.value.copy(notice = "已是最新版本（${installedVersionName()}）")
+                    }
+                },
+                onFailure = { e ->
+                    if (manual) {
+                        _state.value = _state.value.copy(notice = "检查更新失败：${e.message ?: "网络异常"}")
+                    }
+                },
+            )
+            _state.value = _state.value.copy(updateChecking = false)
+        }
+    }
+
+    /** 直连 GitHub 取最新 Release（不走代理，按用户选择）。 */
+    private fun fetchLatestRelease(): UpdateInfo {
+        val conn = (URL(RELEASES_API).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 10_000
+            readTimeout = 10_000
+            setRequestProperty("Accept", "application/vnd.github+json")
+            setRequestProperty("User-Agent", UPDATE_UA)
+        }
+        try {
+            val status = conn.responseCode
+            if (status == 404) throw IllegalStateException("暂无发布版本")
+            if (status !in 200..299) throw IllegalStateException("HTTP $status")
+            val body = conn.inputStream.bufferedReader().use { it.readText() }
+            val obj = JsonParser.parseString(body).asJsonObject
+            val version = obj.get("tag_name")?.asString?.trim().orEmpty().removePrefix("v")
+            if (version.isEmpty()) throw IllegalStateException("未找到版本信息")
+            val url = obj.get("html_url")?.asString.orEmpty().ifEmpty { "$PROJECT_URL/releases" }
+            val notes = obj.get("body")?.asString.orEmpty().trim()
+            return UpdateInfo(version = version, url = url, notes = notes)
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /** 逐段比较版本号，远端更大返回 true。 */
+    private fun isNewer(remote: String, local: String): Boolean {
+        val r = remote.split('.', '-').mapNotNull { it.toIntOrNull() }
+        val l = local.split('.', '-').mapNotNull { it.toIntOrNull() }
+        for (i in 0 until maxOf(r.size, l.size)) {
+            val a = r.getOrElse(i) { 0 }
+            val b = l.getOrElse(i) { 0 }
+            if (a != b) return a > b
+        }
+        return false
+    }
+
+    private fun installedVersionName(): String = runCatching {
+        app.packageManager.getPackageInfo(app.packageName, 0).versionName.orEmpty()
+    }.getOrDefault("")
+
+    private fun currentEpochDay(): Long = java.time.LocalDate.now().toEpochDay()
 
     // ------------------------------------------------------------------ 内部
 
