@@ -80,8 +80,8 @@ fun <T> AnimatedContentTransitionScope<T>.tabContentSpec(
  */
 @Composable
 fun Modifier.staggeredAppear(index: Int): Modifier {
-    var shown by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { shown = true }
+    var shown by remember(index) { mutableStateOf(false) }
+    LaunchedEffect(index) { shown = true }
     val progress by animateFloatAsState(
         targetValue = if (shown) 1f else 0f,
         animationSpec = tween(Motion.ENTER_MILLIS, delayMillis = (index * Motion.STAGGER_MILLIS).toInt(), easing = FastOutSlowInEasing),

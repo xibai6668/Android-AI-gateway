@@ -223,7 +223,11 @@ private fun EditorialRow(
 }
 
 private fun appVersion(context: android.content.Context): String = runCatching {
-    context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty()
+    val pkg = context.packageManager.getPackageInfo(context.packageName, 0)
+    val name = pkg.versionName.orEmpty()
+    @Suppress("DEPRECATION")
+    val code = pkg.versionCode
+    "${name.ifEmpty { "—" }}（build $code）"
 }.getOrDefault("—")
 
 /** 点「我的」标题弹出的作者信息：两行居中，点任意处关闭。 */

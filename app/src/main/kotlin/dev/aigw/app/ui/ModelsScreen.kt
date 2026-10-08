@@ -59,19 +59,24 @@ fun ModelsScreen(state: AppUiState, viewModel: AppViewModel) {
     // 按 routePrefix 分组：区域型供应商（如 WorkBuddy 国内与国外）各成一个分组
     val grouped = remember(state.models) { state.models.groupBy { it.routePrefix } }
 
-    // 刷新按钮旋转动效
-    val infiniteTransition = rememberInfiniteTransition(label = "refreshSpin")
-    val spinAngle by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(900, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart,
-        ),
-        label = "spinAngle",
-    )
+    // 刷新按钮旋转动效：仅在加载中才创建无限过渡，停止后不空转每帧插值
+    val spinAngle = if (state.modelsLoading) {
+        val transition = rememberInfiniteTransition(label = "refreshSpin")
+        val angle by transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 360f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(900, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart,
+            ),
+            label = "spinAngle",
+        )
+        angle
+    } else {
+        0f
+    }
     val iconRotation by animateFloatAsState(
-        targetValue = if (state.modelsLoading) spinAngle else 0f,
+        targetValue = spinAngle,
         label = "refreshIconRotation",
     )
 

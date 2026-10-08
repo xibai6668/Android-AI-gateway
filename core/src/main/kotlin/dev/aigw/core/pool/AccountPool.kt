@@ -188,7 +188,7 @@ class AccountPool(
         for (entry in group) {
             if (entry.account.uid in exclude) continue
             if (!entry.healthy()) continue
-            if (best == null || entry.credits > best!!.credits) best = entry
+            if (best == null || entry.credits > best.credits) best = entry
         }
         best?.account
     }

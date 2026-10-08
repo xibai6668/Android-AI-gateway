@@ -469,6 +469,8 @@ private fun BigNumber(value: String, suffix: String? = null, color: Color = Colo
             fontWeight = FontWeight.Light,
             color = if (color != Color.Unspecified) color else MaterialTheme.colorScheme.onSurface,
             maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis,
         )
         if (suffix != null) {
             Text(
@@ -667,4 +669,6 @@ private fun formatAxis(value: Long): String = when {
     else -> value.toString()
 }
 
-private fun dayLabel(millis: Long): String = SimpleDateFormat("M/d", Locale.US).format(Date(millis))
+private val DAY_LABEL_FORMAT = SimpleDateFormat("M/d", Locale.US)
+
+private fun dayLabel(millis: Long): String = DAY_LABEL_FORMAT.format(Date(millis))
