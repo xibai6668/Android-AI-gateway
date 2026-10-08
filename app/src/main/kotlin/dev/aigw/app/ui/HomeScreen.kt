@@ -105,9 +105,9 @@ fun HomeScreen(
             },
         )
 
-        TrendCard(state)
+        TelemetryGrid(state, Modifier.staggeredAppear(1))
 
-        TelemetryGrid(state)
+        TrendCard(state)
 
         SectionCard(modifier = Modifier.staggeredAppear(3)) {
             SectionHeader("快捷操作 · ACTIONS")
@@ -322,7 +322,7 @@ private fun AddressRow(label: String, value: String, onCopy: (() -> Unit)?) {
 @Composable
 private fun TrendCard(state: AppUiState) {
     val trend = state.daily.takeLast(TREND_DAYS)
-    SectionCard(modifier = Modifier.staggeredAppear(1)) {
+    SectionCard(modifier = Modifier.staggeredAppear(2)) {
         SectionHeader("消耗趋势 · TREND", action = if (trend.isEmpty()) null else "近 ${trend.size} 天")
         val drawable = trend.size >= 2 && trend.any { it.promptTokens > 0 || it.completionTokens > 0 }
         if (drawable) {
@@ -422,8 +422,8 @@ private fun DrawScope.drawSeries(xs: FloatArray, ys: FloatArray, baseline: Float
 
 /** 2×3 遥测指标网格。 */
 @Composable
-private fun TelemetryGrid(state: AppUiState) {
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+private fun TelemetryGrid(state: AppUiState, modifier: Modifier = Modifier) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             ProvidersTile(state, Modifier.weight(1f))
             ReadinessTile(state, Modifier.weight(1f))
