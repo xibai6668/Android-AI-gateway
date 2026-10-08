@@ -1,5 +1,6 @@
 package dev.aigw.app.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -8,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
@@ -17,6 +19,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.aigw.app.ui.providers.ProviderUiRegistry
@@ -58,13 +62,24 @@ fun ProviderListScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
+                    // 渐变背景图标框
                     Box(
-                        modifier = Modifier.size(44.dp),
+                        modifier = Modifier
+                            .size(48.dp)
+                            .clip(MaterialTheme.shapes.medium)
+                            .background(
+                                Brush.linearGradient(
+                                    listOf(
+                                        MaterialTheme.colorScheme.primaryContainer,
+                                        MaterialTheme.colorScheme.secondaryContainer,
+                                    ),
+                                ),
+                            ),
                         contentAlignment = Alignment.Center,
                     ) {
                         ui?.Icon(Modifier.size(28.dp))
                     }
-                    Column(Modifier.weight(1f)) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                         Text(
                             text = provider.displayName,
                             style = MaterialTheme.typography.titleMedium,
@@ -75,19 +90,47 @@ fun ProviderListScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        Text(
-                            text = "账号 ${provider.accountCount} · 可用 ${provider.usableCount}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        // 账号统计胶囊
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            AccountBadge(
+                                text = "账号 ${provider.accountCount}",
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                textColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            if (provider.usableCount > 0) {
+                                AccountBadge(
+                                    text = "可用 ${provider.usableCount}",
+                                    color = MaterialTheme.colorScheme.tertiaryContainer,
+                                    textColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                                )
+                            } else {
+                                AccountBadge(
+                                    text = "不可用",
+                                    color = MaterialTheme.colorScheme.errorContainer,
+                                    textColor = MaterialTheme.colorScheme.onErrorContainer,
+                                )
+                            }
+                        }
                     }
                     Icon(
                         Icons.AutoMirrored.Filled.KeyboardArrowRight,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.outline,
+                        tint = MaterialTheme.colorScheme.primary,
                     )
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun AccountBadge(text: String, color: androidx.compose.ui.graphics.Color, textColor: androidx.compose.ui.graphics.Color) {
+    Box(
+        modifier = Modifier
+            .clip(CircleShape)
+            .background(color)
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+    ) {
+        Text(text, style = MaterialTheme.typography.labelSmall, color = textColor)
     }
 }

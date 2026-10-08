@@ -18,10 +18,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.layout.height
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
@@ -36,10 +36,15 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import dev.aigw.app.ui.theme.GradientBrush
+import dev.aigw.app.ui.theme.HeroBrush
 import dev.aigw.core.pool.AccountStatus
 
 /** 账号状态文案：只有凭证失效与手动停用两种异常态，正常即「可用」。 */
@@ -62,7 +67,6 @@ fun PageHeader(
         modifier = Modifier
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.background)
-            // 只留状态栏高度 + 一点呼吸位：再大顶部会空出一大块（对齐参考稿的紧凑页头）
             .statusBarsPadding()
             .padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 12.dp),
     ) {
@@ -132,7 +136,7 @@ fun PageScaffold(
 }
 
 /**
- * 白底大圆角卡片，参考稿里所有内容区块都是这个形状。
+ * 白底大圆角卡片，带微量紫色氛围阴影。
  *
  * [enterIndex] 非空时卡片带错峰入场动效（第 n 张延迟 40ms·n），用于列表/表单页的首屏。
  */
@@ -145,6 +149,12 @@ fun SectionCard(
     Card(
         modifier = Modifier
             .fillMaxWidth()
+            .shadow(
+                elevation = 4.dp,
+                shape = MaterialTheme.shapes.large,
+                ambientColor = Color(0x127C3AED),
+                spotColor = Color(0x1A7C3AED),
+            )
             .then(if (enterIndex != null) Modifier.staggeredAppear(enterIndex) else Modifier)
             .then(modifier),
         shape = MaterialTheme.shapes.large,
@@ -153,6 +163,35 @@ fun SectionCard(
     ) {
         Column(
             modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            content = content,
+        )
+    }
+}
+
+/**
+ * 首页顶部渐变横幅大卡（Hero）：紫粉渐变背景，白色内容，整合服务状态、接入地址与操作按钮。
+ */
+@Composable
+fun HeroCard(
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(modifier)
+            .shadow(
+                elevation = 12.dp,
+                shape = MaterialTheme.shapes.extraLarge,
+                ambientColor = Color(0x507C3AED),
+                spotColor = Color(0x507C3AED),
+            )
+            .clip(MaterialTheme.shapes.extraLarge)
+            .background(HeroBrush),
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
             content = content,
         )
@@ -189,15 +228,52 @@ fun StatusChip(running: Boolean) {
     }
 }
 
+/** Hero 卡内专用的白色「运行中 / 已停止」状态胶囊。 */
 @Composable
-fun StatCell(value: String, label: String, modifier: Modifier = Modifier, highlight: Boolean = true) {
+fun HeroStatusChip(running: Boolean) {
+    val bgAlpha = if (running) 0.25f else 0.15f
+    Row(
+        modifier = Modifier
+            .clip(CircleShape)
+            .background(Color.White.copy(alpha = bgAlpha))
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Box(
+            Modifier.size(7.dp).clip(CircleShape)
+                .background(if (running) Color(0xFF6EE7B7) else Color.White.copy(0.6f)),
+        )
+        Text(
+            text = if (running) "运行中" else "已停止",
+            style = MaterialTheme.typography.labelMedium,
+            color = Color.White,
+        )
+    }
+}
+
+@Composable
+fun StatCell(
+    value: String,
+    label: String,
+    modifier: Modifier = Modifier,
+    highlight: Boolean = true,
+    indicatorColor: Color = Color.Unspecified,
+) {
     Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        if (indicatorColor != Color.Unspecified) {
+            Box(
+                Modifier
+                    .size(8.dp)
+                    .clip(CircleShape)
+                    .background(indicatorColor),
+            )
+        }
         Text(
             text = value,
             style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.SemiBold,
+            fontWeight = FontWeight.Bold,
             color = if (highlight) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-            // 数字过长时（如 "1234.5M"）宁可横向截断，也不让它换行挤走下面的标签
             maxLines = 1,
             softWrap = false,
         )
@@ -249,6 +325,32 @@ fun AddressTile(value: String, onCopy: () -> Unit) {
             .clickable(onClick = onCopy)
             .padding(horizontal = 14.dp, vertical = 12.dp),
     )
+}
+
+/** Hero 卡内专用的白色半透明地址行（点即复制）。 */
+@Composable
+fun HeroAddressTile(label: String, value: String, onCopy: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(MaterialTheme.shapes.medium)
+            .background(Color.White.copy(alpha = 0.18f))
+            .clickable(onClick = onCopy)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = Color.White.copy(alpha = 0.7f),
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            color = Color.White,
+            fontWeight = FontWeight.Medium,
+        )
+    }
 }
 
 /** 二级页面的返回按钮。 */
@@ -303,7 +405,14 @@ fun NavRow(
             modifier = Modifier
                 .size(44.dp)
                 .clip(MaterialTheme.shapes.medium)
-                .background(MaterialTheme.colorScheme.primaryContainer),
+                .background(
+                    Brush.linearGradient(
+                        listOf(
+                            MaterialTheme.colorScheme.primaryContainer,
+                            MaterialTheme.colorScheme.secondaryContainer,
+                        ),
+                    ),
+                ),
             contentAlignment = Alignment.Center,
         ) {
             Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
@@ -319,7 +428,7 @@ fun NavRow(
         Icon(
             Icons.AutoMirrored.Filled.KeyboardArrowRight,
             contentDescription = null,
-            tint = MaterialTheme.colorScheme.outline,
+            tint = MaterialTheme.colorScheme.primary,
         )
     }
 }
@@ -375,7 +484,6 @@ fun QuotaPackBar(pack: dev.aigw.core.provider.QuotaPack) {
             } else {
                 0f
             }
-            // 进度条从 0 生长到目标宽度，数值刷新时也平滑过渡
             val barFraction by animateFloatAsState(
                 targetValue = fraction,
                 animationSpec = tween(Motion.BAR_FILL_MILLIS, easing = FastOutSlowInEasing),
@@ -397,4 +505,3 @@ fun QuotaPackBar(pack: dev.aigw.core.provider.QuotaPack) {
         }
     }
 }
-

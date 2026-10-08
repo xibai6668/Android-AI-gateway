@@ -7,28 +7,30 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import dev.aigw.app.ui.theme.GradientBrush
+import dev.aigw.app.ui.theme.StatColors
 
 /** 首页：接入地址、服务启停与总览。 */
 @Composable
@@ -64,81 +66,160 @@ fun HomeScreen(
         subtitle = "本地 OpenAI 兼容网关",
         actions = { StatusChip(state.running) },
     ) {
-        SectionCard(modifier = Modifier.staggeredAppear(0)) {
-            Text(
-                text = "接入地址 · 端口 ${state.port} · 点即复制",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            AddressTile(state.localUrl.ifEmpty { "http://127.0.0.1:${state.port}/v1" }) {
+        // Hero 渐变横幅卡片：整合接入地址 + 服务启停
+        HeroCard(modifier = Modifier.staggeredAppear(0)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column {
+                    Text(
+                        text = "接入端点",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White.copy(alpha = 0.7f),
+                    )
+                    Text(
+                        text = "端口 ${state.port}  ·  点地址复制",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White.copy(alpha = 0.85f),
+                    )
+                }
+                HeroStatusChip(state.running)
+            }
+
+            HeroAddressTile(
+                label = "本机",
+                value = state.localUrl.ifEmpty { "http://127.0.0.1:${state.port}/v1" },
+            ) {
                 clipboard.setText(AnnotatedString(state.localUrl))
                 Toast.makeText(context, "已复制本机地址", Toast.LENGTH_SHORT).show()
             }
-            AddressTile(lanUrl ?: "未连接 Wi-Fi（局域网不可用）") {
+            HeroAddressTile(
+                label = "局域网",
+                value = lanUrl ?: "未连接 Wi-Fi（局域网不可用）",
+            ) {
                 if (lanUrl != null) {
                     clipboard.setText(AnnotatedString(lanUrl))
                     Toast.makeText(context, "已复制局域网地址", Toast.LENGTH_SHORT).show()
                 }
             }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 if (state.running) {
-                    // 停止是破坏性动作，红色提示
-                    Button(
-                        onClick = { viewModel.stopGateway() },
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.error,
-                            contentColor = MaterialTheme.colorScheme.onError,
-                        ),
+                    // 停止是破坏性动作：白色半透明描边按钮，配合渐变背景不显突兀
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(CircleShape)
+                            .border(1.dp, Color.White.copy(alpha = 0.6f), CircleShape)
+                            .clickable { viewModel.stopGateway() }
+                            .padding(vertical = 12.dp),
+                        contentAlignment = Alignment.Center,
                     ) {
-                        Text("停止服务")
+                        Text(
+                            "停止服务",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = Color.White,
+                            fontWeight = FontWeight.SemiBold,
+                        )
                     }
                 } else {
-                    Button(onClick = { startWithNotificationPermission() }, modifier = Modifier.weight(1f)) {
-                        Text("启动服务")
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.22f))
+                            .clickable { startWithNotificationPermission() }
+                            .padding(vertical = 12.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            "启动服务",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = Color.White,
+                            fontWeight = FontWeight.SemiBold,
+                        )
                     }
                 }
-                OutlinedButton(
-                    onClick = { viewModel.refreshAllCredits() },
-                    modifier = Modifier.weight(1f),
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(CircleShape)
+                        .background(Color.White.copy(alpha = 0.15f))
+                        .clickable { viewModel.refreshAllCredits() }
+                        .padding(vertical = 12.dp),
+                    contentAlignment = Alignment.Center,
                 ) {
-                    Text("刷新额度")
+                    Text(
+                        "刷新额度",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = Color.White.copy(alpha = 0.9f),
+                    )
                 }
             }
         }
 
+        // 总览数据区：六宫格 + 彩色小点指示器
         SectionCard(modifier = Modifier.staggeredAppear(1)) {
             SectionLabel("总览")
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                StatCell(state.usableProviders.toString(), "可用供应商")
-                StatCell(state.pool.total.toString(), "账号")
-                StatCell(state.pool.usable.toString(), "可用账号")
+                StatCell(state.usableProviders.toString(), "可用供应商", indicatorColor = StatColors[0])
+                StatCell(state.pool.total.toString(), "账号", indicatorColor = StatColors[1])
+                StatCell(state.pool.usable.toString(), "可用账号", indicatorColor = StatColors[2])
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                StatCell(state.today.requests.toString(), "今日请求")
-                StatCell(state.today.totalTokens.toString(), "今日 tokens")
+                StatCell(state.today.requests.toString(), "今日请求", indicatorColor = StatColors[3])
+                StatCell(state.today.totalTokens.toString(), "今日 tokens", indicatorColor = StatColors[4])
                 StatCell(
                     if (state.pool.creditsKnown > 0) state.pool.totalCredits.toString() else "—",
                     "已知额度合计",
+                    indicatorColor = StatColors[5],
                 )
             }
         }
 
+        // 快捷操作：渐变签到按钮 + 描边任务中心按钮
         SectionCard(modifier = Modifier.staggeredAppear(2)) {
             SectionLabel("快捷操作")
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Button(onClick = { viewModel.checkinAll() }, modifier = Modifier.weight(1f)) {
-                    Text("批量签到")
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(CircleShape)
+                        .background(GradientBrush)
+                        .clickable { viewModel.checkinAll() }
+                        .padding(vertical = 12.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "批量签到",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = Color.White,
+                        fontWeight = FontWeight.SemiBold,
+                    )
                 }
-                OutlinedButton(onClick = openTaskCenter, modifier = Modifier.weight(1f)) {
-                    Text("任务中心")
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(CircleShape)
+                        .border(1.5.dp, MaterialTheme.colorScheme.primary, CircleShape)
+                        .clickable { openTaskCenter() }
+                        .padding(vertical = 12.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "任务中心",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold,
+                    )
                 }
             }
             Text(
