@@ -59,8 +59,8 @@ private const val SMS_RESEND_INTERVAL_MS = 60_000L
 /** 项目仓库地址（GitHub）。 */
 private const val PROJECT_URL = "https://github.com/xibai6668/Android-AI-gateway"
 
-/** GitHub 最新 Release 接口。 */
-private const val RELEASES_API = "$PROJECT_URL/releases/latest"
+/** GitHub 最新 Release 接口（API 地址；网页地址 .../releases/latest 返回 HTML，不能当 JSON 解析）。 */
+private const val RELEASES_API = "https://api.github.com/repos/xibai6668/Android-AI-gateway/releases/latest"
 
 /** GitHub API 要求请求带 User-Agent。 */
 private const val UPDATE_UA = "ai-gateway-android"
@@ -787,12 +787,19 @@ class AppViewModel(
     /**
      * 对所有支持签到的账号批量签到。
      *
+     * 只签到 Trae 与 WorkBuddy 国内版（cn）：WorkBuddy 国际版（global）没有签到制度，
+     * 跳过可避免每次批量签到都报错。
+     *
      * 逐个执行并把每个账号的上游原话带回，避免用户只看到一句「N 个账号失败」而无法定位。
      */
     fun checkinAll() = action {
         val targets = engine.providers()
             .filter { ProviderCapability.CHECKIN in it.capabilities }
             .flatMap { info -> engine.accounts(info.id) }
+            .filter { account ->
+                account.providerId != CodeBuddyProvider.ID ||
+                    accountRegion(account.providerId, account.uid) != CodeBuddyProvider.REGION_GLOBAL
+            }
         if (targets.isEmpty()) throw IllegalStateException("还没有支持签到的账号")
 
         val results = targets.map { account ->
