@@ -15,18 +15,17 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -36,15 +35,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import dev.aigw.app.ui.theme.GradientBrush
-import dev.aigw.app.ui.theme.HeroBrush
+import androidx.compose.ui.unit.sp
+import dev.aigw.app.ui.theme.GoldAccent
+import dev.aigw.app.ui.theme.GoldText
 import dev.aigw.core.pool.AccountStatus
 
 /** 账号状态文案：只有凭证失效与手动停用两种异常态，正常即「可用」。 */
@@ -54,7 +52,7 @@ fun accountStatusText(account: AccountStatus): String = when {
     else -> "可用"
 }
 
-/** 页头：居中标题 + 副标题，右侧放状态胶囊与页内动作。 */
+/** 编辑式页头：左侧大标题 + 副标题 + 金色短下划线，右侧动作；[leading]（二级页返回）在标题行左侧。 */
 @Composable
 fun PageHeader(
     title: String,
@@ -68,21 +66,25 @@ fun PageHeader(
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.background)
             .statusBarsPadding()
-            .padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 12.dp),
+            .padding(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Box(Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.align(Alignment.Center).padding(horizontal = 76.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            leading?.invoke()
+            Column(Modifier.weight(1f)) {
                 Text(
                     text = title,
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.SemiBold,
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Light,
+                    letterSpacing = 0.5.sp,
                     color = MaterialTheme.colorScheme.onBackground,
                     maxLines = 1,
                     modifier = if (onTitleClick != null) {
-                        Modifier.clip(CircleShape).clickable(onClick = onTitleClick).padding(horizontal = 12.dp, vertical = 2.dp)
+                        Modifier.clip(CircleShape).clickable(onClick = onTitleClick).padding(vertical = 2.dp)
                     } else {
                         Modifier
                     },
@@ -90,24 +92,19 @@ fun PageHeader(
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.bodySmall,
+                    letterSpacing = 0.6.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                 )
             }
             Row(
-                modifier = Modifier.align(Alignment.CenterStart),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                leading?.invoke()
-            }
-            Row(
-                modifier = Modifier.align(Alignment.CenterEnd),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 actions()
             }
         }
+        Box(Modifier.size(width = 64.dp, height = 3.dp).background(GoldAccent))
     }
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 }
@@ -136,7 +133,7 @@ fun PageScaffold(
 }
 
 /**
- * 白底大圆角卡片，带微量紫色氛围阴影。
+ * 白底描边卡片：1px 细线 + 圆角，无阴影。
  *
  * [enterIndex] 非空时卡片带错峰入场动效（第 n 张延迟 40ms·n），用于列表/表单页的首屏。
  */
@@ -146,20 +143,14 @@ fun SectionCard(
     enterIndex: Int? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    Card(
+    Box(
         modifier = Modifier
             .fillMaxWidth()
-            .shadow(
-                elevation = 4.dp,
-                shape = MaterialTheme.shapes.large,
-                ambientColor = Color(0x127C3AED),
-                spotColor = Color(0x1A7C3AED),
-            )
             .then(if (enterIndex != null) Modifier.staggeredAppear(enterIndex) else Modifier)
+            .clip(MaterialTheme.shapes.large)
+            .background(MaterialTheme.colorScheme.surface)
+            .border(1.dp, MaterialTheme.colorScheme.outline, MaterialTheme.shapes.large)
             .then(modifier),
-        shape = MaterialTheme.shapes.large,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
     ) {
         Column(
             modifier = Modifier.padding(18.dp),
@@ -169,57 +160,39 @@ fun SectionCard(
     }
 }
 
-/**
- * 首页顶部渐变横幅大卡（Hero）：紫粉渐变背景，白色内容，整合服务状态、接入地址与操作按钮。
- */
-@Composable
-fun HeroCard(
-    modifier: Modifier = Modifier,
-    content: @Composable ColumnScope.() -> Unit,
-) {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .then(modifier)
-            .shadow(
-                elevation = 12.dp,
-                shape = MaterialTheme.shapes.extraLarge,
-                ambientColor = Color(0x507C3AED),
-                spotColor = Color(0x507C3AED),
-            )
-            .clip(MaterialTheme.shapes.extraLarge)
-            .background(HeroBrush),
-    ) {
-        Column(
-            modifier = Modifier.padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-            content = content,
-        )
-    }
-}
-
-/** 「运行中 / 已停止」状态胶囊。 */
+/** 「运行中 / 已停止」状态胶囊：白底描边 + 圆点（运行中金色带浅光环）。 */
 @Composable
 fun StatusChip(running: Boolean) {
-    val container by animateColorAsState(
-        targetValue = if (running) MaterialTheme.colorScheme.tertiaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-        animationSpec = tween(200),
-        label = "chipContainer",
-    )
     val content by animateColorAsState(
-        targetValue = if (running) MaterialTheme.colorScheme.onTertiaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+        targetValue = MaterialTheme.colorScheme.onSurface,
         animationSpec = tween(200),
         label = "chipContent",
     )
     Row(
         modifier = Modifier
             .clip(CircleShape)
-            .background(container)
+            .background(MaterialTheme.colorScheme.surface)
+            .border(1.dp, MaterialTheme.colorScheme.outline, CircleShape)
             .padding(horizontal = 12.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Box(Modifier.size(7.dp).clip(CircleShape).background(if (running) MaterialTheme.colorScheme.tertiary else content))
+        Box(contentAlignment = Alignment.Center) {
+            if (running) {
+                Box(
+                    Modifier
+                        .size(12.dp)
+                        .clip(CircleShape)
+                        .background(GoldAccent.copy(alpha = 0.18f)),
+                )
+            }
+            Box(
+                Modifier
+                    .size(6.dp)
+                    .clip(CircleShape)
+                    .background(if (running) GoldAccent else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)),
+            )
+        }
         Text(
             text = if (running) "运行中" else "已停止",
             style = MaterialTheme.typography.labelMedium,
@@ -228,30 +201,7 @@ fun StatusChip(running: Boolean) {
     }
 }
 
-/** Hero 卡内专用的白色「运行中 / 已停止」状态胶囊。 */
-@Composable
-fun HeroStatusChip(running: Boolean) {
-    val bgAlpha = if (running) 0.25f else 0.15f
-    Row(
-        modifier = Modifier
-            .clip(CircleShape)
-            .background(Color.White.copy(alpha = bgAlpha))
-            .padding(horizontal = 12.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        Box(
-            Modifier.size(7.dp).clip(CircleShape)
-                .background(if (running) Color(0xFF6EE7B7) else Color.White.copy(0.6f)),
-        )
-        Text(
-            text = if (running) "运行中" else "已停止",
-            style = MaterialTheme.typography.labelMedium,
-            color = Color.White,
-        )
-    }
-}
-
+/** 统计单元：小灰标签在上、大号细体数字在下；[indicatorColor] 作数字颜色。 */
 @Composable
 fun StatCell(
     value: String,
@@ -260,33 +210,26 @@ fun StatCell(
     highlight: Boolean = true,
     indicatorColor: Color = Color.Unspecified,
 ) {
-    Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
-        if (indicatorColor != Color.Unspecified) {
-            Box(
-                Modifier
-                    .size(8.dp)
-                    .clip(CircleShape)
-                    .background(indicatorColor),
-            )
-        }
+    Column(modifier = modifier, horizontalAlignment = Alignment.Start) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            letterSpacing = 0.8.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+        )
         Text(
             text = value,
             style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold,
-            color = if (highlight) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+            fontWeight = FontWeight.Light,
+            color = if (indicatorColor != Color.Unspecified) indicatorColor else MaterialTheme.colorScheme.onSurface,
             maxLines = 1,
             softWrap = false,
-        )
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
         )
     }
 }
 
-/** 分段/筛选胶囊。 */
+/** 分段/筛选胶囊。选中=黑底白字，未选中=白底细描边。 */
 @Composable
 fun ChoiceChip(
     text: String,
@@ -294,16 +237,17 @@ fun ChoiceChip(
     onClick: () -> Unit,
 ) {
     val container by animateColorAsState(
-        targetValue = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+        targetValue = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.surface,
         animationSpec = tween(200),
         label = "choiceContainer",
     )
-    val content = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+    val content = if (selected) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.onSurface
     Box(
         modifier = Modifier
             .pressScale()
             .clip(CircleShape)
             .background(container)
+            .border(1.dp, MaterialTheme.colorScheme.outline, CircleShape)
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 10.dp),
     ) {
@@ -317,40 +261,15 @@ fun AddressTile(value: String, onCopy: () -> Unit) {
     Text(
         text = value,
         style = MaterialTheme.typography.bodyMedium,
-        color = MaterialTheme.colorScheme.primary,
+        color = MaterialTheme.colorScheme.onSurface,
         modifier = Modifier
             .fillMaxWidth()
-            .clip(MaterialTheme.shapes.medium)
+            .clip(RoundedCornerShape(8.dp))
             .background(MaterialTheme.colorScheme.surfaceVariant)
+            .border(1.dp, MaterialTheme.colorScheme.surfaceContainerHighest, RoundedCornerShape(8.dp))
             .clickable(onClick = onCopy)
             .padding(horizontal = 14.dp, vertical = 12.dp),
     )
-}
-
-/** Hero 卡内专用的白色半透明地址行（点即复制）。 */
-@Composable
-fun HeroAddressTile(label: String, value: String, onCopy: () -> Unit) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(MaterialTheme.shapes.medium)
-            .background(Color.White.copy(alpha = 0.18f))
-            .clickable(onClick = onCopy)
-            .padding(horizontal = 14.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = Color.White.copy(alpha = 0.7f),
-        )
-        Text(
-            text = value,
-            style = MaterialTheme.typography.bodyMedium,
-            color = Color.White,
-            fontWeight = FontWeight.Medium,
-        )
-    }
 }
 
 /** 二级页面的返回按钮。 */
@@ -377,12 +296,12 @@ fun OutlineActionButton(
     Text(
         text = text,
         style = MaterialTheme.typography.labelLarge,
-        color = MaterialTheme.colorScheme.primary,
+        color = MaterialTheme.colorScheme.onSurface,
         textAlign = TextAlign.Center,
         modifier = modifier
             .fillMaxWidth()
-            .clip(CircleShape)
-            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape)
+            .clip(MaterialTheme.shapes.medium)
+            .border(1.dp, MaterialTheme.colorScheme.onSurface, MaterialTheme.shapes.medium)
             .clickable(onClick = onClick)
             .padding(vertical = 14.dp),
     )
@@ -404,18 +323,12 @@ fun NavRow(
         Box(
             modifier = Modifier
                 .size(44.dp)
-                .clip(MaterialTheme.shapes.medium)
-                .background(
-                    Brush.linearGradient(
-                        listOf(
-                            MaterialTheme.colorScheme.primaryContainer,
-                            MaterialTheme.colorScheme.secondaryContainer,
-                        ),
-                    ),
-                ),
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(12.dp)),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
+            Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(22.dp))
         }
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.titleMedium)
@@ -428,7 +341,7 @@ fun NavRow(
         Icon(
             Icons.AutoMirrored.Filled.KeyboardArrowRight,
             contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
+            tint = GoldAccent,
         )
     }
 }
@@ -436,28 +349,81 @@ fun NavRow(
 @Composable
 fun EmptyHint(title: String, message: String) {
     Column(Modifier.fillMaxWidth().padding(vertical = 28.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(title, style = MaterialTheme.typography.titleMedium)
+        Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
         Text(message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
+/** 小灰大写小节标签（中文 · ENGLISH）。 */
 @Composable
 fun SectionLabel(text: String) {
     Text(
         text = text,
-        style = MaterialTheme.typography.titleSmall,
+        style = MaterialTheme.typography.labelMedium,
+        fontWeight = FontWeight.SemiBold,
+        letterSpacing = 1.2.sp,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(start = 4.dp, top = 4.dp),
+        modifier = Modifier.padding(start = 2.dp, top = 2.dp),
     )
 }
 
+/** 小节头：左小灰大写标题 + 右侧可选金色小链接。 */
+@Composable
+fun SectionHeader(title: String, action: String? = null, onAction: (() -> Unit)? = null) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 1.2.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        if (action != null) {
+            Text(
+                text = action,
+                style = MaterialTheme.typography.labelMedium,
+                color = GoldText,
+                modifier = if (onAction != null) Modifier.clickable(onClick = onAction) else Modifier,
+            )
+        }
+    }
+}
+
+/** 编辑式分组头：金色小竖条 + 「index / 标题」小灰大写 + 右侧可选元信息。 */
+@Composable
+fun EditorialGroupHeader(index: String, title: String, meta: String? = null) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Box(Modifier.size(width = 4.dp, height = 15.dp).background(GoldAccent))
+        Text(
+            text = "$index / $title",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 1.2.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        if (meta != null) {
+            Text(meta, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
 /**
- * 额度包进度条：一行「名称 + 剩余/上限」，下方细进度条。
+ * 额度包进度条：一行「名称（分组）+ 过期时间」，下方细进度条 + 右侧百分比。
  * 用权重绘制而不是 LinearProgressIndicator，保证在所有背景下颜色可控。
  */
 @Composable
 fun QuotaPackBar(pack: dev.aigw.core.provider.QuotaPack) {
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(Modifier.fillMaxWidth()) {
             Text(
                 text = if (pack.group.isEmpty()) pack.name else "${pack.name}（${pack.group}）",
@@ -465,42 +431,58 @@ fun QuotaPackBar(pack: dev.aigw.core.provider.QuotaPack) {
                 modifier = Modifier.weight(1f),
             )
             Text(
-                text = "${pack.remain}/${pack.limit}"
-                    + if (pack.expireAt > 0) " · " + java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT, java.text.DateFormat.SHORT)
-                        .format(java.util.Date(pack.expireAt * 1000)) else "",
+                text = if (pack.expireAt > 0) java.text.DateFormat.getDateTimeInstance(
+                    java.text.DateFormat.SHORT,
+                    java.text.DateFormat.SHORT,
+                ).format(java.util.Date(pack.expireAt * 1000)) else "",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(4.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.surfaceVariant),
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             val fraction = if (pack.limit > 0) {
                 (pack.remain.toFloat() / pack.limit).coerceIn(0f, 1f)
             } else {
                 0f
             }
-            val barFraction by animateFloatAsState(
-                targetValue = fraction,
-                animationSpec = tween(Motion.BAR_FILL_MILLIS, easing = FastOutSlowInEasing),
-                label = "quotaBar",
-            )
             Box(
                 Modifier
-                    .fillMaxWidth(barFraction)
-                    .height(4.dp)
+                    .weight(1f)
+                    .height(6.dp)
                     .clip(CircleShape)
-                    .background(
-                        when {
-                            fraction > 0.5f -> MaterialTheme.colorScheme.primary
-                            fraction > 0.2f -> MaterialTheme.colorScheme.tertiary
-                            else -> MaterialTheme.colorScheme.error
-                        },
-                    ),
+                    .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+            ) {
+                val barFraction by animateFloatAsState(
+                    targetValue = fraction,
+                    animationSpec = tween(Motion.BAR_FILL_MILLIS, easing = FastOutSlowInEasing),
+                    label = "quotaBar",
+                )
+                Box(
+                    Modifier
+                        .fillMaxWidth(barFraction)
+                        .height(6.dp)
+                        .clip(CircleShape)
+                        .background(
+                            when {
+                                fraction > 0.5f -> MaterialTheme.colorScheme.onSurface
+                                fraction > 0.2f -> GoldAccent
+                                else -> MaterialTheme.colorScheme.error
+                            },
+                        ),
+                )
+            }
+            Text(
+                text = if (pack.limit > 0) {
+                    "${(fraction * 100).toInt()}% (${pack.remain}/${pack.limit})"
+                } else {
+                    "—"
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }

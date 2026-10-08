@@ -16,36 +16,33 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 
-// 方案B：渐变柔和现代风——紫粉渐变主色 + 极淡薰衣草背景 + 翡翠绿状态色
-private val Purple = Color(0xFF7C3AED)
-private val PurpleContainer = Color(0xFFEDE9FE)
-private val Pink = Color(0xFFEC4899)
-private val Violet = Color(0xFFA855F7)
-private val Green = Color(0xFF10B981)
-private val GreenContainer = Color(0xFFD1FAE5)
+// 黑金极简设计规范 Token
+val GoldAccent = Color(0xFFD4A843)
+val GoldText = Color(0xFFB88A20)
+val HairlineBorder = Color(0xFFEAEAEA)
 
 private val LightScheme = lightColorScheme(
-    primary = Purple,
+    primary = GoldAccent,
     onPrimary = Color.White,
-    primaryContainer = PurpleContainer,
-    onPrimaryContainer = Color(0xFF3B0764),
-    secondary = Violet,
+    primaryContainer = Color(0xFFFBF6EA),
+    onPrimaryContainer = Color(0xFF6B4E0E),
+    secondary = GoldText,
     onSecondary = Color.White,
-    secondaryContainer = Color(0xFFF3E8FF),
-    onSecondaryContainer = Color(0xFF581C87),
-    tertiary = Green,
+    secondaryContainer = Color(0xFFF5F5F7),
+    onSecondaryContainer = Color(0xFF0D0D0D),
+    tertiary = Color(0xFF10B981),
     onTertiary = Color.White,
-    tertiaryContainer = GreenContainer,
-    onTertiaryContainer = Color(0xFF064E3B),
-    background = Color(0xFFF6F0FE),
-    onBackground = Color(0xFF1A0B2E),
+    tertiaryContainer = Color(0xFFF0FDF4),
+    onTertiaryContainer = Color(0xFF166534),
+    background = Color(0xFFFCFCFD),
+    onBackground = Color(0xFF0D0D0D),
     surface = Color(0xFFFFFFFF),
-    onSurface = Color(0xFF1A0B2E),
-    surfaceVariant = Color(0xFFF3E8FF),
-    onSurfaceVariant = Color(0xFF6B21A8),
-    surfaceContainerHighest = Color(0xFFEDE9FE),
-    outline = Color(0xFFD8B4FE),
-    outlineVariant = Color(0xFFE9D5FF),
+    onSurface = Color(0xFF0D0D0D),
+    surfaceVariant = Color(0xFFF8F8FA),
+    onSurfaceVariant = Color(0xFF777777),
+    surfaceContainerHighest = Color(0xFFF0F0F2),
+    outline = HairlineBorder,
+    outlineVariant = Color(0xFFEDEDED),
     error = Color(0xFFBA1A1A),
     onError = Color.White,
     errorContainer = Color(0xFFFFDAD6),
@@ -53,35 +50,37 @@ private val LightScheme = lightColorScheme(
 )
 
 private val DarkScheme = darkColorScheme(
-    primary = Color(0xFFC4B5FD),
-    onPrimary = Color(0xFF3B0764),
-    primaryContainer = Color(0xFF5B21B6),
-    onPrimaryContainer = Color(0xFFEDE9FE),
-    secondary = Color(0xFFD8B4FE),
-    onSecondary = Color(0xFF581C87),
-    secondaryContainer = Color(0xFF6D28D9),
-    onSecondaryContainer = Color(0xFFF3E8FF),
-    tertiary = Color(0xFF6EE7B7),
-    onTertiary = Color(0xFF064E3B),
-    tertiaryContainer = Color(0xFF065F46),
+    primary = GoldAccent,
+    onPrimary = Color(0xFF141414),
+    primaryContainer = Color(0xFF2A2210),
+    onPrimaryContainer = Color(0xFFE5C158),
+    secondary = GoldText,
+    onSecondary = Color(0xFF141414),
+    secondaryContainer = Color(0xFF1E1E1E),
+    onSecondaryContainer = Color(0xFFF5F5F5),
+    tertiary = Color(0xFF10B981),
+    onTertiary = Color(0xFF141414),
+    tertiaryContainer = Color(0xFF064E3B),
     onTertiaryContainer = Color(0xFFD1FAE5),
-    background = Color(0xFF120D1F),
-    onBackground = Color(0xFFEDE9FE),
-    surface = Color(0xFF1E1530),
-    onSurface = Color(0xFFEDE9FE),
-    surfaceVariant = Color(0xFF3B2A58),
-    onSurfaceVariant = Color(0xFFD8B4FE),
-    outlineVariant = Color(0xFF3B2A58),
+    background = Color(0xFF0A0A0A),
+    onBackground = Color(0xFFF5F5F5),
+    surface = Color(0xFF141414),
+    onSurface = Color(0xFFF5F5F5),
+    surfaceVariant = Color(0xFF1E1E1E),
+    onSurfaceVariant = Color(0xFF999999),
+    surfaceContainerHighest = Color(0xFF262626),
+    outline = Color(0xFF2A2A2A),
+    outlineVariant = Color(0xFF2A2A2A),
     error = Color(0xFFFFB4AB),
     onError = Color(0xFF690005),
 )
 
 private val AppShapes = Shapes(
-    extraSmall = RoundedCornerShape(8.dp),
-    small = RoundedCornerShape(12.dp),
-    medium = RoundedCornerShape(18.dp),
-    large = RoundedCornerShape(28.dp),
-    extraLarge = RoundedCornerShape(32.dp),
+    extraSmall = RoundedCornerShape(6.dp),
+    small = RoundedCornerShape(8.dp),
+    medium = RoundedCornerShape(10.dp),
+    large = RoundedCornerShape(16.dp),
+    extraLarge = RoundedCornerShape(20.dp),
 )
 
 @Composable
@@ -91,8 +90,8 @@ fun AiGatewayTheme(
 ) {
     val context = LocalContext.current
     val dark = isSystemInDarkTheme()
-    // 必须 remember：dynamicXxxColorScheme() 每次调用都会重新计算整套配色
-    // （会读取系统资源），而主题在每次重组时都会被求值——不缓存就是持续的重复分配。
+    // 必须 remember：dynamicXxxColorScheme() 每次调用都会重新读取系统资源，
+    // 而主题在每次重组时都会被求值——不缓存就是持续的重复分配。
     val scheme = remember(dynamicColor, dark, context) {
         when {
             dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
@@ -104,21 +103,21 @@ fun AiGatewayTheme(
     MaterialTheme(colorScheme = scheme, shapes = AppShapes, content = content)
 }
 
-/** 首页 Hero 横幅卡片的紫粉渐变（左上→右下）。 */
-val HeroGradient: List<Color> = listOf(Color(0xFF7C3AED), Color(0xFFA855F7), Color(0xFFEC4899))
+/** Hero 黑金渐变（#1A1A1A → #080808）。 */
+val HeroGradient: List<Color> = listOf(Color(0xFF1A1A1A), Color(0xFF080808))
 
 /** 可直接用于 Modifier.background(brush) 的渐变画笔。 */
 val HeroBrush: Brush get() = Brush.linearGradient(HeroGradient)
 
-/** 按钮、激活态等小面积渐变画笔（同色系，方向从左到右）。 */
-val GradientBrush: Brush get() = Brush.horizontalGradient(HeroGradient)
+/** 按钮、激活态等金色渐变画笔（#D4A843 → #B88A20）。 */
+val GradientBrush: Brush get() = Brush.horizontalGradient(listOf(Color(0xFFD4A843), Color(0xFFB88A20)))
 
-/** 统计数据六色：可用供应商/账号/可用账号/今日请求/今日tokens/额度，与设计稿对齐。 */
+/** 统计数据六色，与黑金体系保持协调。 */
 val StatColors: List<Color> = listOf(
-    Color(0xFF8B5CF6), // 紫——可用供应商
+    Color(0xFFD4A843), // 金——可用供应商
     Color(0xFF3B82F6), // 蓝——账号
     Color(0xFF10B981), // 绿——可用账号
     Color(0xFFF59E0B), // 橙——今日请求
-    Color(0xFFEC4899), // 粉——今日 tokens
-    Color(0xFF6366F1), // 靛青——额度
+    Color(0xFF888888), // 灰——今日 tokens
+    Color(0xFFB88A20), // 深金——额度
 )

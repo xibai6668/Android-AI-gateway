@@ -60,9 +60,8 @@ class CallLogStore(
     /** 累计聚合：独立于调用记录持久化。记录有容量淘汰与过期清理，直接从记录里现算「累计」只会等于最近几条。 */
     private var totalAgg = UsageStats()
 
-    /** 今日聚合；[todayKey] 是当天 00:00 的时间戳，无数据时为 [Long.MIN_VALUE]。 */
-    private var todayAgg = UsageStats()
-    private var todayKey = Long.MIN_VALUE
+    /** 每日聚合，键为该日 00:00 的时间戳；仅保留最近 [RETENTION_DAYS] 天。 */
+    private val daily = mutableMapOf<Long, UsageStats>()
 
     init {
         load()
@@ -79,15 +78,10 @@ class CallLogStore(
         totalAgg = totalAgg + record
         store.write(TOTAL_KEY, totalAgg.toJson().toString())
         val day = startOfDay(record.startedAtMillis)
-        if (day > todayKey) {
-            for (key in store.keys(DAY_PREFIX)) store.delete(key)
-            todayAgg = UsageStats()
-            todayKey = day
-        }
-        if (day == todayKey) {
-            todayAgg = todayAgg + record
-            store.write(dayKeyOf(todayKey), todayAgg.toJson().toString())
-        }
+        val updated = (daily[day] ?: UsageStats()) + record
+        daily[day] = updated
+        store.write(dayKeyOf(day), updated.toJson().toString())
+        pruneDaily()
     }
 
     /** 最新在前。 */
@@ -102,9 +96,14 @@ class CallLogStore(
         if (removed != null) {
             totalAgg = totalAgg - removed
             store.write(TOTAL_KEY, totalAgg.toJson().toString())
-            if (startOfDay(removed.startedAtMillis) == todayKey) {
-                todayAgg = todayAgg - removed
-                store.write(dayKeyOf(todayKey), todayAgg.toJson().toString())
+            val day = startOfDay(removed.startedAtMillis)
+            val remaining = (daily[day] ?: UsageStats()) - removed
+            if (remaining.isZero()) {
+                daily.remove(day)
+                store.delete(dayKeyOf(day))
+            } else {
+                daily[day] = remaining
+                store.write(dayKeyOf(day), remaining.toJson().toString())
             }
         }
     }
@@ -117,8 +116,16 @@ class CallLogStore(
         records.clear()
         for (key in store.keys(USAGE_PREFIX)) store.delete(key)
         totalAgg = UsageStats()
-        todayAgg = UsageStats()
-        todayKey = Long.MIN_VALUE
+        daily.clear()
+    }
+
+    /** 删除早于保留窗口的日键；只清内存与存储的旧日聚合，不影响累计。 */
+    private fun pruneDaily() {
+        val cutoff = startOfDay(System.currentTimeMillis()) - (RETENTION_DAYS - 1) * 86_400_000L
+        for (day in daily.keys.filter { it < cutoff }) {
+            daily.remove(day)
+            store.delete(dayKeyOf(day))
+        }
     }
 
     /** 累计聚合：不受容量淘汰与过期清理影响，跨启动累加。 */
@@ -127,8 +134,20 @@ class CallLogStore(
 
     /** [nowMillis] 所在天的聚合；当天还没有记录时为全零。 */
     @Synchronized
-    fun todayStats(nowMillis: Long): UsageStats =
-        if (todayKey == startOfDay(nowMillis)) todayAgg else UsageStats()
+    fun todayStats(nowMillis: Long): UsageStats = daily[startOfDay(nowMillis)] ?: UsageStats()
+
+    /**
+     * 最近 [days] 天的每日聚合：下标 0 为最早一天、末尾为 [nowMillis] 所在天；
+     * 无记录的日期补零。
+     */
+    @Synchronized
+    fun dailyStats(nowMillis: Long, days: Int = 30): List<UsageStats> {
+        if (days <= 0) return emptyList()
+        val today = startOfDay(nowMillis)
+        return (days - 1 downTo 0).map { offset ->
+            daily[startOfDay(today - offset * 86_400_000L)] ?: UsageStats()
+        }
+    }
 
     /**
      * 删除 [cutoffMillis] 之前产生的记录，返回删除条数。
@@ -240,16 +259,16 @@ class CallLogStore(
         loaded.sortByDescending { it.startedAtMillis }
         records.addAll(loaded.take(capacity))
         totalAgg = store.read(TOTAL_KEY)?.let(::usageStatsFromJson) ?: aggregate(records)
-        val dayKey = store.keys(DAY_PREFIX).firstOrNull()
-        if (dayKey != null) {
-            todayKey = dayKey.removePrefix(DAY_PREFIX).toLongOrNull() ?: Long.MIN_VALUE
-            todayAgg = store.read(dayKey)?.let(::usageStatsFromJson) ?: UsageStats()
+        for (key in store.keys(DAY_PREFIX)) {
+            val day = key.removePrefix(DAY_PREFIX).toLongOrNull() ?: continue
+            daily[day] = store.read(key)?.let(::usageStatsFromJson) ?: UsageStats()
         }
-        if (todayKey == Long.MIN_VALUE) {
-            // 老版本升级：存储里还没有聚合键，按已载入的记录兜底（更早的已随记录淘汰，不可考）
-            val todayStart = startOfDay(System.currentTimeMillis())
-            todayAgg = aggregate(records.filter { it.startedAtMillis >= todayStart })
-            todayKey = todayStart
+        if (daily.isEmpty() && records.isNotEmpty()) {
+            // 老版本升级：存储里还没有日聚合键，按已载入的记录兜底（更早的已随记录淘汰，不可考）
+            for (record in records) {
+                val day = startOfDay(record.startedAtMillis)
+                daily[day] = (daily[day] ?: UsageStats()) + record
+            }
         }
     }
 
@@ -268,6 +287,9 @@ class CallLogStore(
         private const val USAGE_PREFIX = "usage/"
         private const val TOTAL_KEY = "usage/total"
         private const val DAY_PREFIX = "usage/day/"
+
+        /** 每日聚合保留天数（含今天）。 */
+        const val RETENTION_DAYS = 30
 
         /** 截断标记，让用户在记录详情里看得出这条已被截过。 */
         const val TRUNCATE_MARK = "\n…（内容已截断）"
@@ -324,6 +346,10 @@ private fun UsageStats.toJson(): JsonObject = JsonObject().apply {
     addProperty("success", success)
     addProperty("failed", failed)
 }
+
+private fun UsageStats.isZero(): Boolean =
+    requests == 0L && promptTokens == 0L && completionTokens == 0L &&
+        totalTokens == 0L && success == 0L && failed == 0L
 
 private fun usageStatsFromJson(raw: String): UsageStats {
     val obj = runCatching { JsonParser.parseString(raw).asJsonObject }.getOrNull() ?: return UsageStats()

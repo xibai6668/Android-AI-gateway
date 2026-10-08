@@ -92,6 +92,8 @@ data class AppUiState(
     val lanUrls: List<String> = emptyList(),
     val pool: PoolSummary = PoolSummary(0, 0, 0, 0, 0, 0),
     val today: UsageStats = UsageStats(),
+    /** 最近 30 天的每日聚合（下标 0 最早、末尾今天）。 */
+    val daily: List<UsageStats> = emptyList(),
     /** 全部记录汇总（今日 + 历史）。 */
     val total: UsageStats = UsageStats(),
     val providers: List<ProviderInfo> = emptyList(),
@@ -145,6 +147,7 @@ private class Snapshot(
     val lanUrls: List<String>,
     val pool: PoolSummary,
     val today: UsageStats,
+    val daily: List<UsageStats>,
     val total: UsageStats,
     val providers: List<ProviderInfo>,
     val accounts: List<AccountStatus>,
@@ -226,6 +229,7 @@ class AppViewModel(
                     lanUrls = engine.lanUrls(),
                     pool = engine.pool.summary(),
                     today = engine.callLogStore.todayStats(System.currentTimeMillis()),
+                    daily = engine.callLogStore.dailyStats(System.currentTimeMillis()),
                     total = engine.callLogStore.totalStats(),
                     providers = engine.providers(),
                     accounts = engine.accounts(),
@@ -247,6 +251,7 @@ class AppViewModel(
                 lanUrls = snapshot.lanUrls,
                 pool = snapshot.pool,
                 today = snapshot.today,
+                daily = snapshot.daily,
                 total = snapshot.total,
                 providers = snapshot.providers,
                 accounts = snapshot.accounts,

@@ -153,7 +153,7 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
         containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
-            NavigationBar(containerColor = Color(0xEEFFFFFF)) {
+            NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
                 Tab.entries.forEach { item ->
                     NavigationBarItem(
                         selected = subPage == null && tab == item,
@@ -165,11 +165,11 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
                         icon = { Icon(item.icon, contentDescription = item.label) },
                         label = { Text(item.label) },
                         colors = NavigationBarItemDefaults.colors(
-                            indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
-                            selectedIconColor = MaterialTheme.colorScheme.primary,
-                            selectedTextColor = MaterialTheme.colorScheme.primary,
-                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            indicatorColor = Color.Transparent,
+                            selectedIconColor = Color(0xFFD4A843),
+                            selectedTextColor = Color(0xFFD4A843),
+                            unselectedIconColor = Color(0xFF777777),
+                            unselectedTextColor = Color(0xFF777777),
                         ),
                     )
                 }
