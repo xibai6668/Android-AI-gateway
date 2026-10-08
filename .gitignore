@@ -9,3 +9,6 @@ captures/
 *.keystore
 *.jks
 keystore.properties
+
+# 只用于本地构建/诊断，不进仓库
+scripts/
