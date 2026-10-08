@@ -75,16 +75,31 @@ class UsageAggregationTest {
     }
 
     @Test
-    fun `跨天后今日归零且旧日聚合被清理`() {
+    fun `跨天后今日只算新一天且旧日聚合保留`() {
         val store = InMemoryKeyValueStore()
         val log = CallLogStore(store)
         val todayStart = startOfDay(System.currentTimeMillis())
         log.add(record("a", todayStart + 3_600_000))
         log.add(record("b", todayStart + day + 3_600_000))
 
-        assertEquals(1, store.keys("usage/day/").size, "只保留新一天的聚合键")
+        assertEquals(2, store.keys("usage/day/").size, "最近 30 天的日聚合都应保留")
         assertEquals(1L, log.todayStats(todayStart + day + 3_600_000).requests, "今日只算新一天的一条")
+        assertEquals(1L, log.todayStats(todayStart + 3_600_000).requests, "昨日聚合仍可查")
         assertEquals(2L, log.totalStats().requests, "累计含跨天前的记录")
+    }
+
+    @Test
+    fun `每日历史按时间升序且缺日补零`() {
+        val log = CallLogStore(InMemoryKeyValueStore())
+        val now = System.currentTimeMillis()
+        log.add(record("today", now))
+        log.add(record("old", now - 3 * day))
+
+        val daily = log.dailyStats(now, days = 5)
+        assertEquals(5, daily.size)
+        assertEquals(0L, daily[0].requests, "无记录的日期补零")
+        assertEquals(1L, daily[1].requests, "3 天前的记录落在下标 1")
+        assertEquals(1L, daily[4].requests, "末尾是今天")
     }
 
     @Test
