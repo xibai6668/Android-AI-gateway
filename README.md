@@ -34,7 +34,3 @@
    - **OpenAI 协议**：Base URL = `http://<手机IP>:8790/v1`，模型填 `antigravity/gemini-3.8-flash-high` 或直接 `gemini-3.8-flash`
    - **Google Gemini 协议**：Base URL = `http://<手机IP>:8790`，模型填 `models/gemini-3.8-flash`
    - API Key：开启「无 Key 调用」时随意填
-
----
-
-##觉得好可以点个star么😙
