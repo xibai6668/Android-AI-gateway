@@ -75,6 +75,7 @@ object CodeBuddyUi : ProviderUi {
         var global by rememberSaveable {
             mutableStateOf(actions.providerOptionOf(id, "region", CodeBuddyProvider.REGION_CN) == CodeBuddyProvider.REGION_GLOBAL)
         }
+        val region = if (global) CodeBuddyProvider.REGION_GLOBAL else CodeBuddyProvider.REGION_CN
         SectionCard(enterIndex = 0) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -105,27 +106,17 @@ object CodeBuddyUi : ProviderUi {
                     },
                 )
             }
+            SectionLabel(if (global) "登录 · 国际版 workbuddy.ai" else "登录 · 国内版 copilot.tencent.com")
+            Button(
+                onClick = { actions.onDeviceLogin(id, region) },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(if (global) "打开国际版登录页" else "打开国内版登录页")
+            }
+            OutlineActionButton("重新检查授权状态") { actions.onCheckDeviceAuth(id, region) }
         }
-        LoginSection(global, actions)
         if (accounts.isNotEmpty()) {
             AccountRegionSection(global, accounts, actions)
-        }
-    }
-
-    @Composable
-    private fun LoginSection(global: Boolean, actions: ProviderUiActions) {
-        val region = if (global) CodeBuddyProvider.REGION_GLOBAL else CodeBuddyProvider.REGION_CN
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            SectionCard(enterIndex = 1) {
-                SectionLabel(if (global) "登录 · 国际版 workbuddy.ai" else "登录 · 国内版 copilot.tencent.com")
-                Button(
-                    onClick = { actions.onDeviceLogin(id, region) },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(if (global) "打开国际版登录页" else "打开国内版登录页")
-                }
-                OutlineActionButton("重新检查授权状态") { actions.onCheckDeviceAuth(id, region) }
-            }
         }
     }
 
@@ -135,7 +126,7 @@ object CodeBuddyUi : ProviderUi {
         val scoped = remember(accounts, current) { accounts.filter { actions.regionOf(id, it.uid) == current } }
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             if (scoped.isEmpty()) {
-                SectionCard(enterIndex = 2) {
+                SectionCard(enterIndex = 1) {
                     SectionLabel("账号")
                     Text(
                         text = if (global) "还没有国际版账号，先登录" else "还没有国内版账号，先登录",
@@ -145,7 +136,7 @@ object CodeBuddyUi : ProviderUi {
                 }
                 return
             }
-            SectionCard(enterIndex = 2) {
+            SectionCard(enterIndex = 1) {
                 SectionLabel("账号 · ${scoped.size} 个")
                 for (account in scoped) {
                     AccountBlock(account, actions)
