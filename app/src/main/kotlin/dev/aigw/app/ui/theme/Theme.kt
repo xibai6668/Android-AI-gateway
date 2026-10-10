@@ -3,6 +3,7 @@ package dev.aigw.app.ui.theme
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
@@ -10,23 +11,25 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 
-// 黑金极简设计规范 Token
+// 黑金极简设计规范 Token（默认值；实际生效值见 Appearance.kt 的 LocalAppColors）
 val GoldAccent = Color(0xFFD4A843)
 val GoldText = Color(0xFFB88A20)
 val HairlineBorder = Color(0xFFEAEAEA)
 
-private val LightScheme = lightColorScheme(
-    primary = GoldAccent,
+/** 用 [app] 的两端金构造浅色 scheme；其余语义色固定。 */
+private fun lightScheme(app: AppColors): ColorScheme = lightColorScheme(
+    primary = app.goldStart,
     onPrimary = Color.White,
     primaryContainer = Color(0xFFFBF6EA),
     onPrimaryContainer = Color(0xFF6B4E0E),
-    secondary = GoldText,
+    secondary = app.goldText,
     onSecondary = Color.White,
     secondaryContainer = Color(0xFFF5F5F7),
     onSecondaryContainer = Color(0xFF0D0D0D),
@@ -49,12 +52,13 @@ private val LightScheme = lightColorScheme(
     onErrorContainer = Color(0xFF93000A),
 )
 
-private val DarkScheme = darkColorScheme(
-    primary = GoldAccent,
+/** 用 [app] 的两端金构造深色 scheme；其余语义色固定。 */
+private fun darkScheme(app: AppColors): ColorScheme = darkColorScheme(
+    primary = app.goldStart,
     onPrimary = Color(0xFF141414),
     primaryContainer = Color(0xFF2A2210),
     onPrimaryContainer = Color(0xFFE5C158),
-    secondary = GoldText,
+    secondary = app.goldText,
     onSecondary = Color(0xFF141414),
     secondaryContainer = Color(0xFF1E1E1E),
     onSecondaryContainer = Color(0xFFF5F5F5),
@@ -83,24 +87,42 @@ private val AppShapes = Shapes(
     extraLarge = RoundedCornerShape(20.dp),
 )
 
+/**
+ * 应用主题。
+ *
+ * @param themeMode 明暗模式（跟随系统 / 深色 / 浅色）。
+ * @param appColors 金色渐变两端；通过 [LocalAppColors] 下发给 UI。
+ * @param backgroundOverride 只替换页面底色，卡片/表面色不受影响。
+ * @param dynamicColor 动态取色（Android 12+）；开启时优先级最高，配色方案不再生效。
+ */
 @Composable
 fun AiGatewayTheme(
     dynamicColor: Boolean = false,
+    themeMode: ThemeMode = ThemeMode.System,
+    appColors: AppColors = defaultAppColors,
+    backgroundOverride: Color? = null,
     content: @Composable () -> Unit,
 ) {
     val context = LocalContext.current
-    val dark = isSystemInDarkTheme()
+    val dark = when (themeMode) {
+        ThemeMode.System -> isSystemInDarkTheme()
+        ThemeMode.Light -> false
+        ThemeMode.Dark -> true
+    }
     // 必须 remember：dynamicXxxColorScheme() 每次调用都会重新读取系统资源，
     // 而主题在每次重组时都会被求值——不缓存就是持续的重复分配。
-    val scheme = remember(dynamicColor, dark, context) {
-        when {
+    val scheme = remember(dynamicColor, dark, appColors, backgroundOverride, context) {
+        val base = when {
             dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
                 if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-            dark -> DarkScheme
-            else -> LightScheme
+            dark -> darkScheme(appColors)
+            else -> lightScheme(appColors)
         }
+        if (backgroundOverride != null) base.copy(background = backgroundOverride) else base
     }
-    MaterialTheme(colorScheme = scheme, shapes = AppShapes, content = content)
+    CompositionLocalProvider(LocalAppColors provides appColors) {
+        MaterialTheme(colorScheme = scheme, shapes = AppShapes, content = content)
+    }
 }
 
 /** Hero 黑金渐变（#1A1A1A → #080808）。 */
@@ -108,16 +130,3 @@ val HeroGradient: List<Color> = listOf(Color(0xFF1A1A1A), Color(0xFF080808))
 
 /** 可直接用于 Modifier.background(brush) 的渐变画笔。 */
 val HeroBrush: Brush get() = Brush.linearGradient(HeroGradient)
-
-/** 按钮、激活态等金色渐变画笔（#D4A843 → #B88A20）。 */
-val GradientBrush: Brush get() = Brush.horizontalGradient(listOf(Color(0xFFD4A843), Color(0xFFB88A20)))
-
-/** 统计数据六色，与黑金体系保持协调。 */
-val StatColors: List<Color> = listOf(
-    Color(0xFFD4A843), // 金——可用供应商
-    Color(0xFF3B82F6), // 蓝——账号
-    Color(0xFF10B981), // 绿——可用账号
-    Color(0xFFF59E0B), // 橙——今日请求
-    Color(0xFF888888), // 灰——今日 tokens
-    Color(0xFFB88A20), // 深金——额度
-)

@@ -32,7 +32,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.clip
-import dev.aigw.app.ui.theme.GoldAccent
+import dev.aigw.app.ui.theme.LocalAppColors
+import dev.aigw.app.ui.theme.formatHex
 import dev.aigw.core.usage.StorageAudit
 
 @Composable
@@ -79,20 +80,20 @@ fun MeScreen(state: AppUiState, viewModel: AppViewModel, open: (SubPage) -> Unit
         }
 
         EditorialGroupHeader("01", "外观风格 · APPEARANCE")
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text("动态取色", style = MaterialTheme.typography.titleSmall)
-                Text(
-                    "跟随系统壁纸生成配色（Android 12 及以上）",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Switch(checked = state.dynamicColor, onCheckedChange = { viewModel.setDynamicColor(it) })
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            EditorialSwitchRow(
+                index = "01.1",
+                title = "动态取色 · DYNAMIC COLOR",
+                subtitle = "跟随系统壁纸生成配色（Android 12 及以上）",
+                checked = state.dynamicColor,
+                onCheckedChange = { viewModel.setDynamicColor(it) },
+            )
+            EditorialRow(
+                "01.2",
+                "外观主题 · THEME",
+                "明暗模式、配色方案与金色文字",
+                appearanceMeta(state),
+            ) { open(SubPage.AppearanceTheme) }
         }
 
         EditorialGroupHeader("02", "核心功能偏好 · CORE FUNCTIONS")
@@ -249,10 +250,55 @@ private fun EditorialRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            Text(text = "→", style = MaterialTheme.typography.bodyMedium, color = GoldAccent)
+            Text(text = "→", style = MaterialTheme.typography.bodyMedium, color = LocalAppColors.current.goldStart)
         }
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
     }
+}
+
+/** 编辑式开关条目：编号 + 标题 + 副标题 + 右侧 Switch（与 [EditorialRow] 同一栅格）。 */
+@Composable
+private fun EditorialSwitchRow(
+    index: String,
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Column {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                text = index,
+                style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = checked, onCheckedChange = onCheckedChange)
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+    }
+}
+
+/** 外观主题条目的元信息：当前模式 + 是否自定义金色。 */
+private fun appearanceMeta(state: AppUiState): String {
+    val mode = when (state.themeMode) {
+        dev.aigw.app.ui.theme.ThemeMode.Light -> "浅色"
+        dev.aigw.app.ui.theme.ThemeMode.Dark -> "深色"
+        dev.aigw.app.ui.theme.ThemeMode.System -> "自动"
+    }
+    val customGold = formatHex(state.goldStart) != "#D4A843" || formatHex(state.goldEnd) != "#B88A20"
+    return mode + " · " + (if (customGold) formatHex(state.goldStart) else "默认金")
 }
 
 private fun appVersion(context: android.content.Context): String = runCatching {

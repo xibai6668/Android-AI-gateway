@@ -6,6 +6,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.service.quicksettings.TileService
+import androidx.compose.ui.graphics.Color
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -14,6 +15,10 @@ import com.google.gson.JsonParser
 import dev.aigw.app.data.KeepAlive
 import dev.aigw.app.data.KeepAliveStatus
 import dev.aigw.app.gatewayEngine
+import dev.aigw.app.ui.theme.ThemeMode
+import dev.aigw.app.ui.theme.defaultAppColors
+import dev.aigw.app.ui.theme.formatHex
+import dev.aigw.app.ui.theme.parseHexColor
 import dev.aigw.app.service.GatewayService
 import dev.aigw.app.service.GatewayTileService
 import dev.aigw.core.gateway.CustomProviderConfig
@@ -65,16 +70,67 @@ private const val RELEASES_API = "https://api.github.com/repos/xibai6668/Android
 /** GitHub API 要求请求带 User-Agent。 */
 private const val UPDATE_UA = "ai-gateway-android"
 
-/** 外观偏好：是否跟随系统取色。 */
+/** 外观偏好：动态取色、明暗模式、页面底色与金色渐变两端。 */
 class AppearanceStore(private val store: KeyValueStore) {
-    fun dynamicColor(): Boolean = store.read(KEY) == "1"
+    fun dynamicColor(): Boolean = store.read(KEY_DYNAMIC) == "1"
 
     fun setDynamicColor(enabled: Boolean) {
-        store.write(KEY, if (enabled) "1" else "0")
+        store.write(KEY_DYNAMIC, if (enabled) "1" else "0")
     }
 
-    private companion object {
-        const val KEY = "settings/appearance.dynamicColor"
+    fun themeMode(): ThemeMode = when (store.read(KEY_MODE)) {
+        "light" -> ThemeMode.Light
+        "dark" -> ThemeMode.Dark
+        else -> ThemeMode.System
+    }
+
+    fun setThemeMode(mode: ThemeMode) {
+        store.write(
+            KEY_MODE,
+            when (mode) {
+                ThemeMode.Light -> "light"
+                ThemeMode.Dark -> "dark"
+                ThemeMode.System -> "system"
+            },
+        )
+    }
+
+    /** 页面底色覆盖；null 或空串表示无覆盖（用默认底色）。 */
+    fun backgroundHex(): String? = store.read(KEY_BG)?.takeIf { it.isNotBlank() }
+
+    fun setBackgroundHex(hex: String?) {
+        if (hex.isNullOrBlank()) store.delete(KEY_BG) else store.write(KEY_BG, hex)
+    }
+
+    fun goldStartHex(): String = store.read(KEY_GOLD_START) ?: DEFAULT_GOLD_START
+
+    fun setGoldStartHex(hex: String) {
+        store.write(KEY_GOLD_START, hex)
+    }
+
+    fun goldEndHex(): String = store.read(KEY_GOLD_END) ?: DEFAULT_GOLD_END
+
+    fun setGoldEndHex(hex: String) {
+        store.write(KEY_GOLD_END, hex)
+    }
+
+    /** 清空全部自定义外观，恢复默认。 */
+    fun reset() {
+        store.delete(KEY_MODE)
+        store.delete(KEY_BG)
+        store.delete(KEY_GOLD_START)
+        store.delete(KEY_GOLD_END)
+    }
+
+    companion object {
+        const val DEFAULT_GOLD_START = "#D4A843"
+        const val DEFAULT_GOLD_END = "#B88A20"
+
+        private const val KEY_DYNAMIC = "settings/appearance.dynamicColor"
+        private const val KEY_MODE = "settings/appearance.themeMode"
+        private const val KEY_BG = "settings/appearance.backgroundHex"
+        private const val KEY_GOLD_START = "settings/appearance.goldStartHex"
+        private const val KEY_GOLD_END = "settings/appearance.goldEndHex"
     }
 }
 
@@ -156,6 +212,14 @@ data class AppUiState(
     /** 代理设置。 */
     val proxy: ProxySettings = ProxySettings(),
     val dynamicColor: Boolean = false,
+    /** 明暗模式。 */
+    val themeMode: ThemeMode = ThemeMode.System,
+    /** 页面底色覆盖；null 表示用默认底色。 */
+    val backgroundOverride: Color? = null,
+    /** 金色渐变起始色。 */
+    val goldStart: Color = defaultAppColors.goldStart,
+    /** 金色渐变结束色（也是金色文字色）。 */
+    val goldEnd: Color = defaultAppColors.goldEnd,
     val keepAlive: KeepAliveStatus? = null,
     /** 存储占用明细（含各类记录与设置）。 */
     val storage: StorageReport? = null,
@@ -213,7 +277,17 @@ class AppViewModel(
     private val appearance = AppearanceStore(engine.store())
     private val updateStore = UpdateStore(engine.store())
 
-    private val _state = MutableStateFlow(AppUiState(dynamicColor = appearance.dynamicColor(), autoCheckUpdate = updateStore.autoCheck()))
+    private val _state = MutableStateFlow(
+        AppUiState(
+            dynamicColor = appearance.dynamicColor(),
+            autoCheckUpdate = updateStore.autoCheck(),
+            themeMode = appearance.themeMode(),
+            // 存储里的非法 HEX 一律回落到默认值，不让坏数据把界面卡死
+            backgroundOverride = appearance.backgroundHex()?.let { parseHexColor(it) },
+            goldStart = parseHexColor(appearance.goldStartHex()) ?: defaultAppColors.goldStart,
+            goldEnd = parseHexColor(appearance.goldEndHex()) ?: defaultAppColors.goldEnd,
+        ),
+    )
     val state: StateFlow<AppUiState> = _state.asStateFlow()
 
     /** 短信验证码的 msgid，按供应商暂存（发送与登录是两次调用）。 */
@@ -499,6 +573,53 @@ class AppViewModel(
     fun setDynamicColor(enabled: Boolean) {
         appearance.setDynamicColor(enabled)
         _state.value = _state.value.copy(dynamicColor = enabled)
+    }
+
+    /** 切换明暗模式（立即生效并落盘）。 */
+    fun setThemeMode(mode: ThemeMode) {
+        appearance.setThemeMode(mode)
+        _state.value = _state.value.copy(themeMode = mode)
+    }
+
+    /** 设置页面底色；[hex] 为 null 表示清除覆盖（恢复默认底色）。 */
+    fun setBackgroundOverride(hex: String?) {
+        if (hex == null) {
+            appearance.setBackgroundHex(null)
+            _state.value = _state.value.copy(backgroundOverride = null)
+            return
+        }
+        val parsed = parseHexColor(hex)
+        if (parsed == null) {
+            notice("颜色代码需要是 #RRGGBB 格式")
+            return
+        }
+        appearance.setBackgroundHex(formatHex(parsed))
+        _state.value = _state.value.copy(backgroundOverride = parsed)
+    }
+
+    /** 设置金色渐变两端；任一非法则整组忽略并提示。 */
+    fun setGoldColors(startHex: String, endHex: String) {
+        val start = parseHexColor(startHex)
+        val end = parseHexColor(endHex)
+        if (start == null || end == null) {
+            notice("颜色代码需要是 #RRGGBB 格式")
+            return
+        }
+        appearance.setGoldStartHex(formatHex(start))
+        appearance.setGoldEndHex(formatHex(end))
+        _state.value = _state.value.copy(goldStart = start, goldEnd = end)
+    }
+
+    /** 恢复默认外观（明暗模式、页面底色、金色渐变）。 */
+    fun resetAppearance() {
+        appearance.reset()
+        _state.value = _state.value.copy(
+            themeMode = ThemeMode.System,
+            backgroundOverride = null,
+            goldStart = defaultAppColors.goldStart,
+            goldEnd = defaultAppColors.goldEnd,
+        )
+        notice("外观主题已恢复默认")
     }
 
     fun providerSettings(providerId: String): ProviderSettings = engine.providerSettings(providerId)

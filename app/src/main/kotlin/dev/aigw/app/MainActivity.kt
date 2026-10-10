@@ -57,6 +57,7 @@ import dev.aigw.app.ui.tabContentSpec
 import dev.aigw.app.ui.AppUiState
 import dev.aigw.app.ui.ApiSettingsScreen
 import dev.aigw.app.ui.AppViewModel
+import dev.aigw.app.ui.AppearanceThemeScreen
 import dev.aigw.app.ui.CustomProviderScreen
 import dev.aigw.app.ui.CreditCenterScreen
 import dev.aigw.app.ui.DataManagementScreen
@@ -75,6 +76,8 @@ import dev.aigw.app.ui.TaskCenterScreen
 import dev.aigw.app.ui.UsageScreen
 import dev.aigw.app.ui.providers.ProviderUiRegistry
 import dev.aigw.app.ui.theme.AiGatewayTheme
+import dev.aigw.app.ui.theme.AppColors
+import dev.aigw.app.ui.theme.LocalAppColors
 
 class MainActivity : ComponentActivity() {
 
@@ -95,7 +98,12 @@ class MainActivity : ComponentActivity() {
             val vm: AppViewModel = viewModel(factory = appViewModelFactory())
             viewModel = vm
             val state by vm.state.collectAsStateWithLifecycle()
-            AiGatewayTheme(dynamicColor = state.dynamicColor) {
+            AiGatewayTheme(
+                dynamicColor = state.dynamicColor,
+                themeMode = state.themeMode,
+                appColors = AppColors(state.goldStart, state.goldEnd),
+                backgroundOverride = state.backgroundOverride,
+            ) {
                 AppRoot(vm, state)
             }
         }
@@ -162,6 +170,7 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
         containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
+            val selectedGold = LocalAppColors.current.goldStart
             NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
                 Tab.entries.forEach { item ->
                     NavigationBarItem(
@@ -175,8 +184,8 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
                         label = { Text(item.label) },
                         colors = NavigationBarItemDefaults.colors(
                             indicatorColor = Color.Transparent,
-                            selectedIconColor = Color(0xFFD4A843),
-                            selectedTextColor = Color(0xFFD4A843),
+                            selectedIconColor = selectedGold,
+                            selectedTextColor = selectedGold,
                             unselectedIconColor = Color(0xFF777777),
                             unselectedTextColor = Color(0xFF777777),
                         ),
@@ -234,6 +243,7 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
                 SubPage.ApiSettings -> ApiSettingsScreen(state, viewModel) { subPage = null }
                 SubPage.SecurityProtection -> SecurityProtectionScreen(state, viewModel) { subPage = null }
                 SubPage.DataManagement -> DataManagementScreen(state, viewModel) { subPage = null }
+                SubPage.AppearanceTheme -> AppearanceThemeScreen(state, viewModel) { subPage = null }
                 null -> MainTabs(
                     viewModel = viewModel,
                     state = state,

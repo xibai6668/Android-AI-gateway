@@ -41,8 +41,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import dev.aigw.app.ui.theme.GoldAccent
-import dev.aigw.app.ui.theme.GoldText
+import dev.aigw.app.ui.theme.LocalAppColors
 import dev.aigw.core.pool.AccountStatus
 
 /** 账号状态文案：只有凭证失效与手动停用两种异常态，正常即「可用」。 */
@@ -61,6 +60,7 @@ fun PageHeader(
     actions: @Composable RowScope.() -> Unit = {},
     onTitleClick: (() -> Unit)? = null,
 ) {
+    val gold = LocalAppColors.current.goldStart
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -104,7 +104,7 @@ fun PageHeader(
                 actions()
             }
         }
-        Box(Modifier.size(width = 64.dp, height = 3.dp).background(GoldAccent))
+        Box(Modifier.size(width = 64.dp, height = 3.dp).background(gold))
     }
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 }
@@ -163,6 +163,7 @@ fun SectionCard(
 /** 「运行中 / 已停止」状态胶囊：白底描边 + 圆点（运行中金色带浅光环）。 */
 @Composable
 fun StatusChip(running: Boolean) {
+    val gold = LocalAppColors.current.goldStart
     val content by animateColorAsState(
         targetValue = MaterialTheme.colorScheme.onSurface,
         animationSpec = tween(200),
@@ -183,14 +184,14 @@ fun StatusChip(running: Boolean) {
                     Modifier
                         .size(12.dp)
                         .clip(CircleShape)
-                        .background(GoldAccent.copy(alpha = 0.18f)),
+                        .background(gold.copy(alpha = 0.18f)),
                 )
             }
             Box(
                 Modifier
                     .size(6.dp)
                     .clip(CircleShape)
-                    .background(if (running) GoldAccent else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)),
+                    .background(if (running) gold else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)),
             )
         }
         Text(
@@ -315,6 +316,7 @@ fun NavRow(
     subtitle: String,
     onClick: () -> Unit,
 ) {
+    val gold = LocalAppColors.current.goldStart
     Row(
         modifier = Modifier.fillMaxWidth().pressScale().clickable(onClick = onClick).padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -341,7 +343,7 @@ fun NavRow(
         Icon(
             Icons.AutoMirrored.Filled.KeyboardArrowRight,
             contentDescription = null,
-            tint = GoldAccent,
+            tint = gold,
         )
     }
 }
@@ -370,6 +372,7 @@ fun SectionLabel(text: String) {
 /** 小节头：左小灰大写标题 + 右侧可选金色小链接。 */
 @Composable
 fun SectionHeader(title: String, action: String? = null, onAction: (() -> Unit)? = null) {
+    val goldText = LocalAppColors.current.goldText
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
@@ -387,7 +390,7 @@ fun SectionHeader(title: String, action: String? = null, onAction: (() -> Unit)?
             Text(
                 text = action,
                 style = MaterialTheme.typography.labelMedium,
-                color = GoldText,
+                color = goldText,
                 modifier = if (onAction != null) Modifier.clickable(onClick = onAction) else Modifier,
             )
         }
@@ -397,12 +400,13 @@ fun SectionHeader(title: String, action: String? = null, onAction: (() -> Unit)?
 /** 编辑式分组头：金色小竖条 + 「index / 标题」小灰大写 + 右侧可选元信息。 */
 @Composable
 fun EditorialGroupHeader(index: String, title: String, meta: String? = null) {
+    val gold = LocalAppColors.current.goldStart
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Box(Modifier.size(width = 4.dp, height = 15.dp).background(GoldAccent))
+        Box(Modifier.size(width = 4.dp, height = 15.dp).background(gold))
         Text(
             text = "$index / $title",
             style = MaterialTheme.typography.labelMedium,
@@ -423,6 +427,7 @@ fun EditorialGroupHeader(index: String, title: String, meta: String? = null) {
  */
 @Composable
 fun QuotaPackBar(pack: dev.aigw.core.provider.QuotaPack) {
+    val gold = LocalAppColors.current.goldStart
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(Modifier.fillMaxWidth()) {
             Text(
@@ -469,7 +474,7 @@ fun QuotaPackBar(pack: dev.aigw.core.provider.QuotaPack) {
                         .background(
                             when {
                                 fraction > 0.5f -> MaterialTheme.colorScheme.onSurface
-                                fraction > 0.2f -> GoldAccent
+                                fraction > 0.2f -> gold
                                 else -> MaterialTheme.colorScheme.error
                             },
                         ),

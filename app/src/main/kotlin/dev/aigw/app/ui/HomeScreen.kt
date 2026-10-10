@@ -48,8 +48,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import dev.aigw.app.ui.theme.GoldAccent
-import dev.aigw.app.ui.theme.GoldText
+import dev.aigw.app.ui.theme.LocalAppColors
 import dev.aigw.core.usage.UsageStats
 import dev.aigw.core.util.startOfDay
 import java.text.SimpleDateFormat
@@ -69,6 +68,8 @@ fun HomeScreen(
 ) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
+    val gold = LocalAppColors.current.goldStart
+    val goldText = LocalAppColors.current.goldText
     val lanUrl = state.lanUrls.firstOrNull()
 
     // Android 13+ 通知权限被拒时前台服务照常跑，但常驻通知会被系统静默隐藏，
@@ -128,7 +129,7 @@ fun HomeScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        Box(Modifier.size(6.dp).clip(CircleShape).background(GoldAccent))
+                        Box(Modifier.size(6.dp).clip(CircleShape).background(gold))
                         Text(
                             "批量签到",
                             style = MaterialTheme.typography.labelLarge,
@@ -141,7 +142,7 @@ fun HomeScreen(
                     modifier = Modifier
                         .weight(1f)
                         .clip(MaterialTheme.shapes.medium)
-                        .border(1.dp, GoldAccent, MaterialTheme.shapes.medium)
+                        .border(1.dp, gold, MaterialTheme.shapes.medium)
                         .clickable { openTaskCenter() }
                         .padding(vertical = 12.dp),
                     contentAlignment = Alignment.Center,
@@ -149,7 +150,7 @@ fun HomeScreen(
                     Text(
                         "任务中心",
                         style = MaterialTheme.typography.labelLarge,
-                        color = GoldText,
+                        color = goldText,
                         fontWeight = FontWeight.SemiBold,
                     )
                 }
@@ -170,6 +171,7 @@ private fun ConsoleCard(
     onRefreshCredits: () -> Unit,
     onCopy: (String, String) -> Unit,
 ) {
+    val gold = LocalAppColors.current.goldStart
     SectionCard(modifier = Modifier.staggeredAppear(0)) {
         SectionHeader("网关状态 · CORE CONSOLE")
         Row(
@@ -227,7 +229,7 @@ private fun ConsoleCard(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    Box(Modifier.size(6.dp).clip(CircleShape).background(GoldAccent))
+                    Box(Modifier.size(6.dp).clip(CircleShape).background(gold))
                     Text(
                         text = if (state.running) "停止网关服务" else "启动网关服务",
                         style = MaterialTheme.typography.labelLarge,
@@ -322,6 +324,7 @@ private fun AddressRow(label: String, value: String, onCopy: (() -> Unit)?) {
 @Composable
 private fun TrendCard(state: AppUiState) {
     val trend = state.daily.takeLast(TREND_DAYS)
+    val gold = LocalAppColors.current.goldStart
     SectionCard(modifier = Modifier.staggeredAppear(2)) {
         SectionHeader("消耗趋势 · TREND", action = if (trend.isEmpty()) null else "近 ${trend.size} 天")
         val drawable = trend.size >= 2 && trend.any { it.promptTokens > 0 || it.completionTokens > 0 }
@@ -331,7 +334,7 @@ private fun TrendCard(state: AppUiState) {
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                LegendDot(GoldAccent, "输入")
+                LegendDot(gold, "输入")
                 LegendDot(Color(0xFF0D0D0D), "输出")
             }
         } else {
@@ -358,7 +361,7 @@ private fun LegendDot(color: Color, text: String) {
 
 @Composable
 private fun TrendChart(daily: List<UsageStats>, todayStart: Long) {
-    val gold = GoldAccent
+    val gold = LocalAppColors.current.goldStart
     val dark = Color(0xFF0D0D0D)
     val gridColor = MaterialTheme.colorScheme.surfaceContainerHighest
     val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
@@ -524,7 +527,7 @@ private fun ReadinessTile(state: AppUiState, modifier: Modifier) {
 /** 环形进度：金色弧 + 灰底环，中间百分比。 */
 @Composable
 private fun ReadinessRing(percent: Int, fraction: Float) {
-    val ringColor = GoldAccent
+    val ringColor = LocalAppColors.current.goldStart
     val trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
     Box(modifier = Modifier.size(44.dp), contentAlignment = Alignment.Center) {
         Canvas(Modifier.fillMaxWidth().height(44.dp)) {
@@ -603,10 +606,11 @@ private fun TodayTokensTile(state: AppUiState, modifier: Modifier) {
 @Composable
 private fun CreditsTile(state: AppUiState, modifier: Modifier) {
     val known = state.pool.creditsKnown > 0
+    val goldText = LocalAppColors.current.goldText
     Tile(modifier, "已知额度 · TOTAL CREDITS") {
         BigNumber(
             value = if (known) formatCount(state.pool.totalCredits) else "—",
-            color = if (known) GoldText else MaterialTheme.colorScheme.onSurfaceVariant,
+            color = if (known) goldText else MaterialTheme.colorScheme.onSurfaceVariant,
         )
         TileNote(if (known) "已同步 ${state.pool.creditsKnown} 个账号" else "尚未同步额度")
     }
