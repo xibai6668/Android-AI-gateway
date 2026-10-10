@@ -50,11 +50,11 @@ fun ProviderDetailScreen(
             // 网关会在本地临时监听回调端口接住登录结果。
             onWebLogin = { id -> viewModel.beginBrowserLogin(id) },
             onDeviceLogin = { id, region -> viewModel.beginDeviceLogin(id, region) },
-            onSmsLogin = { id, phone, code, onResult ->
+            onSmsLogin = { id, phone, code, ccode, onResult ->
                 if (code.isEmpty()) {
-                    viewModel.sendSmsCode(id, phone, onResult)
+                    viewModel.sendSmsCode(id, phone, ccode, onResult)
                 } else {
-                    viewModel.smsLogin(id, phone, code, onResult)
+                    viewModel.smsLogin(id, phone, code, ccode, onResult)
                 }
             },
             onImport = { id, raw -> viewModel.importCredentials(id, raw) },

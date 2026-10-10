@@ -59,6 +59,13 @@ object LoomyConstants {
     /** token 缺失或失效（积分/模型服务）。 */
     const val CODE_TOKEN_INVALID = "100002"
 
+    /**
+     * 默认国家码（中国大陆）。
+     *
+     * 讯飞按国家码路由短信通道：只发 `phone` 不带对的国家码，非大陆号码收不到验证码。
+     */
+    const val DEFAULT_CCODE = "86"
+
     /** 短信验证码有效期（秒），与官方客户端一致。 */
     const val SMS_CODE_EXPIRE_SECONDS = 300
 

@@ -99,7 +99,9 @@ class TraeCheckinClient(
         var preview = ""
         var lastError: Exception? = null
 
-        for (endpoint in ENT_ENDPOINTS) {
+        // 国际版（host 含 trae.ai）只有 v1 接口；国内版走 v2 三个候选
+        val candidates = if (host.contains("trae.ai")) ENT_ENDPOINTS_INTL else ENT_ENDPOINTS_CN
+        for (endpoint in candidates) {
             val raw = try {
                 post(account, endpoint.path, endpoint.body)
             } catch (e: Exception) {
@@ -137,10 +139,23 @@ class TraeCheckinClient(
 
         data class EntEndpoint(val path: String, val body: String)
 
-        val ENT_ENDPOINTS = listOf(
+        /** 国内版：v2 三个候选（web 版响应最全，放最前）。 */
+        val ENT_ENDPOINTS_CN = listOf(
             EntEndpoint(TraeConstants.EP_ENT_USAGE_WEB, """{"require_usage":true}"""),
             EntEndpoint(TraeConstants.EP_ENT_USAGE, "{}"),
             EntEndpoint(TraeConstants.EP_ENTITLEMENT_LIST, """{"require_usage":true}"""),
+        )
+
+        /**
+         * 国际版：只有 v1 两个接口，**没有 web 版**，也没有 v2 路径。
+         *
+         * 实测：`ug-normal.trae.ai/trae/api/v1/pay/user_current_entitlement_list` 对无效 JWT 返回
+         * 401 + `{"code":1001,...,"user_entitlement_pack_list":[]}`（端点真实）；
+         * 而 v2 路径在国际版是 404。
+         */
+        val ENT_ENDPOINTS_INTL = listOf(
+            EntEndpoint(TraeConstants.EP_ENTITLEMENT_INTL, """{"require_usage":true}"""),
+            EntEndpoint(TraeConstants.EP_ENT_USAGE_INTL, "{}"),
         )
     }
 }

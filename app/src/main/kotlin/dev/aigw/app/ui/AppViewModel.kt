@@ -824,7 +824,12 @@ class AppViewModel(
     }
 
     /** 发短信验证码（msgid 内部暂存）；[onResult] 回传错误信息（空串表示成功）。 */
-    fun sendSmsCode(providerId: String, phone: String, onResult: (String) -> Unit = {}) {
+    fun sendSmsCode(
+        providerId: String,
+        phone: String,
+        ccode: String = "86",
+        onResult: (String) -> Unit = {},
+    ) {
         val remain = smsResendRemaining(providerId)
         if (remain > 0) {
             val message = "请 $remain 秒后再获取验证码"
@@ -834,7 +839,9 @@ class AppViewModel(
         }
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = "正在发送验证码")
-            val result = withContext(Dispatchers.IO) { runCatching { engine.sendSmsCode(providerId, phone) } }
+            val result = withContext(Dispatchers.IO) {
+                runCatching { engine.sendSmsCode(providerId, phone, ccode.ifBlank { "86" }) }
+            }
             _state.value = _state.value.copy(busy = "")
             result.fold(
                 onSuccess = {
@@ -859,12 +866,18 @@ class AppViewModel(
         return remain.coerceAtLeast(0).toInt()
     }
 
-    fun smsLogin(providerId: String, phone: String, code: String, onResult: (String) -> Unit = {}) {
+    fun smsLogin(
+        providerId: String,
+        phone: String,
+        code: String,
+        ccode: String = "86",
+        onResult: (String) -> Unit = {},
+    ) {
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = "正在登录")
             val msgid = smsMsgIds[providerId].orEmpty()
             val outcome = withContext(Dispatchers.IO) {
-                engine.completeSmsLogin(providerId, phone, code, msgid)
+                engine.completeSmsLogin(providerId, phone, code, msgid, ccode.ifBlank { "86" })
             }
             _state.value = _state.value.copy(busy = "", notice = noticeOf(outcome))
             onResult(if (outcome.ok) "" else outcome.error)

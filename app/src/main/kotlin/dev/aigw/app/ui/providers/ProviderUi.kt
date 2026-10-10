@@ -24,9 +24,14 @@ class ProviderUiActions(
         { _, _, fallback -> fallback },
     /** 写供应商私有设置项（如 WorkBuddy 的 region 滑块）。 */
     val onUpdateProviderOption: (providerId: String, key: String, value: String) -> Unit = { _, _, _ -> },
-    /** 短信登录：code 为空表示「先发验证码」；[onResult] 回传错误信息（空串表示成功）。 */
-    val onSmsLogin: (providerId: String, phone: String, code: String, onResult: (String) -> Unit) -> Unit =
-        { _, _, _, _ -> },
+    /**
+     * 短信登录：code 为空表示「先发验证码」；[onResult] 回传错误信息（空串表示成功）。
+     *
+     * [ccode] 是国家码（不带 `+`）；上游按它路由短信通道，非大陆号码必须填对。
+     */
+    val onSmsLogin:
+        (providerId: String, phone: String, code: String, ccode: String, onResult: (String) -> Unit) -> Unit =
+        { _, _, _, _, _ -> },
     /** 粘贴凭证 JSON 导入。 */
     val onImport: (providerId: String, raw: String) -> Unit = { _, _ -> },
     /** 刷新额度；uid 为空表示刷新该供应商全部账号。 */

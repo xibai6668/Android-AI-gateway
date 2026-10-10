@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Sms
@@ -18,7 +19,9 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -54,6 +57,8 @@ object LoomyUi : ProviderUi {
 
     @Composable
     override fun LoginEntry(accounts: List<AccountStatus>, actions: ProviderUiActions) {
+        // 国家码：讯飞按它路由短信通道，写死 86 会让非大陆号码收不到验证码
+        var ccode by rememberSaveable { mutableStateOf("86") }
         var phone by remember { mutableStateOf("") }
         var code by remember { mutableStateOf("") }
         var countdown by remember { mutableStateOf(0) }
@@ -69,14 +74,31 @@ object LoomyUi : ProviderUi {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             SectionCard(enterIndex = 0) {
                 SectionLabel("登录")
-                OutlinedTextField(
-                    value = phone,
-                    onValueChange = { phone = it },
+                Row(
                     modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-                    label = { Text("手机号") },
-                )
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OutlinedTextField(
+                        value = ccode,
+                        onValueChange = { value ->
+                            // 国家码只留数字，最多 4 位（最长的是 +1 区外的三位码）
+                            ccode = value.filter(Char::isDigit).take(4)
+                        },
+                        modifier = Modifier.width(88.dp),
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        label = { Text("国家码") },
+                    )
+                    OutlinedTextField(
+                        value = phone,
+                        onValueChange = { phone = it.filter(Char::isDigit).take(15) },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                        label = { Text("手机号") },
+                    )
+                }
                 OutlinedTextField(
                     value = code,
                     onValueChange = { code = it },
@@ -90,7 +112,7 @@ object LoomyUi : ProviderUi {
                         onClick = {
                             // 先开倒计时，按钮立刻有反馈；发送失败再恢复可点
                             countdown = RESEND_SECONDS
-                            actions.onSmsLogin(id, phone.trim(), "") { error ->
+                            actions.onSmsLogin(id, phone.trim(), "", ccode.trim()) { error ->
                                 if (error.isNotEmpty()) countdown = 0
                             }
                         },
@@ -100,7 +122,7 @@ object LoomyUi : ProviderUi {
                         Text(if (countdown > 0) "${countdown} 秒后重发" else "发送验证码")
                     }
                     Button(
-                        onClick = { actions.onSmsLogin(id, phone.trim(), code.trim()) { } },
+                        onClick = { actions.onSmsLogin(id, phone.trim(), code.trim(), ccode.trim()) { } },
                         enabled = phone.isNotBlank() && code.isNotBlank(),
                         modifier = Modifier.weight(1f),
                     ) {

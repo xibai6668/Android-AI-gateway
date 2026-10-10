@@ -40,7 +40,21 @@ class SmartRoutingTest {
     @Test
     fun `WorkBuddy 区域前缀能正确识别区域约束并在模型列表拆为两组`() {
         val engine = GatewayEngine(InMemoryKeyValueStore())
-        // 自动注册的内置供应商包括 CodeBuddyProvider（已实现 RegionAwareSupport）
+        // 自动注册的内置供应商包括 CodeBuddyProvider（已实现 RegionAwareSupport）。
+        // 模型目录**只在有账号时才拉取**（无账号不列模型，避免把内置快照当可用模型），
+        // 所以这里两侧各放一个账号，才能验证前缀拆成国内/国际两组。
+        engine.pool.upsert(
+            ProviderAccount(
+                "codebuddy", "cn-user", "国内账号",
+                """{"domain":"www.codebuddy.cn","accessToken":"t","uid":"cn-user"}""",
+            ),
+        )
+        engine.pool.upsert(
+            ProviderAccount(
+                "codebuddy", "intl-user", "国际账号",
+                """{"domain":"www.codebuddy.ai","accessToken":"t","uid":"intl-user"}""",
+            ),
+        )
         // 路由解析支持 codebuddy-cn 与 codebuddy-global，且带出正确的 region 约束
         val routeCn = engine.resolveRoute("codebuddy-cn/deepseek-v3")
         assertEquals("codebuddy", routeCn?.providerId)

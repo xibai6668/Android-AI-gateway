@@ -22,7 +22,8 @@ sealed interface DeviceAuthPoll {
 }
 
 interface WebLoginSupport {
-    fun beginWebLogin(callbackUrl: String): WebLoginTicket
+    /** [region] 为供应商自定义的区域标识（如 Trae 的 trae.cn / trae.ai），无区域概念时可忽略。 */
+    fun beginWebLogin(callbackUrl: String, region: String = ""): WebLoginTicket
 
     /** 回调链接可能来自 WebView 拦截，也可能由用户粘贴。 */
     fun completeWebLogin(callbackUrl: String): ProviderAccount
@@ -36,10 +37,20 @@ interface DeviceCodeSupport {
 }
 
 interface SmsLoginSupport {
-    /** 发验证码，返回上游 msgid（登录时回传）。 */
-    fun sendSmsCode(phone: String): String
+    /**
+     * 发验证码，返回上游 msgid（登录时回传）。
+     *
+     * [ccode] 是国家码（不带 `+`，如中国大陆 `86`、香港 `852`）。
+     * 上游按国家码路由短信通道，写死 86 会让非大陆号码收不到验证码。
+     */
+    fun sendSmsCode(phone: String, ccode: String = DEFAULT_CCODE): String
 
-    fun loginBySmsCode(phone: String, code: String, msgid: String): ProviderAccount
+    fun loginBySmsCode(phone: String, code: String, msgid: String, ccode: String = DEFAULT_CCODE): ProviderAccount
+
+    companion object {
+        /** 默认国家码：中国大陆。 */
+        const val DEFAULT_CCODE = "86"
+    }
 }
 
 interface LoopbackOAuthSupport {

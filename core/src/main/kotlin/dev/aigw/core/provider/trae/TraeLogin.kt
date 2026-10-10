@@ -64,6 +64,7 @@ object TraeLogin {
         deviceId: String,
         callbackUrl: String,
         pluginVersion: String = TraeVersion().pluginVersion,
+        region: TraeRegion = TraeRegion.CN,
     ): String {
         // 与 Go 的 url.Values.Encode() 一致：键按字典序排列
         val base = linkedMapOf(
@@ -76,6 +77,11 @@ object TraeLogin {
             "redirect" to "0",
         ).toSortedMap().entries.joinToString("&") { (k, v) -> "$k=" + enc(v) }
 
+        // 国际版前端用 x_app_type=trae（国内版是 stable）；实测两版对同参数都能渲染，
+        // 但按各自发行版的口径填更稳。
+        val appType = if (region == TraeRegion.INTL) "trae" else "stable"
+        val osVersion = if (region == TraeRegion.INTL) "Windows 11 Pro" else "1.0"
+
         val tail = listOf(
             "login_trace_id" to machineTraceId(machineId, deviceId),
             "auth_callback_url" to callbackUrl,
@@ -85,12 +91,12 @@ object TraeLogin {
             "x_machine_id" to machineId,
             "x_device_brand" to "PC",
             "x_device_type" to "PC",
-            "x_os_version" to "1.0",
+            "x_os_version" to osVersion,
             "x_app_version" to pluginVersion,
-            "x_app_type" to "stable",
+            "x_app_type" to appType,
         ).joinToString("&") { (k, v) -> "$k=" + enc(v) }
 
-        return TraeConstants.CONSOLE_HOST + "/authorization?" + base + "&" + tail
+        return region.consoleHost + "/authorization?" + base + "&" + tail
     }
 
     /**

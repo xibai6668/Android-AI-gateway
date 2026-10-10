@@ -123,10 +123,13 @@ object ModelRates {
         put("seed-2.1-turbo", SEED_TURBO)
         put("doubao-seed-2.1-turbo", SEED_TURBO)
 
-        // 官方折扣文档写作 Seed-2.1-Code，模型清单里叫 Seed-Code / Doubao-Seed-Code，视作同一模型
+        // 官方折扣文档写作 Seed-2.1-Code，模型清单里出现过三种写法：
+        // Seed-Code / Doubao-Seed-Code / Doubao-Seed-2.0-Code，视作同一模型。
         put("seed-code", SEED_CODE)
         put("seed-2.1-code", SEED_CODE)
+        put("seed-2.0-code", SEED_CODE)
         put("doubao-seed-code", SEED_CODE)
+        put("doubao-seed-2.0-code", SEED_CODE)
 
         // ---- GLM 系 ----
         put("glm-5.3", GLM_5X)

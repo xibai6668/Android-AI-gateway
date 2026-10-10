@@ -30,8 +30,10 @@ class TraeModelCatalog(
         cached?.let { if (now - fetchedAt < TTL_MILLIS) return it }
 
         if (account == null) {
-            fromFallback = true
-            return FALLBACK
+            // 没有账号不算失败：登录前本就不该有模型。
+            fromFallback = false
+            lastError = ""
+            return emptyList()
         }
         if (lastFailureAt != 0L && now - lastFailureAt < FAIL_TTL_MILLIS) {
             fromFallback = true

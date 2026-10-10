@@ -616,7 +616,7 @@ class GatewayEngine(
                     TRAE_CALLBACK_PORT to TRAE_CALLBACK_PATH
                 }
                 val callbackUrl = "http://127.0.0.1:$port$path"
-                val ticket = provider.beginWebLogin(callbackUrl)
+                val ticket = provider.beginWebLogin(callbackUrl, providerSettings(providerId).option("region", ""))
                 startCallbackServer(port, path) { url ->
                     val outcome = completeWebLogin(providerId, url)
                     resultPage(outcome.ok, outcome.nickname.ifEmpty { outcome.uid }, outcome.error)
@@ -683,10 +683,10 @@ class GatewayEngine(
         runCatching { server.stop() }
     }
 
-    fun beginWebLogin(providerId: String, callbackUrl: String): WebLoginTicket {
+    fun beginWebLogin(providerId: String, callbackUrl: String, region: String = ""): WebLoginTicket {
         val support = registry.get(providerId) as? WebLoginSupport
             ?: throw IllegalStateException("该供应商不支持网页登录")
-        return support.beginWebLogin(callbackUrl)
+        return support.beginWebLogin(callbackUrl, region)
     }
 
     fun completeWebLogin(providerId: String, callbackUrl: String): LoginOutcome {
@@ -701,17 +701,24 @@ class GatewayEngine(
         }
     }
 
-    fun sendSmsCode(providerId: String, phone: String): String {
+    /** [ccode] 为国家码（不带 `+`）；非大陆号码必须传对，否则上游短信通道会拒发。 */
+    fun sendSmsCode(providerId: String, phone: String, ccode: String = SmsLoginSupport.DEFAULT_CCODE): String {
         val support = registry.get(providerId) as? SmsLoginSupport
             ?: throw IllegalStateException("该供应商不支持短信登录")
-        return support.sendSmsCode(phone)
+        return support.sendSmsCode(phone, ccode)
     }
 
-    fun completeSmsLogin(providerId: String, phone: String, code: String, msgid: String): LoginOutcome {
+    fun completeSmsLogin(
+        providerId: String,
+        phone: String,
+        code: String,
+        msgid: String,
+        ccode: String = SmsLoginSupport.DEFAULT_CCODE,
+    ): LoginOutcome {
         val support = registry.get(providerId) as? SmsLoginSupport
             ?: return LoginOutcome(LoginState.FAILED, error = "该供应商不支持短信登录")
         return try {
-            adopt(providerId, support.loginBySmsCode(phone, code, msgid), "登录")
+            adopt(providerId, support.loginBySmsCode(phone, code, msgid, ccode), "登录")
         } catch (e: Exception) {
             logWarn("登录失败（$providerId）：${e.message}")
             LoginOutcome(LoginState.FAILED, error = e.message ?: "登录失败")
@@ -1110,6 +1117,9 @@ class GatewayEngine(
             lower in listOf("codebuddy", "workbuddy", "tencent", "wb") -> "codebuddy"
             lower.startsWith("codebuddy-") || lower.startsWith("workbuddy-") -> "codebuddy"
             lower in listOf("trae", "bytedance", "doubao", "solo") -> "trae"
+            // 区域型前缀：trae-cn / trae-global（少了这条，`trae-cn/模型名` 会整个
+            // 当成模型名发给上游，Trae 直接以 4001「param is invalid」拒绝）
+            lower.startsWith("trae-") -> "trae"
             lower in listOf("loomy", "iflytek", "spark", "xf") -> "loomy"
             else -> if (lower.startsWith("custom:")) lower else null
         }

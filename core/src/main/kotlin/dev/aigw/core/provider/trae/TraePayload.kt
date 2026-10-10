@@ -36,8 +36,48 @@ object TraePayload {
 
         normalizeToolChoice(obj)
         normalizeTools(obj)
+        normalizeAliases(obj)
+        pruneUnknownFields(obj)
 
         return obj.toString()
+    }
+
+    /**
+     * 把 OpenAI 的「新名」映射到上游认识的「旧名」。
+     *
+     * 必须在 [pruneUnknownFields] **之前**执行，否则这些值会被当未知字段直接丢掉。
+     */
+    private fun normalizeAliases(obj: JsonObject) {
+        // 新的 max_completion_tokens 与旧的 max_tokens 同义；同时给了就以旧名优先
+        val newMax = obj.get("max_completion_tokens")
+        if (newMax != null && !obj.has("max_tokens")) {
+            obj.add("max_tokens", newMax)
+        }
+        // 上游没有 stream_options 概念：它的作用（在流尾带 usage）本就由上游默认行为覆盖
+        obj.remove("stream_options")
+    }
+
+    /**
+     * 上游 `llm_utils_chat` 的 Go 结构体**不认识未知字段**，多一个就用 4001
+     * 「param is invalid」拒掉整条请求（实测：带 `stream_options` 或
+     * `max_completion_tokens` 都会触发）。
+     *
+     * 所以这里做**白名单**：只保留上游认识的键，其余一律删除。
+     * 宁可丢掉一个可选参数，也不能让整条请求直接失败。
+     */
+    private fun pruneUnknownFields(obj: JsonObject) {
+        // 上游 llm_utils_chat 接受的全部字段
+        val allowed = setOf(
+            "config_name", "model", "messages", "stream", "function",
+            "tools", "tool_choice", "functions",
+            "temperature", "top_p", "max_tokens", "n", "stop",
+            "frequency_penalty", "presence_penalty",
+            "poly_prompt", "session_id", "mode_type", "agent_type",
+        )
+        val keys = obj.keySet().toList()
+        for (key in keys) {
+            if (key !in allowed) obj.remove(key)
+        }
     }
 
     private fun rewriteMessages(obj: JsonObject) {

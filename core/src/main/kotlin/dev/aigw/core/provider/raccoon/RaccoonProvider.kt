@@ -300,7 +300,7 @@ class RaccoonProvider(
 
     // ------------------------------------------------------------------ 网页登录
 
-    override fun beginWebLogin(callbackUrl: String): WebLoginTicket {
+    override fun beginWebLogin(callbackUrl: String, region: String): WebLoginTicket {
         // 不要带 login_source=desktop：授权页会走 `office-raccoon://auth/callback` 自定义 scheme 分支
         // （手机上没有 App 能接），反而不回 redirect。不传时授权页才把 `?authorization_code=…` 回推到 callbackUrl。
         val loginUrl = "$host$PATH_LOGIN" +

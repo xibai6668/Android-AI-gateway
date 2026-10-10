@@ -41,7 +41,7 @@ class TraeProvider(
     private val defaultModel: () -> String,
     private val hooks: ProviderHooks = ProviderHooks(),
     private val nowMillis: () -> Long = System::currentTimeMillis,
-) : Provider, WebLoginSupport {
+) : Provider, WebLoginSupport, dev.aigw.core.provider.RegionAwareSupport {
 
     override val id: String = ID
     override val displayName: String = "Trae"
@@ -49,26 +49,81 @@ class TraeProvider(
     override val capabilities: Set<ProviderCapability> =
         setOf(ProviderCapability.CREDIT_REFRESH, ProviderCapability.CHECKIN)
 
-    private var authClient = TraeAuthClient(version())
-    private var chatClient = TraeChatClient(version())
-    private var checkinClient = TraeCheckinClient(version())
-    private var catalog = TraeModelCatalog(TraeChatClient(version()), nowMillis)
+    // 国内 / 国际两套客户端：上游 host 不同（trae.cn vs trae.ai），按账号区域取用。
+    private val chatClients = HashMap<TraeRegion, TraeChatClient>()
+    private val authClients = HashMap<TraeRegion, TraeAuthClient>()
+    private val checkinClients = HashMap<TraeRegion, TraeCheckinClient>()
+    private val catalogs = HashMap<TraeRegion, TraeModelCatalog>()
+
+    private fun chatClient(region: TraeRegion): TraeChatClient =
+        chatClients.getOrPut(region) { TraeChatClient(version(), region.agentHost) }
+
+    // TraeAuthClient 读取账号自身的 apiHost，不按区域分实例
+    private val authClientSingleton: TraeAuthClient get() = authClients.getOrPut(TraeRegion.CN) { TraeAuthClient(version()) }
+
+    @Suppress("UNUSED_PARAMETER")
+    private fun authClient(region: TraeRegion): TraeAuthClient = authClientSingleton
+
+    private fun checkinClient(region: TraeRegion): TraeCheckinClient =
+        checkinClients.getOrPut(region) { TraeCheckinClient(version(), region.ugHost) }
+
+    private fun catalog(region: TraeRegion): TraeModelCatalog =
+        catalogs.getOrPut(region) { TraeModelCatalog(chatClient(region), nowMillis) }
 
     /** 客户端版本号变更后重建各客户端，并让模型目录缓存失效。 */
     fun reconfigure() {
-        authClient = TraeAuthClient(version())
-        chatClient = TraeChatClient(version())
-        checkinClient = TraeCheckinClient(version())
-        catalog = TraeModelCatalog(TraeChatClient(version()), nowMillis)
+        chatClients.clear()
+        authClients.clear()
+        checkinClients.clear()
+        catalogs.clear()
     }
+
+    // ------------------------------------------------------------------ 区域
+
+    /** Trae 两种发行版：国内 trae.cn / 国际 trae.ai。 */
+    override fun regions(): List<String> = TraeRegion.entries.map { it.id }
+
+    override fun regionOf(account: ProviderAccount): String? {
+        val trae = parseOrNull(account) ?: return TraeRegion.CN.id
+        return TraeRegion.infer(trae.domain, trae.apiHost).id
+    }
+
+    private fun regionOfAccount(account: ProviderAccount?): TraeRegion {
+        val trae = account?.let { parseOrNull(it) } ?: return TraeRegion.CN
+        return TraeRegion.infer(trae.domain, trae.apiHost)
+    }
+
+    /** 已经解析成 [TraeAccount] 时直接用它的域名判区域，避免再解析一遍。 */
+    private fun regionOfAccount(account: TraeAccount?): TraeRegion =
+        TraeRegion.infer(account?.domain, account?.apiHost)
 
     // ------------------------------------------------------------------ 模型
 
     override fun listModels(account: ProviderAccount?): ProviderModelCatalogView {
         val trae = account?.let { parseOrNull(it) }
+        val region = regionOfAccount(account)
+        val catalog = catalog(region)
         val models = catalog.models(trae)
         return ProviderModelCatalogView(
-            models = models.map { ProviderModel(it.id, it.name, it.contextWindow) },
+            models = models.map { model ->
+                // 倍率不是上游字段（get_detail_param 不返回），取自本地维护的 ModelRates 参考表；
+                // 查不到就不写 extra，UI 显示「—」而不是编造数字。
+                val rate = ModelRates.rateOf(model.id)
+                ProviderModel(
+                    id = model.id,
+                    name = model.name,
+                    contextWindow = model.contextWindow,
+                    extra = buildMap {
+                        if (rate != null) {
+                            put("rate", rate.baseLabel())
+                            put("rateSummary", rate.summaryLabel())
+                            rate.discountLabel()?.let { put("rateDiscount", it) }
+                            rate.discountTag?.let { put("rateDiscountTag", it) }
+                            put("rateNote", rate.note)
+                        }
+                    },
+                )
+            },
             fromFallback = catalog.fromFallback,
             error = catalog.lastError,
         )
@@ -91,7 +146,7 @@ class TraeProvider(
         val trae = parseOrNull(account) ?: return FailedChatCall(401, "账号凭证无法解析")
         val model = resolveModel(requestedModelOf(openAiBody))
         val call = try {
-            chatClient.openStream(trae, openAiBody)
+            chatClient(regionOfAccount(account)).openStream(trae, openAiBody)
         } catch (e: TraeHttpException) {
             return FailedChatCall(e.status, e.body)
         }
@@ -142,15 +197,16 @@ class TraeProvider(
 
     override fun refreshAccount(account: ProviderAccount, skewSeconds: Long): ProviderAccount? {
         val trae = parseOrNull(account) ?: return null
-        val refreshed = authClient.refreshIfNeeded(trae, skewSeconds) ?: return null
+        val refreshed = authClient(regionOfAccount(account)).refreshIfNeeded(trae, skewSeconds) ?: return null
         return toProviderAccount(refreshed)
     }
 
     /** 粘贴 JSON 凭证导入：补齐设备指纹后换 token 并拉取用户信息。 */
     override fun importCredentials(raw: String): ProviderAccount {
         var account = ensureDeviceIds(TraeAccount.parse(raw))
-        if (account.refreshToken.isNotEmpty()) account = authClient.exchangeToken(account)
-        account = authClient.getUserInfo(account)
+        val region = TraeRegion.infer(account.domain, account.apiHost)
+        if (account.refreshToken.isNotEmpty()) account = authClient(region).exchangeToken(account)
+        account = authClient(region).getUserInfo(account)
         if (account.uid.isEmpty()) throw IllegalStateException("无法确定账号 uid，请确认凭证完整")
         return toProviderAccount(account)
     }
@@ -201,7 +257,7 @@ class TraeProvider(
     override fun creditInfo(account: ProviderAccount): CreditInfo? {
         val trae = parseOrNull(account) ?: return null
         return try {
-            val usage = checkinClient.entUsage(trae)
+            val usage = checkinClient(regionOfAccount(account)).entUsage(trae)
             if (usage.parsed) {
                 CreditInfo(usage.remain, known = true, detail = "权益包剩余 ${usage.remain} / ${usage.limit}")
             } else {
@@ -219,7 +275,14 @@ class TraeProvider(
         action: String,
         payload: JsonObject,
     ): ProviderActionResult = when (action) {
-        ACTION_CHECKIN -> checkin(account)
+        ACTION_CHECKIN -> {
+            // 国际版没有签到制度（前端 JS 里 checkin 零命中）
+            if (regionOfAccount(account) == TraeRegion.INTL) {
+                ProviderActionResult.failure("国际版没有签到制度")
+            } else {
+                checkin(account)
+            }
+        }
         else -> ProviderActionResult.unsupported(action)
     }
 
@@ -227,7 +290,7 @@ class TraeProvider(
     override fun creditPacks(account: ProviderAccount): List<QuotaPack> {
         val trae = parseOrNull(account) ?: return emptyList()
         return try {
-            checkinClient.entUsage(trae).details.map {
+            checkinClient(regionOfAccount(account)).entUsage(trae).details.map {
                 QuotaPack(
                     name = it.name,
                     group = it.group,
@@ -249,7 +312,7 @@ class TraeProvider(
     private fun checkin(account: ProviderAccount): ProviderActionResult {
         val trae = parseOrNull(account) ?: return ProviderActionResult.failure("账号凭证无法解析")
         return try {
-            val status = checkinClient.status(trae)
+            val status = checkinClient(regionOfAccount(account)).status(trae)
             if (status.checkedIn) return ProviderActionResult.success("今日已签到")
             val outcome = claimWithRetry(trae)
             if (outcome == ClaimOutcome.ALREADY_CHECKED_IN) {
@@ -265,11 +328,11 @@ class TraeProvider(
     }
 
     private fun claimWithRetry(account: TraeAccount): ClaimOutcome = try {
-        checkinClient.claim(account)
+        checkinClient(regionOfAccount(account)).claim(account)
     } catch (e: TraeHttpException) {
         if (e.upstreamCode != CHECKIN_BUSY_CODE) throw e
         Thread.sleep(CHECKIN_RETRY_DELAY_MS)
-        checkinClient.claim(account)
+        checkinClient(regionOfAccount(account)).claim(account)
     }
 
     // ------------------------------------------------------------------ 登录
@@ -283,7 +346,8 @@ class TraeProvider(
     /** pending 指纹的持久化键；进程被杀后由 [resolveMachine] 从 store 找回。 */
     private fun pendingKey(traceId: String): String = "login/pending/trae/$traceId"
 
-    override fun beginWebLogin(callbackUrl: String): WebLoginTicket {
+    override fun beginWebLogin(callbackUrl: String, region: String): WebLoginTicket {
+        val target = TraeRegion.of(region)
         // 对齐官方客户端指纹格式：machine_id 是 64 位 hex，device_id 是纯数字
         val machineId = TraeLogin.newMachineId()
         val deviceId = TraeLogin.randomDeviceId()
@@ -300,13 +364,22 @@ class TraeProvider(
                 addProperty("at", nowMillis())
             }.toString(),
         )
-        return WebLoginTicket(traceId, TraeLogin.buildLoginUrl(machineId, deviceId, callbackUrl), callbackUrl)
+        return WebLoginTicket(
+            traceId,
+            TraeLogin.buildLoginUrl(machineId, deviceId, callbackUrl, region = target),
+            callbackUrl,
+        )
     }
 
     override fun completeWebLogin(callbackUrl: String): ProviderAccount {
         val callback = TraeLogin.parseCallback(callbackUrl)
         val traceId = queryParam(callbackUrl, "loginTraceID")
         val machine = resolveMachine(traceId)
+        // 回调里的 loginHost / 回调域名能区分发行版；拿不到就按国内版处理
+        val region = TraeRegion.infer(
+            queryParam(callbackUrl, "loginHost"),
+            callback.enterpriseId.ifEmpty { queryParam(callbackUrl, "host") },
+        )
         var account = TraeAccount(
             uid = callback.uid,
             accessToken = callback.accessToken,
@@ -316,9 +389,11 @@ class TraeProvider(
             enterpriseId = callback.enterpriseId,
             machineId = machine?.first ?: TraeLogin.newMachineId(),
             deviceId = machine?.second ?: TraeLogin.randomDeviceId(),
+            domain = region.id,
+            apiHost = region.oauthHost,
         )
-        if (account.refreshToken.isNotEmpty()) account = authClient.exchangeToken(account)
-        account = authClient.getUserInfo(account)
+        if (account.refreshToken.isNotEmpty()) account = authClient(region).exchangeToken(account)
+        account = authClient(region).getUserInfo(account)
         if (account.uid.isEmpty()) throw IllegalStateException("无法确定账号 uid，请确认登录已完成")
         return toProviderAccount(account)
     }

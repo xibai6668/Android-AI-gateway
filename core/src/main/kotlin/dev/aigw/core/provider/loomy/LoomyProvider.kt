@@ -250,14 +250,19 @@ class LoomyProvider(
 
     // ------------------------------------------------------------------ 登录
 
-    override fun sendSmsCode(phone: String): String {
+    override fun sendSmsCode(phone: String, ccode: String): String {
         val normalized = phone.trim()
-        if (!PHONE_PATTERN.matches(normalized)) throw IllegalArgumentException("手机号格式不正确")
-        return authClient.sendSmsCode(normalized)
+        validatePhone(normalized, ccode)
+        return authClient.sendSmsCode(normalized, ccode)
     }
 
-    override fun loginBySmsCode(phone: String, code: String, msgid: String): ProviderAccount {
-        val account = authClient.loginBySmsCode(phone.trim(), code.trim(), msgid)
+    override fun loginBySmsCode(
+        phone: String,
+        code: String,
+        msgid: String,
+        ccode: String,
+    ): ProviderAccount {
+        val account = authClient.loginBySmsCode(phone.trim(), code.trim(), msgid, ccode)
         var nickname = ""
         runCatching { nickname = authClient.nicknameOf(authClient.getUserInfo(account.session)) }
         // 上游没给 userid 时退回手机号当 uid，账号至少可用且可重复登录覆盖
@@ -266,6 +271,22 @@ class LoomyProvider(
     }
 
     // ------------------------------------------------------------------ 工具
+
+    /**
+     * 校验手机号。
+     *
+     * 大陆号严格要求 11 位；其它国家码只校验位数区间——
+     * 各国家号码长度不一（香港 8 位、日本 10 位…），写死大陆规则会把它们全挡掉。
+     */
+    private fun validatePhone(phone: String, ccode: String) {
+        val pattern = if (ccode == LoomyConstants.DEFAULT_CCODE) CN_PHONE else GENERIC_PHONE
+        if (!pattern.matches(phone)) {
+            throw IllegalArgumentException(
+                if (ccode == LoomyConstants.DEFAULT_CCODE) "手机号格式不正确（大陆号码为 11 位）"
+                else "手机号格式不正确（当前国家码 +$ccode，应为 4–15 位数字）",
+            )
+        }
+    }
 
     private fun toProviderAccount(account: LoomyAccount): ProviderAccount =
         ProviderAccount(id, account.uid, account.nickname, account.toJson().toString())
@@ -282,8 +303,11 @@ class LoomyProvider(
         const val ACTION_COMPLETE_TASK = "complete_task"
         const val ACTION_COMPLETE_ALL_TASKS = "complete_all_tasks"
 
-        /** 中国大陆手机号，发短信前先校验。 */
-        val PHONE_PATTERN = Regex("1[3-9]\\d{9}")
+        /** 中国大陆手机号：11 位、1 开头。 */
+        private val CN_PHONE = Regex("1[3-9]\\d{9}")
+
+        /** 其它地区比较宽松：4–15 位纯数字（国际号码标准上限是 15 位）。 */
+        private val GENERIC_PHONE = Regex("\\d{4,15}")
     }
 
 }

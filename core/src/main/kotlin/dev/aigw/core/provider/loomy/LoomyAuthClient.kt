@@ -18,11 +18,15 @@ class LoomyAuthClient(
     private val nowMillis: () -> Long = System::currentTimeMillis,
 ) {
 
-    /** 发送短信验证码，返回上游的 msgid（登录时回传）。 */
-    fun sendSmsCode(phone: String): String {
+    /**
+     * 发送短信验证码，返回上游的 msgid（登录时回传）。
+     *
+     * [ccode] 是国家码：上游按它路由短信通道，**写死 86 会让非大陆号码收不到验证码**。
+     */
+    fun sendSmsCode(phone: String, ccode: String = LoomyConstants.DEFAULT_CCODE): String {
         val body = envelope(
             JsonObject().apply {
-                addProperty("ccode", "86")
+                addProperty("ccode", ccode)
                 addProperty("phone", phone)
                 addProperty("expire", LoomyConstants.SMS_CODE_EXPIRE_SECONDS)
             },
@@ -35,11 +39,16 @@ class LoomyAuthClient(
         return msgid
     }
 
-    /** 用验证码换 session。 */
-    fun loginBySmsCode(phone: String, code: String, msgid: String): LoomyAccount {
+    /** 用验证码换 session；[ccode] 必须与发码时一致。 */
+    fun loginBySmsCode(
+        phone: String,
+        code: String,
+        msgid: String,
+        ccode: String = LoomyConstants.DEFAULT_CCODE,
+    ): LoomyAccount {
         val body = envelope(
             JsonObject().apply {
-                addProperty("ccode", "86")
+                addProperty("ccode", ccode)
                 addProperty("phone", phone)
                 addProperty("mcode", code)
                 addProperty("msgid", msgid)
