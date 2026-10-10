@@ -1,6 +1,7 @@
 package dev.aigw.core.provider.raccoon
 
 import com.google.gson.JsonArray
+import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import dev.aigw.core.provider.ACTION_CHECKIN
@@ -396,28 +397,15 @@ class RaccoonProvider(
     private fun fetchModels(credential: Credential): List<ProviderModel> {
         val (status, text) = getJson("$host$PATH_MODELS", jsonHeaders(credential))
         if (status !in 200..299) throw IllegalStateException("模型接口 HTTP $status")
-        val obj = runCatching { JsonParser.parseString(text).asJsonObject }.getOrNull()
+        val root = runCatching { JsonParser.parseString(text).asJsonObject }.getOrNull()
             ?: throw IllegalStateException("模型响应不是合法 JSON")
-        val data = obj.get("data") ?: throw IllegalStateException("模型响应缺少 data")
-        // data 可能是数组，也可能是 {"models":[...]} / {"profiles":[...]} / {"list":[...]}
-        val array = when {
-            data.isJsonArray -> data.asJsonArray
-            data.isJsonObject -> {
-                val d = data.asJsonObject
-                d.arrayOrNull("models")
-                    ?: d.arrayOrNull("profiles")
-                    ?: d.arrayOrNull("list")
-                    ?: d.arrayOrNull("model_list")
-                    ?: d.arrayOrNull("items")
-                    ?: throw IllegalStateException("模型响应 data 无可用列表字段")
-            }
-            else -> throw IllegalStateException("模型响应 data 类型异常")
-        }
+        // 上游目录结构不稳定（data 可能是数组，也可能嵌套在任意键下），递归找「最像模型列表」的数组。
+        val array = findModelArray(root)
+            ?: throw IllegalStateException("模型响应里找不到模型数组（顶层键：${root.keySet().joinToString(",")}）")
         val result = ArrayList<ProviderModel>()
         val seen = HashSet<String>()
         for (element in array) {
             val item = element.takeIf { it.isJsonObject }?.asJsonObject ?: continue
-            // id 优先取上游真实 model id；部分目录把真实 id 放在 model / model_id
             val modelId = item.firstString("id", "model", "model_id", "modelId", "name", "code")
             if (modelId.isEmpty() || !seen.add(modelId)) continue
             result.add(
@@ -432,6 +420,30 @@ class RaccoonProvider(
             )
         }
         return result
+    }
+
+    /**
+     * 在任意嵌套层级里找「最像模型列表」的数组：元素是对象、且带 id/model/model_id/name 之一。
+     * 取命中元素最多的那个数组。
+     */
+    private fun findModelArray(root: JsonElement): JsonArray? {
+        val candidates = ArrayList<JsonArray>()
+        fun idOf(obj: JsonObject): String =
+            obj.firstString("id", "model", "model_id", "modelId", "name", "code")
+        fun walk(element: JsonElement) {
+            when {
+                element.isJsonArray -> {
+                    val arr = element.asJsonArray
+                    val looksLikeModels = arr.size() > 0 &&
+                        arr.count { it.isJsonObject && idOf(it.asJsonObject).isNotEmpty() } >= arr.size() / 2 + 1
+                    if (looksLikeModels) candidates.add(arr)
+                    arr.forEach { walk(it) }
+                }
+                element.isJsonObject -> element.asJsonObject.entrySet().forEach { walk(it.value) }
+            }
+        }
+        walk(root)
+        return candidates.maxByOrNull { it.size() }
     }
 
     private fun fetchUserInfo(accessToken: String): JsonObject? {

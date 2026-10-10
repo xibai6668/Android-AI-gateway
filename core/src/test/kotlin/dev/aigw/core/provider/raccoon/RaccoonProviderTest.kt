@@ -56,6 +56,21 @@ class RaccoonProviderTest {
         assertEquals("raccoon-8c4485", provider.resolveModel("raccoon-8c4485"))
     }
 
+    @Test
+    fun `模型目录能从未知嵌套结构里找到列表`() {
+        // 模拟上游把模型数组藏在 data.profiles.models 这种非标准键下
+        val body = """{"status":{"code":0},"data":{"profiles":{"models":[
+            {"id":"raccoon-8c4485","name":"Raccoon-Work","max_input_tokens":1000000},
+            {"id":"raccoon-chat-ml-5-5","name":"Raccoon Chat"}
+        ]}}}"""
+        withUpstream(path = "/api/web/llm/v2/model_catalog", body = body) { base ->
+            val view = RaccoonProvider(host = base).listModels(account())
+            assertEquals(2, view.models.size, view.models.toString())
+            assertEquals("raccoon-8c4485", view.models[0].id)
+            assertEquals(1_000_000L, view.models[0].contextWindow)
+        }
+    }
+
     // ------------------------------------------------------------------ classify
 
     @Test
@@ -243,10 +258,11 @@ class RaccoonProviderTest {
         status: Int = 200,
         contentType: String = "application/json",
         body: String = "",
+        path: String = "/api/web/llm/v2/chat/completions",
         block: (baseUrl: String) -> Unit,
     ) {
         val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
-        server.createContext("/api/web/llm/v2/chat/completions") { exchange ->
+        server.createContext(path) { exchange ->
             val bytes = body.toByteArray(Charsets.UTF_8)
             exchange.responseHeaders.add("Content-Type", contentType)
             exchange.sendResponseHeaders(status, if (bytes.isEmpty()) -1L else bytes.size.toLong())
