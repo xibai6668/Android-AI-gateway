@@ -15,7 +15,7 @@ import kotlin.test.assertTrue
  * 小浣熊（商汤）协议转换回归。
  *
  * 上游把真正的 OpenAI 结构包在 `data` 里（外层 `{"status":..,"data":..}`），请求体
- * `max_tokens` 要改名 `max_new_tokens`。这些差异若漏掉，客户端会表现为「调用成功却零输出」，
+ * 上游 v2 是 LiteLLM 兼容层，`max_tokens` 等标准字段直接认（改名反而被 500 拒绝）。
  * 这里把关键转换锁住。
  */
 class RaccoonProviderTest {
@@ -65,10 +65,10 @@ class RaccoonProviderTest {
     private fun prepare(body: String) = JsonParser.parseString(prepareRaccoonBody(body)).asJsonObject
 
     @Test
-    fun `max_tokens 改名为 max_new_tokens`() {
+    fun `max_tokens 保持标准名（改名会被上游拒绝）`() {
         val obj = prepare("""{"model":"raccoon-chat","max_tokens":128,"messages":[{"role":"user","content":"hi"}]}""")
-        assertEquals(128L, obj.get("max_new_tokens").asLong)
-        assertTrue(!obj.has("max_tokens"), "不能保留 max_tokens")
+        assertEquals(128L, obj.get("max_tokens").asLong)
+        assertTrue(!obj.has("max_new_tokens"), "上游 v2 不认 max_new_tokens")
     }
 
     @Test

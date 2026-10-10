@@ -49,7 +49,7 @@ import java.util.UUID
  *
  * 对话端点 `POST /api/plugin/llm/v1/chat-completions` 虽然字段名接近 OpenAI，但**真正的
  * OpenAI 结构被包在 `data` 里**（外层是 `{"status":{...},"data":{...}}`），且请求体
- * `max_tokens` 要改名 `max_new_tokens`；响应流同样带外层包裹，需逐行翻译回标准 OpenAI SSE。
+ * `max_tokens` 保持标准名；响应流带外层包裹，需逐行翻译回标准 OpenAI SSE。
  * 这些差异全部封在本类内部，网关侧零感知。
  */
 class RaccoonProvider(
@@ -630,9 +630,10 @@ class RaccoonProvider(
 /**
  * 把标准 OpenAI 请求体改写为小浣熊上游格式。
  *
- * - `max_tokens` → `max_new_tokens`；
- * - `temperature`/`top_p`/`frequency_penalty`/`presence_penalty`/`stop` 同名保留；
- * - **强制 `stream:true`**（上游拒绝非流式，客户端实测非流式请求会失败），非流式由本类聚合；
+ * - 字段名保持 OpenAI 标准（上游 v2 是 LiteLLM 兼容层，`max_tokens` 等标准名直接认；
+ *   改名成 `max_new_tokens` 会被上游以 500 unexpected keyword argument 拒绝）；
+ * - 保留 `max_tokens`/`temperature`/`top_p`/`frequency_penalty`/`presence_penalty`/`stop`；
+ * - **强制 `stream:true`**（上游拒绝非流式），非流式由本类聚合；
  * - `tools` 原样映射，并带上 `tool_choice:"auto"`。
  *
  * 上游只接受上述字段，其它字段（`n`/`user`/`response_format` 等）一律丢弃。
@@ -642,7 +643,7 @@ internal fun prepareRaccoonBody(src: String): String {
     return JsonObject().apply {
         obj.stringOrNull("model")?.let { addProperty("model", it) }
         obj.arrayOrNull("messages")?.let { add("messages", it) }
-        obj.longOrNull("max_tokens")?.let { addProperty("max_new_tokens", it) }
+        obj.longOrNull("max_tokens")?.let { addProperty("max_tokens", it) }
         obj.doubleOrNull("temperature")?.let { addProperty("temperature", it) }
         obj.doubleOrNull("top_p")?.let { addProperty("top_p", it) }
         obj.doubleOrNull("frequency_penalty")?.let { addProperty("frequency_penalty", it) }
