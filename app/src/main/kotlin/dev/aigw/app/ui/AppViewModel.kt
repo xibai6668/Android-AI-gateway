@@ -174,7 +174,7 @@ data class UpdateInfo(val version: String, val url: String, val notes: String)
 sealed interface ModelTestStatus {
     data object Testing : ModelTestStatus
     data class Success(val latencyMs: Long) : ModelTestStatus
-    data object Timeout : ModelTestStatus
+    data class Failed(val reason: String) : ModelTestStatus
 }
 
 /**
@@ -529,14 +529,14 @@ class AppViewModel(
         _state.value = _state.value.copy(modelTestLatencies = current)
 
         viewModelScope.launch {
-            val latency = withContext(Dispatchers.IO) {
+            val result = withContext(Dispatchers.IO) {
                 engine.probeModelLatency(routedModel.providerId, routedModel.model.id, routedModel.region)
             }
             val updated = _state.value.modelTestLatencies.toMutableMap()
-            if (latency > 0) {
-                updated[fullId] = ModelTestStatus.Success(latency)
+            updated[fullId] = if (result.latencyMs > 0) {
+                ModelTestStatus.Success(result.latencyMs)
             } else {
-                updated[fullId] = ModelTestStatus.Timeout
+                ModelTestStatus.Failed(result.error.ifEmpty { "连接失败" })
             }
             _state.value = _state.value.copy(modelTestLatencies = updated)
         }

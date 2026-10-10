@@ -119,6 +119,9 @@ data class Route(val providerId: String, val model: String, val region: String? 
  */
 data class BrowserLoginTicket(val loginUrl: String, val pollState: String = "")
 
+/** 模型探测结果：延迟（毫秒）与失败原因。 */
+data class ProbeResult(val latencyMs: Long, val error: String = "")
+
 /** 局域网地址来源。Android 侧用系统 API 提供，命令行/测试用默认实现。 */
 fun interface LanAddressProvider {
     fun lanAddresses(): List<String>
@@ -1059,9 +1062,11 @@ class GatewayEngine(
      *
      * 发送极轻量的探针请求，耗时低于 5000ms 返回正整数，超时或连接失败返回 -1L。
      */
-    fun probeModelLatency(providerId: String, modelId: String, region: String? = null): Long {
-        val provider = registry.get(providerId) ?: return -1L
-        val account = pickAccount(providerId, region = region) ?: return -1L
+    fun probeModelLatency(providerId: String, modelId: String, region: String? = null): ProbeResult {
+        val provider = registry.get(providerId)
+            ?: return ProbeResult(-1L, "未知供应商 $providerId")
+        val account = pickAccount(providerId, region = region)
+            ?: return ProbeResult(-1L, "没有可用账号")
         val resolvedModel = provider.resolveModel(modelId)
         val probeBody = JsonObject().apply {
             addProperty("model", resolvedModel)
@@ -1078,15 +1083,19 @@ class GatewayEngine(
         val start = System.currentTimeMillis()
         val call = try {
             provider.openChat(account, probeBody)
-        } catch (_: Exception) {
-            return -1L
+        } catch (e: Exception) {
+            val msg = e.message ?: "连接失败"
+            logWarn("探测 $providerId/$resolvedModel 失败：$msg")
+            return ProbeResult(-1L, msg)
         }
 
         try {
             if (call.status in 200..299 && call.failure == null) {
-                return (System.currentTimeMillis() - start).coerceAtLeast(1L)
+                return ProbeResult((System.currentTimeMillis() - start).coerceAtLeast(1L), "")
             }
-            return -1L
+            val reason = call.failure?.message ?: call.errorBody.ifEmpty { "HTTP ${call.status}" }
+            logWarn("探测 $providerId/$resolvedModel 失败（HTTP ${call.status}）：${reason.take(300)}")
+            return ProbeResult(-1L, "HTTP ${call.status}：${reason.take(300)}")
         } finally {
             call.close()
         }

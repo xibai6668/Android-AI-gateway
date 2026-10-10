@@ -283,10 +283,10 @@ private fun ModelRow(
                     color = if (isFast) Color(0xFF2E7D32) else Color(0xFFEF6C00),
                 )
             }
-            is ModelTestStatus.Timeout -> {
+            is ModelTestStatus.Failed -> {
                 Text(
-                    text = "超时",
-                    style = MaterialTheme.typography.labelMedium,
+                    text = "失败：${testStatus.reason}",
+                    style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.error,
                 )
