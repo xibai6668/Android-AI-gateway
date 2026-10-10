@@ -201,6 +201,8 @@ internal class GatewayProxySelector(
             // Loomy（讯飞）
             "xfinfr.com",
             "xunfei.cn",
+            // 小浣熊（商汤）
+            "xiaohuanxiong.com",
         )
     }
 }

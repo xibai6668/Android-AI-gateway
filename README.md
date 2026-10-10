@@ -24,7 +24,7 @@ Android 上运行的本地 AI 模型聚合网关：把多家私有 AI 服务账�
 ## 特性
 
 - **OpenAI 兼容网关**：`/v1/chat/completions` + `/v1/models`，流式 SSE / 非流式 / 多模态识图。
-- **五家供应商**：Trae、WorkBuddy、Antigravity、Loomy，以及任意自定义 OpenAI 兼容中转站。
+- **六家供应商**：Trae、WorkBuddy、Antigravity、Loomy、小浣熊（商汤），以及任意自定义 OpenAI 兼容中转站。
 - **同款模型 Failover**：首选供应商失败或无可用账号时，自动切换到拥有同款模型的其他供应商。
 - **智能路由**：`供应商/模型` 前缀路由，兼支持无前缀的模型名自动推导。
 - **国内外智能分流**：国内上游强制直连，Google 按需走代理。
@@ -96,6 +96,7 @@ curl http://127.0.0.1:8790/v1/chat/completions \
 | `codebuddy` | WorkBuddy（腾讯） | 国内 `copilot.tencent.com` / 国际 `workbuddy.ai` | 上游拒绝非流式，强制 `stream:true` |
 | `antigravity` | Antigravity（Google） | `cloudcode-pa.googleapis.com` | Gemini 风格协议；凭证策略有铁律，见 ARCHITECTURE.md 第 5 节 |
 | `loomy` | Loomy（讯飞） | `xfinfr.com` | 鉴权失败为 HTTP 200 + 业务码，而非 4xx |
+| `raccoon` | 小浣熊（商汤） | `xiaohuanxiong.com` | OpenAI 结构被包在 `data` 里；请求体 `max_tokens`→`max_new_tokens` |
 | `custom:<key>` | 自定义 | 用户填写的 baseUrl | 任意 OpenAI 兼容中转站，一个 key = 一个账号 |
 
 ---

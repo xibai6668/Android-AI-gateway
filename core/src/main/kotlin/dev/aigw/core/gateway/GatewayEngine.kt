@@ -25,6 +25,7 @@ import dev.aigw.core.provider.WebLoginSupport
 import dev.aigw.core.provider.WebLoginTicket
 import dev.aigw.core.provider.antigravity.AntigravityProvider
 import dev.aigw.core.provider.custom.CustomProvider
+import dev.aigw.core.provider.raccoon.RaccoonProvider
 import dev.aigw.core.provider.trae.TraeProvider
 import dev.aigw.core.store.KeyValueStore
 import dev.aigw.core.usage.CallLogStore
@@ -605,10 +606,15 @@ class GatewayEngine(
         stopCallbackServer()
         val provider = registry.get(providerId) ?: throw IllegalStateException("未知供应商：$providerId")
         return when {
-            provider is WebLoginSupport && providerId == TraeProvider.ID -> {
-                val callbackUrl = "http://127.0.0.1:$TRAE_CALLBACK_PORT$TRAE_CALLBACK_PATH"
+            provider is WebLoginSupport && (providerId == TraeProvider.ID || providerId == RaccoonProvider.ID) -> {
+                val (port, path) = if (providerId == RaccoonProvider.ID) {
+                    RACCOON_CALLBACK_PORT to RACCOON_CALLBACK_PATH
+                } else {
+                    TRAE_CALLBACK_PORT to TRAE_CALLBACK_PATH
+                }
+                val callbackUrl = "http://127.0.0.1:$port$path"
                 val ticket = provider.beginWebLogin(callbackUrl)
-                startCallbackServer(TRAE_CALLBACK_PORT, TRAE_CALLBACK_PATH) { url ->
+                startCallbackServer(port, path) { url ->
                     val outcome = completeWebLogin(providerId, url)
                     resultPage(outcome.ok, outcome.nickname.ifEmpty { outcome.uid }, outcome.error)
                 }
@@ -1194,6 +1200,10 @@ class GatewayEngine(
         /** Trae 登录回调用的本地端口（避开 Antigravity 的 51121）。 */
         const val TRAE_CALLBACK_PORT = 51120
         const val TRAE_CALLBACK_PATH = "/authorize"
+
+        /** 小浣熊（商汤）登录回调用的本地端口。 */
+        const val RACCOON_CALLBACK_PORT = 51122
+        const val RACCOON_CALLBACK_PATH = "/callback"
 
         /** 登录回调监听的存活上限。 */
         const val CALLBACK_TIMEOUT_MS = 5L * 60 * 1000
