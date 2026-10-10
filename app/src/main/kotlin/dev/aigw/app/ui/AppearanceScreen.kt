@@ -24,7 +24,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -71,7 +70,7 @@ private val WheelSize = 120.dp
 private val WheelStroke = 12.dp
 private val WheelThumb = 10.dp
 
-/** 外观主题二级页：明暗模式、配色方案、金色文字、动态取色。 */
+/** 外观主题二级页：明暗模式、配色方案、金色文字。 */
 @Composable
 fun AppearanceThemeScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) {
     val gold = LocalAppColors.current.goldStart
@@ -158,29 +157,6 @@ fun AppearanceThemeScreen(state: AppUiState, viewModel: AppViewModel, onBack: ()
                 )
             }
             GradientPreview(state.goldStart, state.goldEnd)
-        }
-
-        // ---------------------------------------------------------- 04 动态取色
-        EditorialGroupHeader("04", "动态取色 · MATERIAL YOU", meta = "SYSTEM OVERRIDE")
-        SectionCard(enterIndex = 3) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text("动态取色", style = MaterialTheme.typography.titleSmall)
-                    Text(
-                        text = "从系统壁纸提取配色，开启后配色方案不再生效",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Switch(
-                    checked = state.dynamicColor,
-                    onCheckedChange = { viewModel.setDynamicColor(it) },
-                )
-            }
         }
 
         // ---------------------------------------------------------- 底部操作
