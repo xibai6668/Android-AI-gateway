@@ -100,7 +100,7 @@ class RaccoonProvider(
         val body = prepareRaccoonBody(openAiBody)
 
         val conn = try {
-            open("$host$PATH_CHAT", body, chatHeaders(credential))
+            openChatConnection(credential, body)
         } catch (e: Exception) {
             return FailedChatCall(0, e.message ?: "连接失败")
         }
@@ -110,6 +110,35 @@ class RaccoonProvider(
             conn.disconnect()
             return FailedChatCall(0, e.message ?: "连接失败")
         }
+        // 优先用 v2（桌面客户端通道，与能用的反代实现一致）；v1 只在 v2 不存在时回退。
+        if (status == 404) {
+            conn.disconnect()
+            val fallback = try {
+                open("$host$PATH_CHAT_V1", body, chatHeaders(credential))
+            } catch (e: Exception) {
+                return FailedChatCall(0, e.message ?: "连接失败")
+            }
+            val v1Status = try {
+                fallback.responseCode
+            } catch (e: Exception) {
+                fallback.disconnect()
+                return FailedChatCall(0, e.message ?: "连接失败")
+            }
+            return finishChat(fallback, v1Status, streaming, model)
+        }
+        return finishChat(conn, status, streaming, model)
+    }
+
+    /** v2 优先，v2 不存在时回退 v1。 */
+    private fun openChatConnection(credential: Credential, body: String): HttpURLConnection =
+        open("$host$PATH_CHAT", body, chatHeaders(credential))
+
+    private fun finishChat(
+        conn: HttpURLConnection,
+        status: Int,
+        streaming: Boolean,
+        model: String,
+    ): ChatCall {
         if (status !in 200..299) {
             val errorBody = runCatching { readLimited(conn.errorStream) }.getOrDefault("")
             conn.disconnect()
@@ -385,7 +414,7 @@ class RaccoonProvider(
             result.add(
                 ProviderModel(
                     id = modelId,
-                    name = item.firstString("name", "display_name", "displayName", "title").ifEmpty { modelId },
+                    name = item.firstString("name", "display_name", "displayName", "title", "model_name").ifEmpty { modelId },
                     contextWindow = item.firstLong("context_window", "contextWindow", "max_input_tokens", "maxInputTokens"),
                 ),
             )
@@ -562,8 +591,9 @@ class RaccoonProvider(
         const val PATH_LOGIN_WITH_CODE = "/api/web/auth/v1/login_with_authorization_code"
         const val PATH_USER_INFO = "/api/web/auth/v1/user_info"
         const val PATH_REFRESH = "/api/web/auth/v1/refresh"
-        const val PATH_CHAT = "/api/web/llm/v1/chat/completions"
-        const val PATH_MODELS = "/api/web/llm/v1/model_catalog"
+        const val PATH_CHAT = "/api/web/llm/v2/chat/completions"
+        const val PATH_CHAT_V1 = "/api/web/llm/v1/chat/completions"
+        const val PATH_MODELS = "/api/web/llm/v2/model_catalog"
         const val PATH_BALANCE = "/api/web/points/v1/balance"
 
         /** 每日签到领积分。 */

@@ -226,7 +226,7 @@ class RaccoonProviderTest {
         block: (baseUrl: String) -> Unit,
     ) {
         val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
-        server.createContext("/api/web/llm/v1/chat/completions") { exchange ->
+        server.createContext("/api/web/llm/v2/chat/completions") { exchange ->
             val bytes = body.toByteArray(Charsets.UTF_8)
             exchange.responseHeaders.add("Content-Type", contentType)
             exchange.sendResponseHeaders(status, if (bytes.isEmpty()) -1L else bytes.size.toLong())
