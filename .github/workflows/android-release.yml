@@ -1,18 +1,21 @@
-name: Android Release Build
+name: Android Release
 
+# 仅手动触发：只有在明确需要 release 包时才在云端构建并直接发版。
+# 本地开发一律走 debug 包（见 scripts/build.sh 与 app/build.gradle.kts 的 buildTypes.debug）。
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  build:
+  release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          # 生成 Release 说明需要上一个 tag 到本次的完整历史
+          fetch-depth: 0
 
       - uses: actions/setup-java@v5
         with:
@@ -51,7 +54,37 @@ jobs:
       - name: 打包 release
         run: gradle :app:assembleRelease --console=plain
 
-      - uses: actions/upload-artifact@v4
+      - name: 读取版本号
+        id: version
+        run: |
+          VERSION=$(grep -m1 'versionName' app/build.gradle.kts | sed -E 's/.*"(.*)".*/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "本次版本：$VERSION"
+
+      - name: 生成更新日志（仅应用相关变化）
+        id: changelog
+        run: |
+          # 只汇总影响应用的改动（app/ 与 core/），CI、脚本、文档等非应用变化不进日志。
+          PREV_TAG=$(git tag --sort=-v:refname | grep -v "^v${{ steps.version.outputs.version }}$" | head -n1)
+          RANGE="HEAD"
+          [ -n "$PREV_TAG" ] && RANGE="$PREV_TAG..HEAD"
+          LOG=$(git log $RANGE --no-merges --pretty='- %s' -- app core)
+          [ -n "$LOG" ] || LOG="- 无应用相关变化"
+          {
+            echo "body<<CHANGELOG_EOF"
+            echo "## 更新内容（${PREV_TAG:-首次发布} → v${{ steps.version.outputs.version }}）"
+            echo ""
+            echo "$LOG"
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: 重命名产物
+        run: cp app/build/outputs/apk/release/app-release.apk "ai-gateway-${{ steps.version.outputs.version }}-release.apk"
+
+      - name: 创建 Release 并上传 APK
+        uses: softprops/action-gh-release@v2
         with:
-          name: ai-gateway-release-apk
-          path: app/build/outputs/apk/release/app-release.apk
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          body: ${{ steps.changelog.outputs.body }}
+          files: ai-gateway-${{ steps.version.outputs.version }}-release.apk

@@ -8,15 +8,18 @@ plugins {
 }
 
 /**
- * release 签名：从 keystore.properties 读。
+ * release 签名：从 keystore.properties 读，仅在文件存在时装配。
  *
- * 文件缺失时给出明确错误而不是默默产出 unsigned 包——unsigned 装不上，
- * 默默成功比构建失败更难排查。
+ * 本地开发只出 debug 包（见 buildTypes.debug），不需要 keystore.properties；
+ * 云端发版时才由 CI 现生成该文件。文件缺失时不在配置阶段报错，
+ * 但 release 构建会因无签名配置而失败——正是期望行为。
  */
 val keystoreProps = Properties().apply {
     val file = rootProject.file("keystore.properties")
     if (file.exists()) file.inputStream().use { load(it) }
 }
+
+val hasReleaseKeystore = rootProject.file("keystore.properties").exists()
 
 fun keystoreValue(key: String): String =
     keystoreProps.getProperty(key)
@@ -40,11 +43,15 @@ android {
     }
 
     signingConfigs {
-        create("release") {
-            storeFile = file(keystoreValue("storeFile"))
-            storePassword = keystoreValue("storePassword")
-            keyAlias = keystoreValue("keyAlias")
-            keyPassword = keystoreValue("keyPassword")
+        // 只有存在 keystore.properties 时才创建 release 签名；
+        // 本地只出 debug 包时不依赖该文件。
+        if (hasReleaseKeystore) {
+            create("release") {
+                storeFile = file(keystoreValue("storeFile"))
+                storePassword = keystoreValue("storePassword")
+                keyAlias = keystoreValue("keyAlias")
+                keyPassword = keystoreValue("keyPassword")
+            }
         }
     }
 
@@ -54,17 +61,21 @@ android {
         // debuggable builds”），但**代码裁剪照常生效**——这才是体积的大头：
         // material-icons-extended 的 10660 个未使用图标类会被裁掉。
         // 裁剪后 debug 3.5MB / release 1.4MB（未开前 debug 是 16.8MB）。
+        //
+        // debug = 本地开发包：applicationId 加 .debug 后缀、应用名加 Debug，
+        // 用 debug 签名，可与 release 包同机共存、互不覆盖。
         debug {
             isMinifyEnabled = true
             isShrinkResources = true
+            applicationIdSuffix = ".debug"
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
+        // release = 仅由 GitHub Actions 云端构建并发版；本地不产出 release 包。
         release {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // 用与 debug 同一密钥签名，使已装 debug 的设备能直接覆盖升级
-            signingConfig = signingConfigs.getByName("release")
+            if (hasReleaseKeystore) signingConfig = signingConfigs.getByName("release")
         }
     }
 

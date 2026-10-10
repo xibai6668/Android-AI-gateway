@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 本地开发包：与 release 包同机共存时便于区分。 -->
+    <string name="app_name">AI 聚合网关 (Debug)</string>
+</resources>
