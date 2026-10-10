@@ -6,6 +6,7 @@ import com.google.gson.JsonParser
 import dev.aigw.core.provider.AggregatedChatCall
 import dev.aigw.core.provider.AuthKind
 import dev.aigw.core.provider.ChatCall
+import dev.aigw.core.provider.CreditInfo
 import dev.aigw.core.provider.ErrorKind
 import dev.aigw.core.provider.FailedChatCall
 import dev.aigw.core.provider.LineTransformStream
@@ -52,7 +53,6 @@ class RaccoonProvider(
     private val hooks: ProviderHooks = ProviderHooks(),
     private val nowMillis: () -> Long = System::currentTimeMillis,
     private val host: String = HOST,
-    private val machineIdGenerator: () -> String = { randomHex(16) },
 ) : Provider, WebLoginSupport {
 
     override val id: String = ID
@@ -176,15 +176,51 @@ class RaccoonProvider(
     /** 把上游响应里的 choices 包成标准 `chat.completion`。 */
     private fun jsonToCompletion(envelope: JsonObject, model: String): String? {
         val data = envelope.objOrNull("data")
-        val choices = data?.arrayOrNull("choices") ?: envelope.arrayOrNull("choices") ?: return null
+        val rawChoices = data?.arrayOrNull("choices") ?: envelope.arrayOrNull("choices") ?: return null
+        // web 通道非流式的 choices[].delta 是字符串，需转成标准 message；OpenAI 风格的 message 直接透传。
+        val choices = JsonArray().apply {
+            for (element in rawChoices) {
+                val choice = element.takeIf { it.isJsonObject }?.asJsonObject ?: continue
+                val out = JsonObject()
+                out.addProperty("index", choice.longOrNull("index")?.toInt() ?: 0)
+                val message = choice.objOrNull("message")
+                when {
+                    message != null -> out.add("message", message)
+                    choice.get("delta")?.isJsonPrimitive == true -> out.add(
+                        "message",
+                        JsonObject().apply {
+                            addProperty("role", "assistant")
+                            addProperty("content", choice.get("delta").asString)
+                        },
+                    )
+                    else -> out.add("message", JsonObject().apply { addProperty("role", "assistant"); addProperty("content", "") })
+                }
+                out.addProperty("finish_reason", choice.stringOrNull("finish_reason").orEmpty().ifEmpty { "stop" })
+                add(out)
+            }
+        }
         return JsonObject().apply {
-            addProperty("id", newCompletionId())
+            addProperty("id", data?.stringOrNull("id")?.takeIf { it.isNotEmpty() } ?: newCompletionId())
             addProperty("object", "chat.completion")
             addProperty("created", nowMillis() / 1000)
             addProperty("model", model)
             add("choices", choices)
             (data?.objOrNull("usage") ?: envelope.objOrNull("usage"))?.let { add("usage", it) }
         }.toString()
+    }
+
+    /** 查询可用积分余额（web 通道）。 */
+    override fun creditInfo(account: ProviderAccount): CreditInfo? {
+        val credential = parse(account) ?: return null
+        return try {
+            val (status, text) = getJson("$host$PATH_BALANCE", jsonHeaders(credential))
+            if (status !in 200..299) return CreditInfo(0, known = false, detail = "上游 HTTP $status")
+            val data = envelopeData(text) ?: return CreditInfo(0, known = false, detail = "响应缺少 data")
+            val points = data.firstLong("available_points", "availablePoints", "points", "balance", "credits")
+            CreditInfo(points, known = true, detail = "可用积分 $points")
+        } catch (e: Exception) {
+            CreditInfo(0, known = false, detail = e.message ?: "查询积分失败")
+        }
     }
 
     override fun classify(status: Int, body: String): UpstreamError {
@@ -232,7 +268,7 @@ class RaccoonProvider(
 
     override fun beginWebLogin(callbackUrl: String): WebLoginTicket {
         val loginUrl = "$host$PATH_LOGIN" +
-            "?appname=" + enc(APP_NAME) +
+            "?login_source=desktop&appname=" + enc(APP_NAME) +
             "&redirect=" + enc(callbackUrl)
         return WebLoginTicket(randomHex(16), loginUrl, callbackUrl)
     }
@@ -270,7 +306,6 @@ class RaccoonProvider(
             expiresAt = jwtClaimLong(accessToken, "exp") ?: 0L,
             userId = userId,
             nickname = nickname,
-            machineId = machineIdGenerator(),
             orgCode = orgCode,
         )
         if (pro) hooks.onLog("小浣熊：账号为 Pro，可用 Pro 模型")
@@ -287,7 +322,7 @@ class RaccoonProvider(
     // ------------------------------------------------------------------ 上游
 
     private fun fetchModels(credential: Credential): List<ProviderModel> {
-        val (status, text) = getJson("$host$PATH_PROFILES", jsonHeaders(credential))
+        val (status, text) = getJson("$host$PATH_MODELS", jsonHeaders(credential))
         if (status !in 200..299) throw IllegalStateException("模型接口 HTTP $status")
         val obj = runCatching { JsonParser.parseString(text).asJsonObject }.getOrNull()
             ?: throw IllegalStateException("模型响应不是合法 JSON")
@@ -377,21 +412,26 @@ class RaccoonProvider(
         }
     }
 
-    private fun jsonHeaders(credential: Credential): Map<String, String> =
-        bearerHeaders(credential.accessToken)
+    private fun jsonHeaders(credential: Credential): Map<String, String> = buildMap {
+        putAll(bearerHeaders(credential.accessToken))
+        put("User-Agent", CLIENT_UA)
+        put("Accept-Language", "zh-Hans")
+        if (credential.orgCode.isNotEmpty()) put("X-Org-Code", credential.orgCode)
+    }
 
     private fun bearerHeaders(accessToken: String): Map<String, String> = mapOf(
         "Accept" to "application/json",
         "Authorization" to "Bearer $accessToken",
     )
 
-    /** 对话请求头。上游把 user 拼成了 `uesr`，照抄。 */
+    /** 对话请求头。web 通道需要伪装成官方桌面客户端。 */
     private fun chatHeaders(credential: Credential): Map<String, String> = buildMap {
         put("Accept", "text/event-stream, application/json")
+        put("Content-Type", "application/json")
         put("Authorization", "Bearer ${credential.accessToken}")
-        put("x-raccoon-machine-id", credential.machineId)
-        if (credential.userId.isNotEmpty()) put("x-raccoon-uesr-id", credential.userId)
-        if (credential.orgCode.isNotEmpty()) put("x-org-code", credential.orgCode)
+        put("User-Agent", CLIENT_UA)
+        put("Accept-Language", "zh-Hans")
+        if (credential.orgCode.isNotEmpty()) put("X-Org-Code", credential.orgCode)
     }
 
     // ------------------------------------------------------------------ 工具
@@ -406,7 +446,6 @@ class RaccoonProvider(
             expiresAt = obj.firstLong("expiresAt", "expires_at"),
             userId = obj.firstString("userId", "user_id", "uid"),
             nickname = obj.firstString("nickname", "nickName", "name"),
-            machineId = obj.firstString("machineId", "machine_id"),
             orgCode = obj.firstString("orgCode", "org_code"),
         )
     }
@@ -418,7 +457,6 @@ class RaccoonProvider(
             addProperty("expiresAt", credential.expiresAt)
             addProperty("userId", credential.userId)
             addProperty("nickname", credential.nickname)
-            addProperty("machineId", credential.machineId)
             if (credential.orgCode.isNotEmpty()) addProperty("orgCode", credential.orgCode)
         }.toString()
         val uid = existingUid.ifEmpty { credential.userId }.ifEmpty {
@@ -468,7 +506,6 @@ class RaccoonProvider(
         val expiresAt: Long,
         val userId: String,
         val nickname: String,
-        val machineId: String,
         val orgCode: String,
     )
 
@@ -479,18 +516,27 @@ class RaccoonProvider(
 
         const val APP_NAME = "Raccoon"
 
-        const val PATH_LOGIN = "/login"
-        const val PATH_LOGIN_WITH_CODE = "/api/plugin/auth/v1/login_with_authorization_code"
-        const val PATH_USER_INFO = "/api/plugin/auth/v1/user_info"
-        const val PATH_REFRESH = "/api/plugin/auth/v1/refresh"
-        const val PATH_CHAT = "/api/plugin/llm/v1/chat-completions"
-        const val PATH_PROFILES = "/api/plugin/setting/v1/profiles"
+        // ---- web 通道（官网/桌面客户端在用）----
+        const val PATH_LOGIN = "/code/authorize"
+        const val PATH_LOGIN_WITH_CODE = "/api/web/auth/v1/login_with_authorization_code"
+        const val PATH_USER_INFO = "/api/web/auth/v1/user_info"
+        const val PATH_REFRESH = "/api/web/auth/v1/refresh"
+        const val PATH_CHAT = "/api/web/llm/v1/chat/completions"
+        const val PATH_MODELS = "/api/web/llm/v1/model_catalog"
+        const val PATH_BALANCE = "/api/web/points/v1/balance"
+
+        /** 伪装成官方桌面 Web 客户端的 UA（web 通道的调用方就是它）。 */
+        const val CLIENT_UA =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+        /** 对话默认停止符，与官方 Web 前端一致。 */
+        const val DEFAULT_STOP = "<|endofmessage|>"
 
         /** 内置模型快照：上游拉不到时兜底。 */
         val FALLBACK_MODELS: List<ProviderModel> = listOf(
-            ProviderModel("Raccoon-Code-DeepSeek-V3", "DeepSeek V3", 128_000),
-            ProviderModel("raccoon-chat", "Raccoon Chat", 128_000),
-            ProviderModel("raccoon-pro-chat", "Raccoon Pro", 128_000),
+            ProviderModel("raccoon-chat-ml-5-5", "Raccoon Chat", 128_000),
+            ProviderModel("Raccoon-Work", "Raccoon Work", 128_000),
         )
 
         private const val CONNECT_TIMEOUT_MS = 30_000
@@ -527,8 +573,11 @@ internal fun prepareRaccoonBody(src: String): String {
         obj.doubleOrNull("top_p")?.let { addProperty("top_p", it) }
         obj.doubleOrNull("frequency_penalty")?.let { addProperty("frequency_penalty", it) }
         obj.doubleOrNull("presence_penalty")?.let { addProperty("presence_penalty", it) }
+        addProperty("n", 1)
         addProperty("stream", true)
-        obj.get("stop")?.takeIf { !it.isJsonNull }?.let { add("stop", it) }
+        // 官方 Web 前端固定用这个停止符；客户端没传时补上，传了则尊重客户端
+        val stop = obj.get("stop")?.takeIf { !it.isJsonNull }
+        if (stop != null) add("stop", stop) else addProperty("stop", RaccoonProvider.DEFAULT_STOP)
         obj.arrayOrNull("tools")?.let { tools ->
             add("tools", tools)
             addProperty("tool_choice", "auto")
@@ -549,6 +598,7 @@ internal class RaccoonSseTranslator(
     private val created: Long,
 ) {
     private var done = false
+    private var frameId = id
 
     fun translate(rawLine: String): List<String> {
         val line = rawLine.trim()
@@ -569,13 +619,24 @@ internal class RaccoonSseTranslator(
             val message = status?.stringOrNull("message").orEmpty().ifEmpty { "上游流内错误（code=$code）" }
             return listOf(errorFrame(code, message), SSE_DONE)
         }
-        // 上游流式帧有的带外层包裹（`{"status":..,"data":{...}}`），有的直接是 OpenAI chunk，两种都兼容。
+        // 上游流式帧带外层包裹（`{"status":..,"data":{...}}`）；也兼容直接是 OpenAI chunk 的情形。
         val data = envelope.objOrNull("data") ?: envelope
+        envelope.objOrNull("data")?.stringOrNull("id")?.let { frameId = it }
         val choices = data.arrayOrNull("choices") ?: return emptyList()
         val out = ArrayList<String>(1)
         for (element in choices) {
             val choice = element.takeIf { it.isJsonObject }?.asJsonObject ?: continue
-            val delta = choice.objOrNull("delta") ?: JsonObject()
+            // web 通道的 delta 是**字符串**（正文片段）；OpenAI 风格的 delta 是对象，两者都兼容。
+            val deltaElement = choice.get("delta")
+            val delta: JsonObject = when {
+                deltaElement == null || deltaElement.isJsonNull -> JsonObject()
+                deltaElement.isJsonObject -> deltaElement.asJsonObject
+                deltaElement.isJsonPrimitive -> JsonObject().apply {
+                    addProperty("role", "assistant")
+                    addProperty("content", deltaElement.asString)
+                }
+                else -> JsonObject()
+            }
             val finishReason = choice.stringOrNull("finish_reason")
             if (delta.size() == 0 && finishReason == null) continue
             out.add(chunk(choice.longOrNull("index")?.toInt() ?: 0, delta, finishReason))
@@ -592,7 +653,7 @@ internal class RaccoonSseTranslator(
             if (finishReason != null) addProperty("finish_reason", finishReason)
         }
         val obj = JsonObject().apply {
-            addProperty("id", id)
+            addProperty("id", frameId)
             addProperty("object", "chat.completion.chunk")
             addProperty("created", created)
             addProperty("model", model)

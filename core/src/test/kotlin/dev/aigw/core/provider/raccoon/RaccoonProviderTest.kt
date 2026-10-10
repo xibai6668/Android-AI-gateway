@@ -24,7 +24,7 @@ class RaccoonProviderTest {
         providerId = RaccoonProvider.ID,
         uid = "u1",
         nickname = "测试",
-        secret = """{"accessToken":"a.b.c","refreshToken":"r","expiresAt":0,"userId":"u1","nickname":"测试","machineId":"m1"}""",
+        secret = """{"accessToken":"a.b.c","refreshToken":"r","expiresAt":0,"userId":"u1","nickname":"测试"}""",
     )
 
     // ------------------------------------------------------------------ classify
@@ -95,6 +95,50 @@ class RaccoonProviderTest {
     fun `客户端非流式请求也被强制上游流式`() {
         val obj = prepare("""{"model":"m","stream":false,"messages":[]}""")
         assertTrue(obj.get("stream").asBoolean, "上游拒绝非流式，必须强制 stream:true")
+    }
+
+    @Test
+    fun `未传 stop 时补官方默认停止符且带 n=1`() {
+        val obj = prepare("""{"model":"m","messages":[]}""")
+        assertEquals("<|endofmessage|>", obj.get("stop").asString)
+        assertEquals(1, obj.get("n").asInt)
+    }
+
+    @Test
+    fun `web 通道 delta 为字符串时翻译成 content`() {
+        val translator = RaccoonSseTranslator("id", "m", 1L)
+        val out = translator.translate(
+            """data: {"status":{"code":0},"data":{"id":"abc","choices":[{"index":0,"delta":"你好"}]}}""",
+        ).joinToString("")
+        assertTrue(out.contains("\"content\":\"你好\""), out)
+        assertTrue(out.contains("\"id\":\"abc\""), "应沿用上游帧 id：$out")
+        assertTrue(out.contains("\"object\":\"chat.completion.chunk\""), out)
+    }
+
+    @Test
+    fun `web 通道 status 非 0 时转错误帧`() {
+        val translator = RaccoonSseTranslator("id", "m", 1L)
+        val out = translator.translate(
+            """data: {"status":{"code":200001,"message":"authorization_empty_error"}}""",
+        ).joinToString("")
+        assertTrue(out.contains("\"error\""), out)
+        assertTrue(out.contains("authorization_empty_error"), out)
+    }
+
+    @Test
+    fun `web 通道非流式 delta 字符串包成 message`() {
+        val body = """{"status":{"code":0},"data":{"id":"xyz","choices":[{"index":0,"delta":"答复","finish_reason":"stop"}]}}"""
+        withUpstream(body = body) { base ->
+            val call = RaccoonProvider(host = base).openChat(
+                account(),
+                """{"model":"m","messages":[{"role":"user","content":"hi"}]}""",
+            )
+            val aggregated = assertNotNull(call.aggregated)
+            val obj = JsonParser.parseString(aggregated).asJsonObject
+            assertEquals("xyz", obj.get("id").asString)
+            val message = obj.getAsJsonArray("choices")[0].asJsonObject.getAsJsonObject("message")
+            assertEquals("答复", message.get("content").asString)
+        }
     }
 
     @Test
@@ -173,7 +217,7 @@ class RaccoonProviderTest {
         block: (baseUrl: String) -> Unit,
     ) {
         val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
-        server.createContext("/api/plugin/llm/v1/chat-completions") { exchange ->
+        server.createContext("/api/web/llm/v1/chat/completions") { exchange ->
             val bytes = body.toByteArray(Charsets.UTF_8)
             exchange.responseHeaders.add("Content-Type", contentType)
             exchange.sendResponseHeaders(status, if (bytes.isEmpty()) -1L else bytes.size.toLong())
