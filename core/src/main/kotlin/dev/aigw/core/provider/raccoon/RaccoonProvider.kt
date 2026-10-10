@@ -74,18 +74,20 @@ class RaccoonProvider(
         return try {
             val models = fetchModels(credential)
             if (models.isEmpty()) {
+                hooks.onLog("小浣熊模型目录为空，使用内置快照")
                 ProviderModelCatalogView(FALLBACK_MODELS, fromFallback = true, error = "上游返回空模型列表")
             } else {
                 ProviderModelCatalogView(models, fromFallback = false, error = "")
             }
         } catch (e: Exception) {
+            hooks.onLog("小浣熊拉取模型目录失败：${e.message ?: "未知错误"}")
             ProviderModelCatalogView(FALLBACK_MODELS, fromFallback = true, error = e.message ?: "拉取模型失败")
         }
     }
 
     override fun resolveModel(requested: String): String {
         val model = requested.trim()
-        if (model.isEmpty() || model == "auto") return FALLBACK_MODELS.first().id
+        if (model.isEmpty() || model == "auto") return DEFAULT_MODEL
         return model
     }
 
@@ -396,26 +398,36 @@ class RaccoonProvider(
         if (status !in 200..299) throw IllegalStateException("模型接口 HTTP $status")
         val obj = runCatching { JsonParser.parseString(text).asJsonObject }.getOrNull()
             ?: throw IllegalStateException("模型响应不是合法 JSON")
-        val data = obj.get("data") ?: return emptyList()
+        val data = obj.get("data") ?: throw IllegalStateException("模型响应缺少 data")
+        // data 可能是数组，也可能是 {"models":[...]} / {"profiles":[...]} / {"list":[...]}
         val array = when {
             data.isJsonArray -> data.asJsonArray
             data.isJsonObject -> {
                 val d = data.asJsonObject
-                d.arrayOrNull("models") ?: d.arrayOrNull("profiles") ?: d.arrayOrNull("list") ?: return emptyList()
+                d.arrayOrNull("models")
+                    ?: d.arrayOrNull("profiles")
+                    ?: d.arrayOrNull("list")
+                    ?: d.arrayOrNull("model_list")
+                    ?: d.arrayOrNull("items")
+                    ?: throw IllegalStateException("模型响应 data 无可用列表字段")
             }
-            else -> return emptyList()
+            else -> throw IllegalStateException("模型响应 data 类型异常")
         }
         val result = ArrayList<ProviderModel>()
         val seen = HashSet<String>()
         for (element in array) {
             val item = element.takeIf { it.isJsonObject }?.asJsonObject ?: continue
-            val modelId = item.firstString("id", "model", "model_id", "modelId", "code")
+            // id 优先取上游真实 model id；部分目录把真实 id 放在 model / model_id
+            val modelId = item.firstString("id", "model", "model_id", "modelId", "name", "code")
             if (modelId.isEmpty() || !seen.add(modelId)) continue
             result.add(
                 ProviderModel(
                     id = modelId,
-                    name = item.firstString("name", "display_name", "displayName", "title", "model_name").ifEmpty { modelId },
-                    contextWindow = item.firstLong("context_window", "contextWindow", "max_input_tokens", "maxInputTokens"),
+                    name = item.firstString("display_name", "displayName", "title", "name", "model_name")
+                        .ifEmpty { modelId },
+                    contextWindow = item.firstLong(
+                        "context_window", "contextWindow", "max_input_tokens", "maxInputTokens", "max_context",
+                    ),
                 ),
             )
         }
@@ -607,10 +619,21 @@ class RaccoonProvider(
         /** 对话默认停止符，与官方 Web 前端一致。 */
         const val DEFAULT_STOP = "<|endofmessage|>"
 
-        /** 内置模型快照：上游拉不到时兜底。 */
+        /** 默认模型（官网标注为「默认」的 Raccoon Chat）。 */
+        const val DEFAULT_MODEL = "raccoon-chat-ml-5-5"
+
+        /**
+         * 内置模型快照：上游拉不到时兜底。
+         *
+         * id 是上游真实 model id（截图/报错里的蓝色等宽串，如 `raccoon-8c4485`）；
+         * name 用上游展示名。上下文/输出取截图所示。
+         */
         val FALLBACK_MODELS: List<ProviderModel> = listOf(
-            ProviderModel("raccoon-chat-ml-5-5", "Raccoon Chat", 128_000),
-            ProviderModel("Raccoon-Work", "Raccoon Work", 128_000),
+            ProviderModel("raccoon-8c4485", "Raccoon-Work", 1_000_000),
+            ProviderModel("raccoon-19b265", "Raccoon-Work-260817-A", 1_000_000),
+            ProviderModel("raccoon-405a1c", "Raccoon-Work-260817-B", 1_000_000),
+            ProviderModel("raccoon-chat-ml-5-5", "Raccoon Chat", 180_000),
+            ProviderModel("sn-sensenova-6-8-flash-lite", "SenseNova 6.8 Flash Lite", 256_000),
         )
 
         private const val CONNECT_TIMEOUT_MS = 30_000

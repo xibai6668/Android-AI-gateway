@@ -36,6 +36,26 @@ class RaccoonProviderTest {
         assertTrue(!ticket.loginUrl.contains("login_source=desktop"), "带 desktop 会走 office-raccoon:// 分支跳不回来：${ticket.loginUrl}")
     }
 
+    @Test
+    fun `内置快照含上游五个真实 model id`() {
+        val ids = RaccoonProvider.FALLBACK_MODELS.map { it.id }.toSet()
+        assertEquals(
+            setOf(
+                "raccoon-8c4485", "raccoon-19b265", "raccoon-405a1c",
+                "raccoon-chat-ml-5-5", "sn-sensenova-6-8-flash-lite",
+            ),
+            ids,
+        )
+    }
+
+    @Test
+    fun `空或 auto 解析为默认模型`() {
+        val provider = RaccoonProvider()
+        assertEquals(RaccoonProvider.DEFAULT_MODEL, provider.resolveModel(""))
+        assertEquals(RaccoonProvider.DEFAULT_MODEL, provider.resolveModel("auto"))
+        assertEquals("raccoon-8c4485", provider.resolveModel("raccoon-8c4485"))
+    }
+
     // ------------------------------------------------------------------ classify
 
     @Test
