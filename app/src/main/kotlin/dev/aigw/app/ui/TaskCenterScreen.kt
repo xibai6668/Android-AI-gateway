@@ -52,7 +52,7 @@ fun TaskCenterScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> U
                 Text("刷新全部额度")
             }
             Text(
-                text = "签到作用于 Trae 与 WorkBuddy 国内版（国际版没有签到制度，自动跳过）；" +
+                text = "签到作用于 Trae、WorkBuddy、小浣熊（国际版没有签到制度，自动跳过）；" +
                     "任务作用于 Loomy 的新手任务；额度刷新作用于全部账号。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

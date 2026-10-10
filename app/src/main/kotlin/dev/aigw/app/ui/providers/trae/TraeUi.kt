@@ -188,9 +188,12 @@ object TraeUi : ProviderUi {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ChoiceChip("签到", false) {
-                    actions.onAction(id, status.uid, ACTION_CHECKIN, JsonObject())
+            // 国际版没有签到制度，只给国内账号渲染签到入口（设备指纹校验也只对国内有效）
+            if (actions.regionOf(id, status.uid) != "global") {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ChoiceChip("签到", false) {
+                        actions.onAction(id, status.uid, ACTION_CHECKIN, JsonObject())
+                    }
                 }
             }
             Text("设备指纹", style = MaterialTheme.typography.titleSmall)

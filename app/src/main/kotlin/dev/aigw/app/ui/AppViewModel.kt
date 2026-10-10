@@ -42,6 +42,7 @@ import dev.aigw.core.provider.QuotaPack
 import dev.aigw.core.provider.custom.CustomProvider
 import dev.aigw.core.provider.RoutedModel
 import dev.aigw.core.provider.codebuddy.CodeBuddyProvider
+import dev.aigw.core.provider.trae.TraeRegion
 import dev.aigw.core.provider.trae.TraeProvider
 import dev.aigw.core.store.KeyValueStore
 import dev.aigw.core.usage.CallRecord
@@ -1002,10 +1003,8 @@ class AppViewModel(
         val targets = engine.providers()
             .filter { ProviderCapability.CHECKIN in it.capabilities }
             .flatMap { info -> engine.accounts(info.id) }
-            .filter { account ->
-                account.providerId != CodeBuddyProvider.ID ||
-                    accountRegion(account.providerId, account.uid) != CodeBuddyProvider.REGION_GLOBAL
-            }
+            // 区域型供应商的国际版没有签到制度（Trae INTL / WorkBuddy global），跳过避免整批报错
+            .filter { account -> accountRegion(account.providerId, account.uid) != TraeRegion.INTL.id }
         if (targets.isEmpty()) throw IllegalStateException("还没有支持签到的账号")
 
         val results = targets.map { account ->
@@ -1075,14 +1074,20 @@ class AppViewModel(
         return provider.deviceIdOf(account)
     }
 
-    /** 账号所属区域（WorkBuddy 凭证 domain 在 workbuddy.ai = global，否则 cn）；无区域概念返回空串。 */
+    /**
+     * 账号所属区域：WorkBuddy（workbuddy.ai = global）与 Trae（trae.ai = global），无区域概念返回空串。
+     */
     fun accountRegion(providerId: String, uid: String): String {
-        if (providerId != CodeBuddyProvider.ID) return ""
+        if (providerId != CodeBuddyProvider.ID && providerId != TraeProvider.ID) return ""
         val account = engine.account(providerId, uid) ?: return ""
         val domain = runCatching {
             com.google.gson.JsonParser.parseString(account.secret).asJsonObject.get("domain")?.asString.orEmpty()
         }.getOrDefault("").lowercase()
-        return if (domain.endsWith("workbuddy.ai")) CodeBuddyProvider.REGION_GLOBAL else CodeBuddyProvider.REGION_CN
+        return when {
+            providerId == CodeBuddyProvider.ID ->
+                if (domain.endsWith("workbuddy.ai")) TraeRegion.INTL.id else CodeBuddyProvider.REGION_CN
+            else -> if (domain.endsWith("trae.ai")) TraeRegion.INTL.id else TraeRegion.CN.id
+        }
     }
 
     fun regenerateDeviceId(providerId: String, uid: String) = action {
