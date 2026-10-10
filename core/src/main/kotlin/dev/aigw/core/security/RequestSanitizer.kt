@@ -15,6 +15,8 @@ import java.util.regex.Pattern
  * 出网取证记录：记录脱敏拦截与穿透处理的快照。
  */
 data class OutboundEvidence(
+    /** 单调自增序号：LazyColumn 的 key 用它保证唯一。 */
+    val seq: Long,
     val atMillis: Long,
     val model: String,
     val matchedTerms: List<String>,
@@ -63,6 +65,9 @@ class RequestSanitizer(
 
     private val evidenceHistory = ConcurrentLinkedDeque<OutboundEvidence>()
     private val maxEvidenceCount = 50
+
+    /** 取证记录序号：单调递增，供 LazyColumn 稳定 key 使用。 */
+    private val evidenceSeq = java.util.concurrent.atomic.AtomicLong(0)
 
     @Volatile
     private var activeWordList: List<String> = DEFAULT_SENSITIVE_WORDS
@@ -186,6 +191,7 @@ class RequestSanitizer(
         sanitizedSnippet: String,
     ) {
         val evidence = OutboundEvidence(
+            seq = evidenceSeq.getAndIncrement(),
             atMillis = nowMillis(),
             model = model,
             matchedTerms = terms,

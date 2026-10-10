@@ -10,8 +10,10 @@ data class FailoverCandidate(
     val providerId: String,          // 供应商 id（如 "trae"、"codebuddy"、"custom:zhipu"）
     val upstreamModel: String,        // 该供应商处实际对应的模型名（如 "glm-5.3-flash-20250101"）
     val priority: Int = 100,          // 优先级（数值越大越优先）
-    val weight: Int = 1,              // 同优先级下的权重
-    val timeoutMs: Long = 30_000L,    // 该候选专用超时设置
+    /** 同优先级下的权重。⚠️ 未生效：当前调度只按 priority 排序，权重无消费方；保留字段仅为配置兼容。 */
+    val weight: Int = 1,
+    /** 该候选专用超时。⚠️ 未生效：上游超时由各 Provider 自己的 READ_TIMEOUT 决定，此字段无消费方；保留仅为配置兼容。 */
+    val timeoutMs: Long = 30_000L,
 ) {
     fun toJson(): JsonObject = JsonObject().apply {
         addProperty("providerId", providerId)

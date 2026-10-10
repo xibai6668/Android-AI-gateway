@@ -14,6 +14,9 @@ class AccountRateLimiter(
     /** 记录每个账号（`providerId/uid`）上次向上游发送请求的时间戳。 */
     private val lastDispatchTimeMap = ConcurrentHashMap<String, Long>()
 
+    /** 每账号锁对象：避免用 `String.intern()` 做锁（会污染字符串常量池且跨类意外竞争）。 */
+    private val locks = ConcurrentHashMap<String, Any>()
+
     /**
      * 在即将调用上游前阻塞等待，直到满足该账号的节拍约束。
      *
@@ -43,7 +46,7 @@ class AccountRateLimiter(
         }
         val targetInterval = minIntervalMillis + jitter
 
-        synchronized(key.intern()) {
+        synchronized(locks.computeIfAbsent(key) { Any() }) {
             val lastTime = lastDispatchTimeMap[key] ?: 0L
             val elapsed = now - lastTime
             val waitTime = (targetInterval - elapsed).coerceAtLeast(0L)
@@ -62,5 +65,6 @@ class AccountRateLimiter(
 
     fun clear() {
         lastDispatchTimeMap.clear()
+        locks.clear()
     }
 }

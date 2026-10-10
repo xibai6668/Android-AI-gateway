@@ -160,8 +160,9 @@ fun LogsScreen(state: AppUiState, viewModel: AppViewModel) {
                         }
                     }
                 } else {
-                    // key 取时间戳+内容：日志最新在前，新到一条时其余项可按身份复用而不必全部重绑
-                    itemsIndexed(state.logs, key = { _, line -> "${line.atMillis}-${line.text}" }) { _, line ->
+                    // key 用单调自增的 seq：时间戳+内容可能重复（同一秒内多条相同日志），
+                    // 重复 key 会让 LazyColumn 直接崩溃。
+                    itemsIndexed(state.logs, key = { _, line -> line.seq }) { _, line ->
                         SectionCard {
                             Text(
                                 text = line.render(),

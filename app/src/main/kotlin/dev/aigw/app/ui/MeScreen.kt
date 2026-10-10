@@ -14,6 +14,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -344,6 +345,9 @@ private fun AboutDialog(onDismiss: () -> Unit) {
 
 @Composable
 fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) {
+    // 存储占用只在数据管理页刷过，本页「存储」卡片读的是同一份 state，
+    // 不主动刷新会恒为 0；进入本页时算一次（代价高，不放进 refresh）。
+    LaunchedEffect(Unit) { viewModel.refreshStorage() }
     PageScaffold(
         title = "用量统计",
         subtitle = "累计与今日",

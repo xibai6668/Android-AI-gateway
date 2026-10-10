@@ -236,10 +236,8 @@ private fun EvidenceSheet(
                 ) {
                     itemsIndexed(
                         evidences,
-                        // key 取时间戳+模型+命中词：取证记录也是最新在前，避免刷新后整列重绑
-                        key = { _, item ->
-                            "${item.atMillis}-${item.model}-${item.matchedTerms.joinToString(",")}"
-                        },
+                        // key 用单调自增的 seq：时间戳+模型+命中词可能重复，重复 key 会让 LazyColumn 崩溃
+                        key = { _, item -> item.seq },
                     ) { index, item ->
                         Column(
                             modifier = Modifier

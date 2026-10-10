@@ -27,6 +27,7 @@ import dev.aigw.core.provider.queryParam
 import dev.aigw.core.provider.requestedModelOf
 import dev.aigw.core.store.KeyValueStore
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Trae 国内版 SOLO 通道。
@@ -50,25 +51,27 @@ class TraeProvider(
         setOf(ProviderCapability.CREDIT_REFRESH, ProviderCapability.CHECKIN)
 
     // 国内 / 国际两套客户端：上游 host 不同（trae.cn vs trae.ai），按账号区域取用。
-    private val chatClients = HashMap<TraeRegion, TraeChatClient>()
-    private val authClients = HashMap<TraeRegion, TraeAuthClient>()
-    private val checkinClients = HashMap<TraeRegion, TraeCheckinClient>()
-    private val catalogs = HashMap<TraeRegion, TraeModelCatalog>()
+    // 网关多线程并发调用 openChat/listModels，reconfigure() 也会并发 clear()，
+    // 故必须用 ConcurrentHashMap（普通 HashMap 并发读写会死循环/丢数据）。
+    private val chatClients = ConcurrentHashMap<TraeRegion, TraeChatClient>()
+    private val authClients = ConcurrentHashMap<TraeRegion, TraeAuthClient>()
+    private val checkinClients = ConcurrentHashMap<TraeRegion, TraeCheckinClient>()
+    private val catalogs = ConcurrentHashMap<TraeRegion, TraeModelCatalog>()
 
     private fun chatClient(region: TraeRegion): TraeChatClient =
-        chatClients.getOrPut(region) { TraeChatClient(version(), region.agentHost) }
+        chatClients.computeIfAbsent(region) { TraeChatClient(version(), region.agentHost) }
 
     // TraeAuthClient 读取账号自身的 apiHost，不按区域分实例
-    private val authClientSingleton: TraeAuthClient get() = authClients.getOrPut(TraeRegion.CN) { TraeAuthClient(version()) }
+    private val authClientSingleton: TraeAuthClient get() = authClients.computeIfAbsent(TraeRegion.CN) { TraeAuthClient(version()) }
 
     @Suppress("UNUSED_PARAMETER")
     private fun authClient(region: TraeRegion): TraeAuthClient = authClientSingleton
 
     private fun checkinClient(region: TraeRegion): TraeCheckinClient =
-        checkinClients.getOrPut(region) { TraeCheckinClient(version(), region.ugHost) }
+        checkinClients.computeIfAbsent(region) { TraeCheckinClient(version(), region.ugHost) }
 
     private fun catalog(region: TraeRegion): TraeModelCatalog =
-        catalogs.getOrPut(region) { TraeModelCatalog(chatClient(region), nowMillis) }
+        catalogs.computeIfAbsent(region) { TraeModelCatalog(chatClient(region), nowMillis) }
 
     /** 客户端版本号变更后重建各客户端，并让模型目录缓存失效。 */
     fun reconfigure() {

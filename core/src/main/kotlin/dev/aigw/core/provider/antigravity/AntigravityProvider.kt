@@ -776,6 +776,9 @@ class AntigravityProvider(
         const val ID = "antigravity"
 
         const val CLIENT_ID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
+        // 这是 Google 为「已安装应用」（installed-app）OAuth 客户端下发的公开 client_secret：
+        // 按 OAuth 2.0 规范，这类客户端的 secret 无法保密、Google 也不当它作凭证，公开在客户端里是正常做法。
+        // 不要因为它长得像密钥就删掉——删了 OAuth 换 token 会直接失败。
         const val CLIENT_SECRET = "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"
         const val CALLBACK_PORT = 51121
 

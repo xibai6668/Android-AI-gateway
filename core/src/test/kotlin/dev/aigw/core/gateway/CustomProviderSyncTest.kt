@@ -50,6 +50,18 @@ class CustomProviderSyncTest {
     }
 
     @Test
+    fun `空 apiKeys 配置不会删掉已有账号`() {
+        val engine = engine()
+        engine.syncCustomAccounts(config(listOf("sk-1", "sk-2")))
+        assertEquals(2, engine.accounts("custom:site").size)
+
+        // 编辑供应商基本信息时 apiKeys 恒为空（key 由「添加账号」单独维护）：
+        // 必须原样保留账号，否则保存一次就丢光全部 key。
+        engine.syncCustomAccounts(config(emptyList()))
+        assertEquals(2, engine.accounts("custom:site").size, "空表同步不得删除任何账号")
+    }
+
+    @Test
     fun `重复同步不会产生重复账号`() {
         val engine = engine()
         repeat(3) { engine.syncCustomAccounts(config(listOf("sk-1"))) }

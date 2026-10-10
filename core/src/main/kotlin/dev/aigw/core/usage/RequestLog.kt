@@ -9,6 +9,8 @@ import java.util.Locale
 
 /** 「请求日志」页用的一行日志。 */
 data class LogLine(
+    /** 单调自增序号：LazyColumn 的 key 用它保证唯一（时间戳+内容可能重复，会崩）。 */
+    val seq: Long,
     val atMillis: Long,
     val level: String,
     val text: String,
@@ -31,6 +33,9 @@ class RequestLog(
 ) {
     private val lines = ArrayDeque<LogLine>()
     private var lastPersistAt = 0L
+
+    /** 日志行序号：同一实例内单调递增，供 LazyColumn 稳定 key 使用。 */
+    private var nextSeq = 0L
 
     init {
         load()
@@ -60,7 +65,7 @@ class RequestLog(
 
     private fun append(level: String, text: String) {
         val now = nowMillis()
-        lines.addFirst(LogLine(now, level, text))
+        lines.addFirst(LogLine(nextSeq++, now, level, text))
         while (lines.size > capacity) lines.removeLast()
         if (now - lastPersistAt >= persistIntervalMillis) persist()
     }
@@ -85,6 +90,7 @@ class RequestLog(
             val obj = runCatching { element.asJsonObject }.getOrNull() ?: continue
             lines.addLast(
                 LogLine(
+                    seq = nextSeq++,
                     atMillis = obj.get("at")?.asLong ?: 0L,
                     level = obj.get("level")?.asString.orEmpty(),
                     text = obj.get("text")?.asString.orEmpty(),

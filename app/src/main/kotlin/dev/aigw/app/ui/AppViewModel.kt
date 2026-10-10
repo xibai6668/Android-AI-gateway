@@ -262,9 +262,6 @@ data class AppUiState(
     fun accountsOf(providerId: String): List<AccountStatus> = accounts.filter { it.providerId == providerId }
 
     fun providerOf(providerId: String): ProviderInfo? = providers.firstOrNull { it.id == providerId }
-
-    /** 至少有一个可用账号的供应商数量（首页展示「有几个能用」而不是供应商总数）。 */
-    val usableProviders: Int get() = providers.count { it.usableCount > 0 }
 }
 
 private class Snapshot(

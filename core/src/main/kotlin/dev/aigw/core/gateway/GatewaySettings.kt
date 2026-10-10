@@ -14,8 +14,15 @@ data class GatewaySettings(
     val apiKey: String = "",
     /** 「无 Key 调用」开关：允许客户端不填 Key 直连。 */
     val allowNoKey: Boolean = true,
-    /** 是否同时监听局域网（关闭则只绑 127.0.0.1）。 */
-    val exposeLan: Boolean = true,
+    /**
+     * 是否同时监听局域网（关闭则只绑 127.0.0.1）。
+     *
+     * 默认 false（仅本机）：局域网暴露会把网关端口开给同网段所有设备，
+     * 而默认 allowNoKey=true 时任何设备都能直接调用，风险过大。
+     * [fromJson] 用 [boolOr] 读旧配置：已存过值的用户（无论 true/false）保持原值，
+     * 仅当字段缺失（老版本升级/首次运行）时才落到这个新默认。
+     */
+    val exposeLan: Boolean = false,
     /** 「只看可用模型」开关：隐藏上游的非对话内部条目。 */
     val onlyUsableModels: Boolean = false,
     /** token 预刷新窗口。 */

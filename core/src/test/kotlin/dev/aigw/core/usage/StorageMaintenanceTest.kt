@@ -59,6 +59,26 @@ class StorageMaintenanceTest {
         assertEquals(30, GatewaySettings.fromJson(legacy).logRetentionDays)
     }
 
+    // ------------------------------------------------------------------ 局域网暴露默认值
+
+    @Test
+    fun `exposeLan 默认关闭仅本机`() {
+        assertEquals(false, GatewaySettings().exposeLan, "新默认应只绑 127.0.0.1")
+        // 字段缺失（老配置/首次运行）才落到新默认
+        val legacy = GatewaySettings().toJson().apply { remove("exposeLan") }.toString()
+        assertEquals(false, GatewaySettings.fromJson(legacy).exposeLan)
+    }
+
+    @Test
+    fun `老用户已存的 exposeLan 值不会被新默认覆盖`() {
+        // 之前存过 true 的用户读回必须还是 true，不能被新默认 false 静默改掉
+        val storedTrue = GatewaySettings(exposeLan = true).toJson().toString()
+        assertEquals(true, GatewaySettings.fromJson(storedTrue).exposeLan)
+
+        val storedFalse = GatewaySettings(exposeLan = false).toJson().toString()
+        assertEquals(false, GatewaySettings.fromJson(storedFalse).exposeLan)
+    }
+
     // ------------------------------------------------------------------ 过期清理
 
     @Test

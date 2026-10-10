@@ -107,6 +107,12 @@ internal class GatewayProxySelector(
     private val providerHosts: () -> Map<String, List<String>>,
 ) : ProxySelector() {
 
+    /** 通配规则编译缓存：excludedHosts 内容变了才重编（每次连接现编 Regex 开销大）。 */
+    @Volatile
+    private var ruleCacheSource: List<String>? = null
+    @Volatile
+    private var ruleCache: List<CompiledRule> = emptyList()
+
     override fun select(uri: URI): List<Proxy> {
         val config = settings()
         if (!config.usable) return NO_PROXY
@@ -133,29 +139,60 @@ internal class GatewayProxySelector(
     }
 
     private fun isExcludedByRule(host: String, uri: URI, rules: List<String>): Boolean {
-        for (raw in rules) {
-            val rule = raw.trim().lowercase()
-            if (rule.isEmpty()) continue
-            if (rule.contains('/')) {
-                if (matchesCidr(host, rule)) return true
-                continue
-            }
-            val portSuffix = rule.substringAfterLast(':', "")
-            val rulePort = portSuffix.toIntOrNull()
-            val hostRule = if (rulePort != null) rule.substringBeforeLast(':') else rule
-            if (rulePort != null && rulePort != effectivePort(uri)) continue
-            when {
-                hostRule.contains('*') ->
-                    if (Regex(hostRule.split('*').joinToString(".*") { Regex.escape(it) }).matches(host)) return true
-                host == hostRule || host.endsWith(".$hostRule") -> return true
-            }
+        for (rule in compiledRules(rules)) {
+            if (rule.matches(host, uri)) return true
         }
         return false
     }
 
-    /** URI 未写端口时按 scheme 补默认值，让 example.com:443 能匹配 https://example.com/x。 */
-    private fun effectivePort(uri: URI): Int =
-        uri.port.takeIf { it != -1 } ?: if (uri.scheme.equals("http", ignoreCase = true)) 80 else 443
+    /** 按 excludedHosts 内容缓存预编译规则：内容不变就复用，内容变了才重建。 */
+    private fun compiledRules(rules: List<String>): List<CompiledRule> {
+        val cachedSource = ruleCacheSource
+        if (cachedSource == rules) return ruleCache
+        val compiled = rules.mapNotNull { compileRule(it) }
+        ruleCacheSource = rules
+        ruleCache = compiled
+        return compiled
+    }
+
+    /** 一条已编译的排除规则（普通域名或通配正则）。 */
+    private open class CompiledRule(
+        val hostRule: String,
+        val port: Int?,
+        val regex: Regex?,
+    ) {
+        open fun matches(host: String, uri: URI): Boolean {
+            if (port != null && port != effectivePort(uri)) return false
+            val re = regex
+            return if (re != null) re.matches(host) else host == hostRule || host.endsWith(".$hostRule")
+        }
+
+        private companion object {
+            fun effectivePort(uri: URI): Int =
+                uri.port.takeIf { it != -1 } ?: if (uri.scheme.equals("http", ignoreCase = true)) 80 else 443
+        }
+    }
+
+    /** IPv4 CIDR 规则（如 192.168.10.0/24）；非 IPv4 字面量或规则非法时一律不匹配。 */
+    private inner class CidrRule(private val rule: String) : CompiledRule(hostRule = "", port = null, regex = null) {
+        override fun matches(host: String, uri: URI): Boolean = matchesCidr(host, rule)
+    }
+
+    private fun compileRule(raw: String): CompiledRule? {
+        val rule = raw.trim().lowercase()
+        if (rule.isEmpty()) return null
+        // CIDR 规则不适合缓存成正则，单独一类（数量少、无正则编译开销）
+        if (rule.contains('/')) return CidrRule(rule)
+        val portSuffix = rule.substringAfterLast(':', "")
+        val rulePort = portSuffix.toIntOrNull()
+        val hostRule = if (rulePort != null) rule.substringBeforeLast(':') else rule
+        val regex = if (hostRule.contains('*')) {
+            Regex(hostRule.split('*').joinToString(".*") { Regex.escape(it) })
+        } else {
+            null
+        }
+        return CompiledRule(hostRule, rulePort, regex)
+    }
 
     /** 仅支持 IPv4 CIDR；host 非 IPv4 字面量或规则非法时一律不匹配。 */
     private fun matchesCidr(host: String, rule: String): Boolean {

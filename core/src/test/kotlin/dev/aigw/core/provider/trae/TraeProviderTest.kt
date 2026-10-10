@@ -129,4 +129,42 @@ class TraeProviderTest {
         val size = (field.get(provider) as Map<*, *>).size
         assertTrue(size <= 40, "设备指纹暂存应被限容，实际 $size 条")
     }
+
+    /**
+     * 回归：客户端缓存曾是普通 HashMap，网关多线程并发 getOrPut、reconfigure() 并发 clear()
+     * 会导致死循环/丢数据。这里验证字段类型已换成线程安全容器，并并发 access 不崩。
+     */
+    @Test
+    fun `客户端缓存字段是线程安全容器且并发访问不崩`() {
+        val provider = provider()
+        val field = TraeProvider::class.java.getDeclaredField("chatClients")
+        field.isAccessible = true
+        val cache = field.get(provider) as java.util.concurrent.ConcurrentHashMap<*, *>
+        assertEquals(
+            java.util.concurrent.ConcurrentHashMap::class.java,
+            cache.javaClass,
+            "chatClients 必须是 ConcurrentHashMap（原 HashMap 并发不安全）",
+        )
+
+        val regions = TraeRegion.entries.toList()
+        val errors = java.util.concurrent.atomic.AtomicInteger(0)
+        val threads = (0 until 8).map { i ->
+            Thread {
+                repeat(300) { n ->
+                    try {
+                        val region = regions[(i + n) % regions.size]
+                        @Suppress("UNCHECKED_CAST")
+                        (cache as java.util.concurrent.ConcurrentHashMap<TraeRegion, Any>)
+                            .computeIfAbsent(region) { Any() }
+                        if (n % 50 == 0) provider.reconfigure()
+                    } catch (e: Throwable) {
+                        errors.incrementAndGet()
+                    }
+                }
+            }
+        }
+        threads.forEach { it.start() }
+        threads.forEach { it.join(10_000) }
+        assertEquals(0, errors.get(), "并发访问客户端缓存不应抛异常")
+    }
 }

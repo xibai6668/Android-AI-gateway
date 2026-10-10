@@ -314,10 +314,6 @@ class GatewayEngine(
     fun metricsOf(providerId: String): dev.aigw.core.failover.ProviderMetricsTracker =
         providerMetrics.computeIfAbsent(providerId) { dev.aigw.core.failover.ProviderMetricsTracker() }
 
-    /** 导出全部供应商的健康观测指标快照 */
-    fun providerMetricsSnapshot(): Map<String, Map<String, Any>> =
-        providerMetrics.mapValues { it.value.snapshot() }
-
     // ------------------------------------------------------------------ 代理
 
     fun proxySettings(): ProxySettings = proxy
@@ -461,6 +457,10 @@ class GatewayEngine(
      * 不同步的话保存完进详情页会看不到刚填的 key。
      */
     fun syncCustomAccounts(config: CustomProviderConfig) {
+        // 空表保护：自定义供应商的 API Key 实际由「添加账号」单独维护，配置里的 apiKeys
+        // 通常恒为空（编辑基本信息时也不填）。若不拦截，wanted 为空会走到下面的删除分支，
+        // 把该供应商的账号全部删光。空表时绝不动账号池。
+        if (config.apiKeys.isEmpty()) return
         val providerId = config.providerId
         val wanted = config.apiKeys.map { CustomProvider.uidOf(it) }
         val existing = accounts(providerId).map { it.uid }
@@ -510,12 +510,17 @@ class GatewayEngine(
     fun refreshCreditsSoon(providerId: String, uid: String) {
         val key = "$providerId/$uid"
         val now = nowMillis()
-        // 占坑式节流：首次或距上次超过间隔的线程 replace 成功才触发刷新，
-        // 同账号并发对话只放行一个，其余直接放弃（下一轮对话还会再试）。
-        val acquired = if (lastAutoCreditRefresh.containsKey(key)) {
-            lastAutoCreditRefresh.replace(key, lastAutoCreditRefresh[key] ?: 0L, now)
-        } else {
+        // 距上次不足最小间隔就直接跳过（连发对话时最多每 10s 补刷一次）。
+        // 注意：判断必须用「读到的值」而不是当前值做 CAS 期望——
+        // 原先的 replace(key, lastAutoCreditRefresh[key] ?: 0L, now) 期望值即当前值，
+        // CAS 恒成功，节流形同虚设。
+        val prev = lastAutoCreditRefresh[key]
+        if (prev != null && now - prev < AUTO_CREDIT_REFRESH_MIN_INTERVAL_MS) return
+        // 占坑式节流：同账号并发对话只放行一个，其余直接放弃（下一轮对话还会再试）。
+        val acquired = if (prev == null) {
             lastAutoCreditRefresh.putIfAbsent(key, now) == null
+        } else {
+            lastAutoCreditRefresh.replace(key, prev, now)
         }
         if (acquired) creditRefresher.execute { runCatching { refreshCredits(providerId, uid) } }
     }
@@ -804,7 +809,7 @@ class GatewayEngine(
         if (enabledProviders.isEmpty()) return ModelsCatalog(emptyList())
 
         val futures = enabledProviders.map { provider ->
-            ioPool.submit<ProviderModelsChunk> {
+            provider.id to ioPool.submit<ProviderModelsChunk> {
                 val chunk = fetchProviderModels(provider)
                 onChunk(chunk)
                 chunk
@@ -813,9 +818,16 @@ class GatewayEngine(
 
         val aggregated = ArrayList<RoutedModel>()
         val failures = LinkedHashMap<String, String>()
-        for (future in futures) {
+        for ((providerId, future) in futures) {
             val chunk = try {
-                future.get()
+                // 各 Provider 的 READ_TIMEOUT 长达 300s，/v1/models 阻塞版不能无限等，
+                // 超时后取消该任务并按该供应商拉取失败处理。
+                future.get(MODELS_FETCH_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            } catch (e: java.util.concurrent.TimeoutException) {
+                future.cancel(true)
+                logWarn("拉取模型目录超时（$providerId，${MODELS_FETCH_TIMEOUT_SECONDS}s）")
+                failures[providerId] = "拉取模型目录超时"
+                continue
             } catch (_: Exception) {
                 continue
             }
@@ -1133,7 +1145,8 @@ class GatewayEngine(
             lower.startsWith("doubao") || lower.startsWith("seed-") -> "trae"
             lower.startsWith("spark") || lower.contains("星火") -> "loomy"
             lower.startsWith("deepseek") || lower.startsWith("kimi") || lower.startsWith("minimax") || lower.startsWith("glm") || lower.startsWith("qwen") -> {
-                listOf("codebuddy", "trae").firstOrNull { pool.size(it) > 0 }
+                // 只认已启用且有账号的供应商，避免推导到一个被用户关掉的供应商
+                listOf("codebuddy", "trae").firstOrNull { providerSettings(it).enabled && pool.size(it) > 0 }
             }
             else -> null
         }
@@ -1210,6 +1223,9 @@ class GatewayEngine(
 
         /** 「截断超长记录内容」默认截到 4K 字符：足够看清请求，又不至于让存储爆掉。 */
         const val DEFAULT_TRUNCATE_CHARS = 4_000
+
+        /** `/v1/models` 单个供应商拉取模型目录的超时（秒）：上游 READ_TIMEOUT 300s 不能无限等。 */
+        const val MODELS_FETCH_TIMEOUT_SECONDS = 20L
 
         const val CUSTOM_PREFIX = "custom:"
 
