@@ -91,6 +91,22 @@ class RaccoonProviderTest {
         assertEquals("not-json", prepareRaccoonBody("not-json"))
     }
 
+    @Test
+    fun `客户端非流式请求也被强制上游流式`() {
+        val obj = prepare("""{"model":"m","stream":false,"messages":[]}""")
+        assertTrue(obj.get("stream").asBoolean, "上游拒绝非流式，必须强制 stream:true")
+    }
+
+    @Test
+    fun `上游未包裹的 SSE 帧也能翻译`() {
+        val translator = RaccoonSseTranslator("id", "m", 1L)
+        val out = translator.translate(
+            """data: {"choices":[{"index":0,"delta":{"content":"裸"},"finish_reason":"stop"}]}""",
+        ).joinToString("")
+        assertTrue(out.contains("\"content\":\"裸\""), out)
+        assertTrue(out.contains("\"object\":\"chat.completion.chunk\""), out)
+    }
+
     // ------------------------------------------------------------------ SSE 翻译
 
     @Test

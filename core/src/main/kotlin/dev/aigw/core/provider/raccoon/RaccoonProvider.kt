@@ -149,7 +149,7 @@ class RaccoonProvider(
         }
         val completion = jsonToCompletion(parsed, model) ?: return StreamFailureChatCall(
             status,
-            UpstreamError(ErrorKind.CLIENT, "上游响应缺少 data.choices（HTTP $status）：${text.trim().take(200)}"),
+            UpstreamError(ErrorKind.CLIENT, "上游响应缺少 choices（HTTP $status）：${text.trim().take(200)}"),
         )
         if (OpenAiSseAggregator.isEmptyCompletion(completion)) {
             return emptyUpstreamFailure(status, contentType, completion)
@@ -173,17 +173,17 @@ class RaccoonProvider(
         ),
     )
 
-    /** 把上游 `data` 里的 choices 包成标准 `chat.completion`。 */
+    /** 把上游响应里的 choices 包成标准 `chat.completion`。 */
     private fun jsonToCompletion(envelope: JsonObject, model: String): String? {
-        val data = envelope.objOrNull("data") ?: return null
-        val choices = data.arrayOrNull("choices") ?: return null
+        val data = envelope.objOrNull("data")
+        val choices = data?.arrayOrNull("choices") ?: envelope.arrayOrNull("choices") ?: return null
         return JsonObject().apply {
             addProperty("id", newCompletionId())
             addProperty("object", "chat.completion")
             addProperty("created", nowMillis() / 1000)
             addProperty("model", model)
             add("choices", choices)
-            data.objOrNull("usage")?.let { add("usage", it) }
+            (data?.objOrNull("usage") ?: envelope.objOrNull("usage"))?.let { add("usage", it) }
         }.toString()
     }
 
@@ -512,7 +512,7 @@ class RaccoonProvider(
  *
  * - `max_tokens` → `max_new_tokens`；
  * - `temperature`/`top_p`/`frequency_penalty`/`presence_penalty`/`stop` 同名保留；
- * - `stream` 保留；
+ * - **强制 `stream:true`**（上游拒绝非流式，客户端实测非流式请求会失败），非流式由本类聚合；
  * - `tools` 原样映射，并带上 `tool_choice:"auto"`。
  *
  * 上游只接受上述字段，其它字段（`n`/`user`/`response_format` 等）一律丢弃。
@@ -527,7 +527,7 @@ internal fun prepareRaccoonBody(src: String): String {
         obj.doubleOrNull("top_p")?.let { addProperty("top_p", it) }
         obj.doubleOrNull("frequency_penalty")?.let { addProperty("frequency_penalty", it) }
         obj.doubleOrNull("presence_penalty")?.let { addProperty("presence_penalty", it) }
-        addProperty("stream", obj.boolOrNull("stream") ?: false)
+        addProperty("stream", true)
         obj.get("stop")?.takeIf { !it.isJsonNull }?.let { add("stop", it) }
         obj.arrayOrNull("tools")?.let { tools ->
             add("tools", tools)
@@ -569,7 +569,8 @@ internal class RaccoonSseTranslator(
             val message = status?.stringOrNull("message").orEmpty().ifEmpty { "上游流内错误（code=$code）" }
             return listOf(errorFrame(code, message), SSE_DONE)
         }
-        val data = envelope.objOrNull("data") ?: return emptyList()
+        // 上游流式帧有的带外层包裹（`{"status":..,"data":{...}}`），有的直接是 OpenAI chunk，两种都兼容。
+        val data = envelope.objOrNull("data") ?: envelope
         val choices = data.arrayOrNull("choices") ?: return emptyList()
         val out = ArrayList<String>(1)
         for (element in choices) {
