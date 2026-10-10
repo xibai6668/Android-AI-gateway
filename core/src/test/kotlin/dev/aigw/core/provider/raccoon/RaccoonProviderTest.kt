@@ -27,6 +27,15 @@ class RaccoonProviderTest {
         secret = """{"accessToken":"a.b.c","refreshToken":"r","expiresAt":0,"userId":"u1","nickname":"测试"}""",
     )
 
+    @Test
+    fun `登录 URL 带 redirect 且不带 login_source=desktop`() {
+        val provider = RaccoonProvider(host = "https://xiaohuanxiong.com")
+        val ticket = provider.beginWebLogin("http://127.0.0.1:51122/callback")
+        assertTrue(ticket.loginUrl.startsWith("https://xiaohuanxiong.com/code/authorize?"), ticket.loginUrl)
+        assertTrue(ticket.loginUrl.contains("redirect=http%3A%2F%2F127.0.0.1%3A51122%2Fcallback"), ticket.loginUrl)
+        assertTrue(!ticket.loginUrl.contains("login_source=desktop"), "带 desktop 会走 office-raccoon:// 分支跳不回来：${ticket.loginUrl}")
+    }
+
     // ------------------------------------------------------------------ classify
 
     @Test

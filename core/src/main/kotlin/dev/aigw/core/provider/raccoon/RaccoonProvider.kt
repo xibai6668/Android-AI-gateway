@@ -3,6 +3,7 @@ package dev.aigw.core.provider.raccoon
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import dev.aigw.core.provider.ACTION_CHECKIN
 import dev.aigw.core.provider.AggregatedChatCall
 import dev.aigw.core.provider.AuthKind
 import dev.aigw.core.provider.ChatCall
@@ -13,6 +14,8 @@ import dev.aigw.core.provider.LineTransformStream
 import dev.aigw.core.provider.OpenAiSseAggregator
 import dev.aigw.core.provider.Provider
 import dev.aigw.core.provider.ProviderAccount
+import dev.aigw.core.provider.ProviderActionResult
+import dev.aigw.core.provider.ProviderCapability
 import dev.aigw.core.provider.ProviderHooks
 import dev.aigw.core.provider.ProviderModel
 import dev.aigw.core.provider.ProviderModelCatalogView
@@ -58,6 +61,8 @@ class RaccoonProvider(
     override val id: String = ID
     override val displayName: String = "小浣熊"
     override val authKind: AuthKind = AuthKind.WEBVIEW_CALLBACK
+    override val capabilities: Set<ProviderCapability> =
+        setOf(ProviderCapability.CREDIT_REFRESH, ProviderCapability.CHECKIN)
 
     // ------------------------------------------------------------------ 模型
 
@@ -267,8 +272,10 @@ class RaccoonProvider(
     // ------------------------------------------------------------------ 网页登录
 
     override fun beginWebLogin(callbackUrl: String): WebLoginTicket {
+        // 不要带 login_source=desktop：授权页会走 `office-raccoon://auth/callback` 自定义 scheme 分支
+        // （手机上没有 App 能接），反而不回 redirect。不传时授权页才把 `?authorization_code=…` 回推到 callbackUrl。
         val loginUrl = "$host$PATH_LOGIN" +
-            "?login_source=desktop&appname=" + enc(APP_NAME) +
+            "?appname=" + enc(APP_NAME) +
             "&redirect=" + enc(callbackUrl)
         return WebLoginTicket(randomHex(16), loginUrl, callbackUrl)
     }
@@ -317,6 +324,40 @@ class RaccoonProvider(
         val trimmed = raw.trim()
         if (trimmed.isEmpty()) return null
         return completeWebLogin(trimmed)
+    }
+
+    /** 每日签到领积分（web 通道）。 */
+    override fun performAction(
+        account: ProviderAccount,
+        action: String,
+        payload: JsonObject,
+    ): ProviderActionResult = when (action) {
+        ACTION_CHECKIN -> checkin(account)
+        else -> ProviderActionResult.unsupported(action)
+    }
+
+    private fun checkin(account: ProviderAccount): ProviderActionResult {
+        val credential = parse(account) ?: return ProviderActionResult.failure("凭证无法解析")
+        return try {
+            val (status, text) = postJson("$host$PATH_GRANT", "{}", jsonHeaders(credential))
+            if (status !in 200..299) {
+                return ProviderActionResult.failure(extractMessage(text).ifEmpty { "签到失败（HTTP $status）" })
+            }
+            val message = extractMessage(text)
+            val points = runCatching {
+                JsonParser.parseString(text).asJsonObject.objOrNull("data")
+                    ?.firstLong("points", "available_points", "amount", "reward", "credits") ?: 0L
+            }.getOrDefault(0L)
+            ProviderActionResult.success(
+                when {
+                    points > 0 -> "签到成功，+$points 积分"
+                    message.isNotEmpty() -> message
+                    else -> "签到成功"
+                },
+            )
+        } catch (e: Exception) {
+            ProviderActionResult.failure(e.message ?: "签到失败")
+        }
     }
 
     // ------------------------------------------------------------------ 上游
@@ -524,6 +565,9 @@ class RaccoonProvider(
         const val PATH_CHAT = "/api/web/llm/v1/chat/completions"
         const val PATH_MODELS = "/api/web/llm/v1/model_catalog"
         const val PATH_BALANCE = "/api/web/points/v1/balance"
+
+        /** 每日签到领积分。 */
+        const val PATH_GRANT = "/api/web/desktop/v1/login/points/grant"
 
         /** 伪装成官方桌面 Web 客户端的 UA（web 通道的调用方就是它）。 */
         const val CLIENT_UA =

@@ -143,7 +143,7 @@ call/...                           # 调用日志
 | WorkBuddy | `codebuddy` | 设备授权（state 轮询） | 国内 `copilot.tencent.com` / 国际 `workbuddy.ai` | 上游拒绝非流式（必须 stream:true）；tool_choice 只认字符串；签到/成长中心仅国内版 |
 | Antigravity | `antigravity` | OAuth loopback 51121 | `cloudcode-pa.googleapis.com` | Gemini 风格：role 用 user/model；schema 不支持 const/$ref；contents 必须严格交替；tool 参数名是 parametersJsonSchema；response.result 必须是字符串 |
 | Loomy | `loomy` | 手机短信 | `xfinfr.com` | 鉴权失败是 **HTTP 200 + 业务码**，不是 4xx |
-| 小浣熊 | `raccoon` | 网页回调（`/code/authorize` → `authorization_code`） | `xiaohuanxiong.com`（web 通道） | 对话走 `/api/web/llm/v1/chat/completions`；真正的 OpenAI 结构被包在 `data` 里（`{"status":..,"data":..}`），且 `delta` 是**字符串**不是对象；请求体 `max_tokens` 要改名 `max_new_tokens`；需伪装桌面 Web 客户端 UA |
+| 小浣熊 | `raccoon` | 网页回调（`/code/authorize` → `authorization_code`） | `xiaohuanxiong.com`（web 通道） | 登录 URL **不能带 `login_source=desktop`**（否则走 `office-raccoon://` 分支跳不回来）；对话 `/api/web/llm/v1/chat/completions` 的 `delta` 是**字符串**不是对象；`max_tokens`→`max_new_tokens`；有签到/积分接口 |
 | 自定义 | `custom:<key>` | API Key | 用户填的 baseUrl | 无 |
 
 ---
@@ -192,10 +192,11 @@ Google 对同一个 refresh_token 的高频 token 换新有风控。0.1.53~0.1.5
 - **鉴权失败是 HTTP 200 + 业务码**（JSON 里 code 字段），不是 4xx。不做业务码判定会把错误 JSON 当正常回复透传。
 
 ### 商汤小浣熊（raccoon）
-- 登录是网页回调：`/code/authorize?login_source=desktop&appname=Raccoon&redirect=<回调>`，回调带 `authorization_code`，再 `POST /api/web/auth/v1/login_with_authorization_code` 换 `access_token`(JWT)/`refresh_token`。
+- 登录是网页回调：`/code/authorize?appname=Raccoon&redirect=<回调>`，回调带 `authorization_code`，再 `POST /api/web/auth/v1/login_with_authorization_code` 换 `access_token`(JWT)/`refresh_token`。
+- ⚠️ **不要带 `login_source=desktop`**：授权页在 `login_source=desktop` 时走 `office-raccoon://auth/callback?code=…` 自定义 scheme 分支（手机上没有 App 能接，表现为「点授权跳首页、登录不回来」）；不传时才会把 `?authorization_code=…` 回推到 `redirect`（`window.open(redirect+code)`）。`redirect` 不传时兜底跳官网首页，这正是 bug 现象。
+- 每日签到领积分：`POST /api/web/desktop/v1/login/points/grant`（空 body）；余额 `GET /api/web/points/v1/balance`（字段 `available_points`）。
 - 对话端点 `POST /api/web/llm/v1/chat/completions`：**真正的 OpenAI 结构被包在 `data` 里**（外层 `{"status":{"code":..},"data":{...}}`），且 **`delta` 是字符串**（正文片段）不是对象，需逐行翻译回标准 OpenAI SSE；请求体 `max_tokens` 要改名 `max_new_tokens`、`n=1`、`stop="<|endofmessage|>"`。
 - 鉴权 `Authorization: Bearer <access_token>`；需带桌面 Web 客户端 UA + `Accept-Language: zh-Hans`；有组织时带 `X-Org-Code`。
-- **有积分余额接口**：`GET /api/web/points/v1/balance`（字段 `available_points`）——这是 plugin 通道（`/api/plugin/...`）没有的。plugin 通道是 IDE 插件在用，web 通道是官网/桌面客户端在用，两套并存。
 - 旧主机 `raccoon.sensetime.com` / `code.sensetime.com` 已解析不了，现主机是 `xiaohuanxiong.com`。
 
 ### 直通层通用

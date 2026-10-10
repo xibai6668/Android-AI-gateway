@@ -2,6 +2,7 @@ package dev.aigw.app.ui.providers.raccoon
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Pets
@@ -17,12 +18,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.google.gson.JsonObject
+import dev.aigw.app.ui.ChoiceChip
 import dev.aigw.app.ui.OutlineActionButton
 import dev.aigw.app.ui.SectionCard
 import dev.aigw.app.ui.SectionLabel
 import dev.aigw.app.ui.providers.ProviderUi
 import dev.aigw.app.ui.providers.ProviderUiActions
 import dev.aigw.core.pool.AccountStatus
+import dev.aigw.core.provider.ACTION_CHECKIN
 
 object RaccoonUi : ProviderUi {
 
@@ -76,6 +80,29 @@ object RaccoonUi : ProviderUi {
                     ) {
                         Text("导入")
                     }
+                }
+            }
+        }
+    }
+
+    @Composable
+    override fun AccountExtra(status: AccountStatus, actions: ProviderUiActions) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("积分", style = MaterialTheme.typography.titleSmall)
+            Text(
+                text = if (status.creditsKnown) status.credits.toString() else "—",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            if (status.detail.isNotEmpty()) {
+                Text(
+                    text = status.detail,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ChoiceChip("签到领积分", false) {
+                    actions.onAction(id, status.uid, ACTION_CHECKIN, JsonObject())
                 }
             }
         }
