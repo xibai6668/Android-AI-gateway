@@ -160,7 +160,8 @@ fun LogsScreen(state: AppUiState, viewModel: AppViewModel) {
                         }
                     }
                 } else {
-                    itemsIndexed(state.logs) { _, line ->
+                    // key 取时间戳+内容：日志最新在前，新到一条时其余项可按身份复用而不必全部重绑
+                    itemsIndexed(state.logs, key = { _, line -> "${line.atMillis}-${line.text}" }) { _, line ->
                         SectionCard {
                             Text(
                                 text = line.render(),

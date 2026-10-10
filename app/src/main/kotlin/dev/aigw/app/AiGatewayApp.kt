@@ -26,6 +26,8 @@ class AiGatewayApp : Application() {
         engine = GatewayEngine(
             store = EncryptedKeyValueStore(this),
             lanAddressProvider = { LanAddresses.current(this) },
+            // 调用记录预载与过期清理改走后台，冷启动首帧不再等全量解密
+            preloadCallLogs = false,
         )
         getSystemService<NotificationManager>()?.createNotificationChannel(
             NotificationChannel(

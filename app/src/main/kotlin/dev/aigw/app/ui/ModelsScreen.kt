@@ -319,6 +319,8 @@ private fun ModelSkeletonCard(
     providerName: String,
     modifier: Modifier = Modifier,
 ) {
+    // 整卡共用一个动画进度：每个占位各建一套无限过渡会让加载期间成倍触发重组
+    val shimmerProgress = rememberShimmerProgress()
     SectionCard(modifier = modifier) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -360,19 +362,19 @@ private fun ModelSkeletonCard(
                         modifier = Modifier
                             .fillMaxWidth(0.55f)
                             .height(16.dp)
-                            .shimmer(RoundedCornerShape(4.dp)),
+                            .shimmer(shimmerProgress, RoundedCornerShape(4.dp)),
                     )
                     Box(
                         modifier = Modifier
                             .fillMaxWidth(0.35f)
                             .height(12.dp)
-                            .shimmer(RoundedCornerShape(3.dp)),
+                            .shimmer(shimmerProgress, RoundedCornerShape(3.dp)),
                     )
                 }
                 Box(
                     modifier = Modifier
                         .size(width = 46.dp, height = 26.dp)
-                        .shimmer(MaterialTheme.shapes.small),
+                        .shimmer(shimmerProgress, MaterialTheme.shapes.small),
                 )
             }
         }

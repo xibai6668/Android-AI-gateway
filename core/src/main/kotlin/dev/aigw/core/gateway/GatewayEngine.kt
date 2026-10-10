@@ -132,10 +132,15 @@ class GatewayEngine(
     private val nowMillis: () -> Long = System::currentTimeMillis,
     private val lanAddressProvider: LanAddressProvider = DefaultLanAddressProvider,
     private val onLog: (String) -> Unit = {},
+    /**
+     * 调用记录是否在构造时同步载入。一次性 CLI 工具需要同步（命令立即读数据）；
+     * App 传 false，预载与过期清理改在后台线程执行，冷启动不再阻塞主线程。
+     */
+    preloadCallLogs: Boolean = true,
 ) {
     val settingsRepository = SettingsRepository(store)
     val pool = AccountPool(store, nowMillis)
-    val callLogStore = CallLogStore(store)
+    val callLogStore = CallLogStore(store, preloadOnConstruction = preloadCallLogs)
     val requestLog = RequestLog(store, nowMillis = nowMillis)
     val registry = ProviderRegistry()
 
@@ -224,13 +229,43 @@ class GatewayEngine(
     /** 当前正在监听的登录回调服务（同一时间只允许一个登录流程）。 */
     private var callbackServer: LoopbackCallbackServer? = null
 
+    /** 首屏数据（调用记录与统计、过期清理）是否已在后台就绪。 */
+    @Volatile
+    private var startupDataReady = false
+
+    @Volatile
+    private var startupDataListener: (() -> Unit)? = null
+
     init {
         registerBuiltinProviders(this)
         reloadCustomProviders()
         installProxy()
         sanitizer.reloadPipeline(securitySettings.extraWords)
         lastAutoPurgeDay = nowMillis() / DAY_MILLIS
-        runCatching { purgeExpiredRecords() }
+        if (preloadCallLogs) {
+            runCatching { purgeExpiredRecords() }
+        } else {
+            // 调用记录预载与过期清理要扫全部 logs/calls/ 键并逐个解密，
+            // App 冷启动时丢到后台执行，不让主线程等它；完成后通知 UI 补一次刷新。
+            ioExecutor().execute {
+                runCatching {
+                    callLogStore.load()
+                    purgeExpiredRecords()
+                }
+                startupDataReady = true
+                startupDataListener?.invoke()
+            }
+        }
+    }
+
+    /**
+     * 注册首屏数据（调用记录/统计）就绪回调。
+     *
+     * 这些数据在后台线程预载，冷启动时可能晚于 UI 首帧；注册时若已就绪会立即触发一次。
+     */
+    fun setStartupDataReadyListener(listener: (() -> Unit)?) {
+        startupDataListener = listener
+        if (startupDataReady) listener?.invoke()
     }
 
     internal fun now(): Long = nowMillis()

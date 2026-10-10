@@ -349,6 +349,8 @@ class AppViewModel(
                 refresh()
             }
         }
+        // 调用记录与统计改在引擎后台预载（冷启动不阻塞主线程），就绪后补一次刷新
+        engine.setStartupDataReadyListener { refresh() }
         refresh()
         // 启动时在后台静默预拉取一次模型，进入模型页直接秒开（不弹「正在拉取」提示）
         refreshModels(silent = true)
@@ -361,6 +363,7 @@ class AppViewModel(
 
     override fun onCleared() {
         engine.onAccountsChanged = null
+        engine.setStartupDataReadyListener(null)
     }
 
     // ------------------------------------------------------------------ 读取

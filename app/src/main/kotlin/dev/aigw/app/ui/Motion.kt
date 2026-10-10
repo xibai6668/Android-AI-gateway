@@ -17,7 +17,6 @@ import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
@@ -25,16 +24,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
@@ -149,29 +151,41 @@ fun Modifier.bouncyClick(
     }
 }
 
-/**
- * 优雅流光微光动效（Shimmer），用于骨架屏占位。
- */
+/** 流光带的跨度（px），与渐变轴向一致。 */
+private const val SHIMMER_BAND = 300f
+
+/** 供骨架屏共享的流光进度：一张卡建一个即可，进度由各 [shimmer] 在绘制阶段读取。 */
 @Composable
-fun Modifier.shimmer(
-    shape: Shape = RoundedCornerShape(4.dp),
-    baseColor: Color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-    highlightColor: Color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
-): Modifier {
-    val transition = rememberInfiniteTransition(label = "shimmerTransition")
-    val translateAnim by transition.animateFloat(
-        initialValue = -300f,
-        targetValue = 900f,
+fun rememberShimmerProgress(): State<Float> =
+    rememberInfiniteTransition(label = "shimmer").animateFloat(
+        initialValue = -SHIMMER_BAND,
+        targetValue = SHIMMER_BAND * 3f,
         animationSpec = infiniteRepeatable(
             animation = tween(durationMillis = 1200, easing = LinearEasing),
             repeatMode = RepeatMode.Restart,
         ),
-        label = "shimmerTranslation",
+        label = "shimmerProgress",
     )
+
+/**
+ * 优雅流光微光动效（Shimmer），用于骨架屏占位。
+ *
+ * [progress] 由调用方共享（见 [rememberShimmerProgress]），这里只在绘制阶段读取它：
+ * 动画每帧仅触发重绘，不再逐帧重组，也不再每帧新建渐变。
+ */
+@Composable
+fun Modifier.shimmer(
+    progress: State<Float>,
+    shape: Shape = RoundedCornerShape(4.dp),
+    baseColor: Color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+    highlightColor: Color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+): Modifier {
     val brush = Brush.linearGradient(
         colors = listOf(baseColor, highlightColor, baseColor),
-        start = Offset(translateAnim, translateAnim),
-        end = Offset(translateAnim + 300f, translateAnim + 300f),
+        start = Offset.Zero,
+        end = Offset(SHIMMER_BAND, SHIMMER_BAND),
     )
-    return this.clip(shape).background(brush)
+    return this.clip(shape).drawBehind {
+        translate(progress.value, progress.value) { drawRect(brush) }
+    }
 }

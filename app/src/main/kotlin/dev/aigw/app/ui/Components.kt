@@ -32,6 +32,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -428,6 +429,17 @@ fun EditorialGroupHeader(index: String, title: String, meta: String? = null) {
 @Composable
 fun QuotaPackBar(pack: dev.aigw.core.provider.QuotaPack) {
     val gold = LocalAppColors.current.goldStart
+    // 格式化器创建成本不低，按过期时间缓存结果，避免每张额度条每次重组都新建
+    val expireText = remember(pack.expireAt) {
+        if (pack.expireAt > 0) {
+            java.text.DateFormat.getDateTimeInstance(
+                java.text.DateFormat.SHORT,
+                java.text.DateFormat.SHORT,
+            ).format(java.util.Date(pack.expireAt * 1000))
+        } else {
+            ""
+        }
+    }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(Modifier.fillMaxWidth()) {
             Text(
@@ -436,10 +448,7 @@ fun QuotaPackBar(pack: dev.aigw.core.provider.QuotaPack) {
                 modifier = Modifier.weight(1f),
             )
             Text(
-                text = if (pack.expireAt > 0) java.text.DateFormat.getDateTimeInstance(
-                    java.text.DateFormat.SHORT,
-                    java.text.DateFormat.SHORT,
-                ).format(java.util.Date(pack.expireAt * 1000)) else "",
+                text = expireText,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

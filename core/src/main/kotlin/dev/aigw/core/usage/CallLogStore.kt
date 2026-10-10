@@ -54,6 +54,8 @@ data class UsageStats(
 class CallLogStore(
     private val store: KeyValueStore,
     private val capacity: Int = 100,
+    /** 构造时是否同步载入历史；引擎传 false 时改为后台线程调 [load]，避免冷启动阻塞主线程。 */
+    preloadOnConstruction: Boolean = true,
 ) {
     private val records = ArrayDeque<CallRecord>()
 
@@ -64,7 +66,7 @@ class CallLogStore(
     private val daily = mutableMapOf<Long, UsageStats>()
 
     init {
-        load()
+        if (preloadOnConstruction) load()
     }
 
     @Synchronized
@@ -227,7 +229,14 @@ class CallLogStore(
         return text.take(maxChars) + TRUNCATE_MARK
     }
 
-    private fun load() {
+    /**
+     * 从存储载入历史记录与每日/累计聚合。
+     *
+     * 引擎的异步路径会在后台线程调用它；若载入期间已有新记录写入内存（需要网关在进程
+     * 启动后极短时间内就开始服务才会发生），以内存为准、跳过本次载入避免重复条目。
+     */
+    @Synchronized
+    fun load() {
         val loaded = ArrayList<CallRecord>()
         for (key in store.keys(PREFIX)) {
             val raw = store.read(key) ?: continue

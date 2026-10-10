@@ -26,6 +26,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -366,8 +367,14 @@ private fun TrendChart(daily: List<UsageStats>, todayStart: Long) {
     val gridColor = MaterialTheme.colorScheme.surfaceContainerHighest
     val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
     val n = daily.size
-    val maxValue = daily.maxOf { maxOf(it.promptTokens, it.completionTokens) }.coerceAtLeast(1L)
-    val labels = List(n) { index -> dayLabel(todayStart - (n - 1 - index) * 86_400_000L) }
+    val maxValue = remember(daily) {
+        daily.maxOf { maxOf(it.promptTokens, it.completionTokens) }.coerceAtLeast(1L)
+    }
+    val labels = remember(daily, todayStart) {
+        List(n) { index -> dayLabel(todayStart - (n - 1 - index) * 86_400_000L) }
+    }
+    // 复用同一支画笔：绘制阶段只改对齐方式，不再每次重绘都新建
+    val axisPaint = remember { android.graphics.Paint() }
     Canvas(Modifier.fillMaxWidth().height(150.dp)) {
         val gutterLeft = 40.dp.toPx()
         val gutterBottom = 22.dp.toPx()
@@ -386,17 +393,15 @@ private fun TrendChart(daily: List<UsageStats>, todayStart: Long) {
         drawSeries(xs, outY, originY, dark)
 
         drawIntoCanvas { canvas ->
-            val paint = android.graphics.Paint().apply {
-                isAntiAlias = true
-                color = labelColor.toArgb()
-                textSize = 9.sp.toPx()
-                textAlign = android.graphics.Paint.Align.RIGHT
-            }
-            canvas.nativeCanvas.drawText(formatAxis(maxValue), gutterLeft - 6.dp.toPx(), originY, paint)
-            paint.textAlign = android.graphics.Paint.Align.CENTER
+            axisPaint.isAntiAlias = true
+            axisPaint.color = labelColor.toArgb()
+            axisPaint.textSize = 9.sp.toPx()
+            axisPaint.textAlign = android.graphics.Paint.Align.RIGHT
+            canvas.nativeCanvas.drawText(formatAxis(maxValue), gutterLeft - 6.dp.toPx(), originY, axisPaint)
+            axisPaint.textAlign = android.graphics.Paint.Align.CENTER
             val labelY = originY + 14.dp.toPx()
             for (index in listOf(0, (n - 1) / 2, n - 1).distinct()) {
-                canvas.nativeCanvas.drawText(labels[index], xs[index], labelY, paint)
+                canvas.nativeCanvas.drawText(labels[index], xs[index], labelY, axisPaint)
             }
         }
     }

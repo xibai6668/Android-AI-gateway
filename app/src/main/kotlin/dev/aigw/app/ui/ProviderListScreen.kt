@@ -17,6 +17,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -54,6 +55,12 @@ fun ProviderListScreen(
             }
             return@PageScaffold
         }
+        // 图标底色渐变整页只建一次，不随每张卡片重建
+        val primaryContainer = MaterialTheme.colorScheme.primaryContainer
+        val secondaryContainer = MaterialTheme.colorScheme.secondaryContainer
+        val iconBrush = remember(primaryContainer, secondaryContainer) {
+            Brush.linearGradient(listOf(primaryContainer, secondaryContainer))
+        }
         for ((index, provider) in state.providers.withIndex()) {
             val ui = ProviderUiRegistry.of(provider.id)
             SectionCard(modifier = Modifier.staggeredAppear(index).clickable { onOpen(provider.id) }) {
@@ -67,14 +74,7 @@ fun ProviderListScreen(
                         modifier = Modifier
                             .size(48.dp)
                             .clip(MaterialTheme.shapes.medium)
-                            .background(
-                                Brush.linearGradient(
-                                    listOf(
-                                        MaterialTheme.colorScheme.primaryContainer,
-                                        MaterialTheme.colorScheme.secondaryContainer,
-                                    ),
-                                ),
-                            ),
+                            .background(iconBrush),
                         contentAlignment = Alignment.Center,
                     ) {
                         ui?.Icon(Modifier.size(28.dp))

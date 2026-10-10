@@ -234,7 +234,13 @@ private fun EvidenceSheet(
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
-                    itemsIndexed(evidences) { index, item ->
+                    itemsIndexed(
+                        evidences,
+                        // key 取时间戳+模型+命中词：取证记录也是最新在前，避免刷新后整列重绑
+                        key = { _, item ->
+                            "${item.atMillis}-${item.model}-${item.matchedTerms.joinToString(",")}"
+                        },
+                    ) { index, item ->
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
