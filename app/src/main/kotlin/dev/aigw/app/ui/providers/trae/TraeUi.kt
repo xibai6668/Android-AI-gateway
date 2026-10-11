@@ -20,6 +20,7 @@ import androidx.compose.material3.Icon as MaterialIcon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -37,6 +38,7 @@ import dev.aigw.app.ui.ChoiceChip
 import dev.aigw.app.ui.OutlineActionButton
 import dev.aigw.app.ui.SectionCard
 import dev.aigw.app.ui.SectionLabel
+import dev.aigw.app.ui.accountStatusText
 import dev.aigw.app.ui.providers.ProviderUi
 import dev.aigw.app.ui.providers.ProviderUiActions
 import dev.aigw.core.pool.AccountStatus
@@ -45,6 +47,9 @@ import dev.aigw.core.provider.ACTION_CHECKIN
 object TraeUi : ProviderUi {
 
     override val id: String = "trae"
+
+    // 国内 / 国际是两套独立账号：账号列表由本组件按滑块区域过滤后自行渲染
+    override val managesOwnAccounts: Boolean get() = true
 
     override fun description(): String = "网页登录导入，走 SOLO 免费通道（国内/国际）"
 
@@ -124,6 +129,64 @@ object TraeUi : ProviderUi {
                         Text("导入")
                     }
                 }
+            }
+            if (accounts.isNotEmpty()) {
+                AccountRegionSection(global, accounts, actions)
+            }
+        }
+    }
+
+    /** 按当前滑块区域过滤账号：国内版只列 trae.cn 账号，国际版只列 trae.ai 账号。 */
+    @Composable
+    private fun AccountRegionSection(global: Boolean, accounts: List<AccountStatus>, actions: ProviderUiActions) {
+        val current = if (global) "global" else "cn"
+        val scoped = remember(accounts, current) { accounts.filter { actions.regionOf(id, it.uid) == current } }
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (scoped.isEmpty()) {
+                SectionCard(enterIndex = 1) {
+                    SectionLabel("账号")
+                    Text(
+                        text = if (global) "还没有国际版账号，先登录" else "还没有国内版账号，先登录",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                return
+            }
+            SectionCard(enterIndex = 1) {
+                SectionLabel("账号 · ${scoped.size} 个")
+                for (account in scoped) {
+                    AccountBlock(account, actions)
+                }
+                OutlineActionButton("刷新额度") { actions.onRefreshCredits(id, null) }
+            }
+        }
+    }
+
+    @Composable
+    private fun AccountBlock(status: AccountStatus, actions: ProviderUiActions) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = status.nickname.ifEmpty { status.uid },
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        text = accountStatusText(status),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = status.enabled,
+                    onCheckedChange = { actions.onToggleAccount(id, status.uid, it) },
+                )
+            }
+            AccountExtra(status, actions)
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                ChoiceChip("删除账号", false) { actions.onRemoveAccount(id, status.uid) }
             }
         }
     }
