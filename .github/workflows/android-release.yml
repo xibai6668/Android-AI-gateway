@@ -85,6 +85,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.version }}
+          # 不指定时 GitHub 会把 tag 建在默认分支顶端，导致从分支发版时 tag 指向的代码与产物不符。
+          target_commitish: ${{ github.sha }}
           name: v${{ steps.version.outputs.version }}
           body: ${{ steps.changelog.outputs.body }}
           files: ai-gateway-${{ steps.version.outputs.version }}-release.apk
