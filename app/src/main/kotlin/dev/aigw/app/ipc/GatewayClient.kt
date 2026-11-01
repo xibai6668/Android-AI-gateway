@@ -58,34 +58,8 @@ class GatewayClient(private val app: Context) {
     @Volatile
     private var bindRequested = false
 
-    /**
-     * UI 组合期要读的派生镜像。
-     *
-     * 刻意**不**保留整份 `UiSnapshot`：其中的调用记录/日志已由 `AppUiState` 持有，
-     * 再存一份等于主进程里放两份。
-     */
-    private class Mirror(
-        val providerSettings: Map<String, ProviderSettings>,
-        val customProviders: List<CustomProviderConfig>,
-        val customApiKeys: Map<String, String>,
-        val deviceIds: Map<String, String>,
-        val regions: Map<String, String>,
-        val checkinTargets: List<BatchTargetCount>,
-        val taskTargets: List<BatchTargetCount>,
-    ) {
-        fun withProviderSettings(providerId: String, settings: ProviderSettings) = Mirror(
-            providerSettings = providerSettings + (providerId to settings),
-            customProviders = customProviders,
-            customApiKeys = customApiKeys,
-            deviceIds = deviceIds,
-            regions = regions,
-            checkinTargets = checkinTargets,
-            taskTargets = taskTargets,
-        )
-    }
-
     @Volatile
-    private var mirror: Mirror? = null
+    private var cache: UiSnapshot? = null
 
     @Volatile
     private var activeRequestsCache: List<ActiveRequest> = emptyList()
@@ -298,21 +272,9 @@ class GatewayClient(private val app: Context) {
 
     // ------------------------------------------------------------------ 快照与镜像
 
-    /**
-     * 取回 UI 首屏数据。只把组合期要用的派生字段存进镜像，整份快照用完即弃：
-     * 调用记录/日志由 `AppUiState` 唯一持有。
-     */
     fun snapshot(): UiSnapshot {
         val snapshot: UiSnapshot = invokeAs(GatewayCommands.SNAPSHOT)
-        mirror = Mirror(
-            providerSettings = snapshot.providerSettings,
-            customProviders = snapshot.customProviders,
-            customApiKeys = snapshot.customApiKeys,
-            deviceIds = snapshot.deviceIds,
-            regions = snapshot.regions,
-            checkinTargets = snapshot.checkinTargets,
-            taskTargets = snapshot.taskTargets,
-        )
+        cache = snapshot
         return snapshot
     }
 
@@ -321,23 +283,28 @@ class GatewayClient(private val app: Context) {
     fun storage(): StoragePayload = invokeAs(GatewayCommands.STORAGE)
 
     fun providerSettings(providerId: String): ProviderSettings =
-        mirror?.providerSettings?.get(providerId) ?: ProviderSettings()
+        cache?.providerSettings?.get(providerId) ?: ProviderSettings()
 
     fun customProviderConfig(providerId: String): CustomProviderConfig? =
-        mirror?.customProviders?.firstOrNull { it.providerId == providerId }
+        cache?.customProviders?.firstOrNull { it.providerId == providerId }
 
     fun customApiKey(providerId: String, uid: String): String =
-        mirror?.customApiKeys?.get("$providerId/$uid").orEmpty()
+        cache?.customApiKeys?.get("$providerId/$uid").orEmpty()
 
     fun deviceId(providerId: String, uid: String): String =
-        mirror?.deviceIds?.get("$providerId/$uid").orEmpty()
+        cache?.deviceIds?.get("$providerId/$uid").orEmpty()
 
     fun region(providerId: String, uid: String): String =
-        mirror?.regions?.get("$providerId/$uid").orEmpty()
+        cache?.regions?.get("$providerId/$uid").orEmpty()
 
-    fun checkinTargets(): List<BatchTargetCount> = mirror?.checkinTargets.orEmpty()
+    fun checkinTargets(): List<BatchTargetCount> = cache?.checkinTargets.orEmpty()
 
-    fun taskTargets(): List<BatchTargetCount> = mirror?.taskTargets.orEmpty()
+    fun taskTargets(): List<BatchTargetCount> = cache?.taskTargets.orEmpty()
+
+    fun cachedSnapshot(): UiSnapshot? = cache
+
+    // 主线程用：直接读镜像，不跨进程
+    fun isRunningCached(): Boolean = cache?.running ?: false
 
     // ------------------------------------------------------------------ 网关生命周期
 
@@ -396,8 +363,9 @@ class GatewayClient(private val app: Context) {
     fun updateProviderSettings(providerId: String, settings: ProviderSettings) {
         invokeArgs(GatewayCommands.PROVIDER_UPDATE_SETTINGS, mapOf("providerId" to providerId, "settings" to settings))
         // 镜像同步更新，避免刚保存完读回旧值
-        val current = mirror
-        if (current != null) mirror = current.withProviderSettings(providerId, settings)
+        cache?.let { snapshot ->
+            cache = snapshot.copy(providerSettings = snapshot.providerSettings + (providerId to settings))
+        }
     }
 
     fun syncCustomAccounts(config: CustomProviderConfig) =
