@@ -67,11 +67,9 @@ object TraeUi : ProviderUi {
     override fun LoginEntry(accounts: List<AccountStatus>, actions: ProviderUiActions) {
         var expanded by remember { mutableStateOf(false) }
         var raw by remember { mutableStateOf("") }
-        // 滑块状态持久化在供应商设置里（region=cn/global）；引擎开登录页时按它选 host。
-        // 用镜像值作 remember 的 key：镜像就绪后会重取一次，避免首帧拿不到真值时固定成默认区域。
-        val storedRegion = actions.providerOptionOf(id, "region", "cn")
-        var global by rememberSaveable(storedRegion) {
-            mutableStateOf(storedRegion == "global")
+        // 滑块状态持久化在供应商设置里（region=cn/global）；引擎开登录页时按它选 host
+        var global by rememberSaveable {
+            mutableStateOf(actions.providerOptionOf(id, "region", "cn") == "global")
         }
         val region = if (global) TraeRegion.INTL.id else TraeRegion.CN.id
 

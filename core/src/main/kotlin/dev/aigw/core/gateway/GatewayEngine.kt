@@ -1091,14 +1091,6 @@ class GatewayEngine(
         runCatching { server.stop() }
     }
 
-    /**
-     * 是否有正在监听的登录回调（浏览器登录尚未完成）。
-     *
-     * 此期间回调服务只存在于 :gateway 进程，回收 UI 进程后若该进程也被回收，登录就回不来，
-     * 故 App 侧回收 UI 进程前需先看这里。
-     */
-    fun loginPending(): Boolean = callbackServer != null
-
     fun beginWebLogin(providerId: String, callbackUrl: String, region: String = ""): WebLoginTicket {
         val support = registry.get(providerId) as? WebLoginSupport
             ?: throw IllegalStateException("该供应商不支持网页登录")

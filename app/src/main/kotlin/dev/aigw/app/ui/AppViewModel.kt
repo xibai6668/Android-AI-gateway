@@ -13,12 +13,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
-import dev.aigw.app.AiGatewayApp
 import dev.aigw.app.data.ApkInstaller
 import dev.aigw.app.data.KeepAlive
 import dev.aigw.app.data.KeepAliveStatus
-import dev.aigw.app.data.UiPrefsStore
-import dev.aigw.app.ipc.GatewayClient
+import dev.aigw.app.gatewayEngine
 import dev.aigw.app.ui.theme.ThemeMode
 import dev.aigw.app.ui.theme.defaultAppColors
 import dev.aigw.app.ui.theme.formatHex
@@ -30,9 +28,9 @@ import dev.aigw.core.gateway.BatchProgress
 import dev.aigw.core.gateway.BatchTarget
 import dev.aigw.core.gateway.CreditRefreshResult
 import dev.aigw.core.gateway.CustomProviderConfig
+import dev.aigw.core.gateway.GatewayEngine
 import dev.aigw.core.gateway.GatewaySettings
 import dev.aigw.core.gateway.LoginOutcome
-import dev.aigw.core.gateway.LoginState
 import dev.aigw.core.gateway.ModelExposureSettings
 import dev.aigw.core.gateway.ModelsCatalog
 import dev.aigw.core.gateway.ProviderInfo
@@ -296,8 +294,6 @@ data class AppUiState(
     val overlayKeepAlive: Boolean = false,
     /** 实时状态通知（仅网关有请求在途时显示）是否开启，默认开。 */
     val liveNotification: Boolean = true,
-    /** 是否有浏览器登录回调正在监听（此时不宜回收 UI 进程）。 */
-    val loginPending: Boolean = false,
     /** 模型开放名单：只对外暴露勾选的模型。 */
     val modelExposure: dev.aigw.core.gateway.ModelExposureSettings = dev.aigw.core.gateway.ModelExposureSettings(),
     /** 故障转移与并发配置。 */
@@ -327,14 +323,38 @@ data class AppUiState(
     fun providerOf(providerId: String): ProviderInfo? = providers.firstOrNull { it.id == providerId }
 }
 
+private class Snapshot(
+    val running: Boolean,
+    val port: Int,
+    val localUrl: String,
+    val lanUrls: List<String>,
+    val pool: PoolSummary,
+    val today: UsageStats,
+    val daily: List<UsageStats>,
+    val total: UsageStats,
+    val providers: List<ProviderInfo>,
+    val accounts: List<AccountStatus>,
+    val customProviders: List<CustomProviderConfig>,
+    val calls: List<CallRecord>,
+    val logs: List<LogLine>,
+    val settings: GatewaySettings,
+    val proxy: ProxySettings,
+    val keepAlive: KeepAliveStatus,
+    val security: dev.aigw.core.security.SecuritySettings,
+    val evidences: List<dev.aigw.core.security.OutboundEvidence>,
+    val modelExposure: dev.aigw.core.gateway.ModelExposureSettings,
+    val failover: dev.aigw.core.failover.ModelFailoverSettings,
+    val overlayKeepAlive: Boolean,
+    val liveNotification: Boolean,
+)
+
 class AppViewModel(
     private val app: Application,
+    private val engine: GatewayEngine = app.gatewayEngine,
 ) : ViewModel() {
 
-    private val client: GatewayClient = (app as AiGatewayApp).client
-    private val uiPrefs = UiPrefsStore(app)
-    private val appearance = AppearanceStore(uiPrefs)
-    private val updateStore = UpdateStore(uiPrefs)
+    private val appearance = AppearanceStore(engine.store())
+    private val updateStore = UpdateStore(engine.store())
 
     private val _state = MutableStateFlow(
         AppUiState(
@@ -387,19 +407,17 @@ class AppViewModel(
     }
 
     init {
-        client.addActiveRequestsListener(activeRequestsListener)
-        val initialActive = client.activeRequests()
+        engine.activeRequests.addListener(activeRequestsListener)
+        val initialActive = engine.activeRequests.snapshot()
         lastActiveSignature = initialActive.joinToString(";") { "${it.id}:${it.providerId}:${it.phase}" }
         _state.value = _state.value.copy(activeRequests = initialActive)
         // 登录在浏览器里完成、由网关的回调监听落池，这里接住通知刷新界面。
         // 只有账号集合真的变了才重拉模型：刷新凭证（refreshAccount 回存）也会触发本回调，
         // 那类更新不影响模型列表，重复拉取只是白白多打一轮上游。
-        client.onAccountsChanged = {
+        engine.onAccountsChanged = {
             viewModelScope.launch {
-                val signature = withContext(Dispatchers.IO) {
-                    runCatching { accountSignature(client.accounts()) }.getOrDefault("")
-                }
-                if (signature.isNotEmpty() && signature != lastAccountSignature) {
+                val signature = withContext(Dispatchers.IO) { accountSignature(engine.accounts()) }
+                if (signature != lastAccountSignature) {
                     lastAccountSignature = signature
                     refreshModels(silent = true)
                 }
@@ -409,55 +427,23 @@ class AppViewModel(
         // 历史遗留的账号标识自愈（如小浣熊早期把 JWT 的 iss 当 uid，导致多账号在池里共用一个 key）：
         // 后台跑一次，真搬了 key 再刷界面；没搬动就不打扰
         viewModelScope.launch {
-            val moved = withContext(Dispatchers.IO) { runCatching { client.migrateAccounts() }.getOrDefault(0) }
+            val moved = withContext(Dispatchers.IO) { engine.migrateAccounts() }
             if (moved > 0) refresh()
         }
         // 调用记录与统计改在引擎后台预载（冷启动不阻塞主线程），就绪后补一次刷新
-        client.onStartupDataReady = { refresh() }
+        engine.setStartupDataReadyListener { refresh() }
         refresh()
         // 自动检查更新：默认开启，每天最多一次，失败静默
         maybeAutoCheckUpdate()
-        // 首次迁移：把原先存在引擎加密存储里的外观/更新偏好搬到本地，避免更新后主题重置
-        migrateUiPrefsOnce()
-    }
-
-    /**
-     * 一次性把外观/更新偏好从引擎存储迁移到主进程本地存储。
-     *
-     * 拆分进程前这些键存在加密存储（由 :gateway 进程独占），本地为空会让主题/自动检查回落到默认。
-     * 只补本地缺失的键，已有值不覆盖。
-     */
-    private fun migrateUiPrefsOnce() {
-        viewModelScope.launch {
-            val exported = withContext(Dispatchers.IO) {
-                runCatching { client.exportUiPrefs() }.getOrNull()
-            } ?: return@launch
-            if (exported.isEmpty()) return@launch
-            var changed = false
-            for ((key, value) in exported) {
-                if (uiPrefs.read(key) == null) {
-                    uiPrefs.write(key, value)
-                    changed = true
-                }
-            }
-            if (!changed) return@launch
-            _state.value = _state.value.copy(
-                dynamicColor = appearance.dynamicColor(),
-                themeMode = appearance.themeMode(),
-                backgroundOverride = appearance.backgroundHex()?.let { parseHexColor(it) },
-                goldStart = parseHexColor(appearance.goldStartHex()) ?: defaultAppColors.goldStart,
-                goldEnd = parseHexColor(appearance.goldEndHex()) ?: defaultAppColors.goldEnd,
-            )
-        }
     }
 
     private fun accountSignature(accounts: List<AccountStatus>): String =
         accounts.joinToString("|") { "${it.providerId}/${it.uid}/${it.disabled}/${it.enabled}" }
 
     override fun onCleared() {
-        client.removeActiveRequestsListener(activeRequestsListener)
-        client.onAccountsChanged = null
-        client.onStartupDataReady = null
+        engine.activeRequests.removeListener(activeRequestsListener)
+        engine.onAccountsChanged = null
+        engine.setStartupDataReadyListener(null)
     }
 
     // ------------------------------------------------------------------ 读取
@@ -465,9 +451,31 @@ class AppViewModel(
     fun refresh() {
         viewModelScope.launch {
             val snapshot = withContext(Dispatchers.IO) {
-                runCatching { client.snapshot() }.getOrNull()
-            } ?: return@launch
-            val keepAlive = withContext(Dispatchers.IO) { KeepAlive.status(app) }
+                Snapshot(
+                    running = engine.isRunning(),
+                    port = engine.settings().port,
+                    localUrl = engine.localUrl(),
+                    lanUrls = engine.lanUrls(),
+                    pool = engine.pool.summary(),
+                    today = engine.callLogStore.todayStats(System.currentTimeMillis()),
+                    daily = engine.callLogStore.dailyStats(System.currentTimeMillis()),
+                    total = engine.callLogStore.totalStats(),
+                    providers = engine.providers(),
+                    accounts = engine.accounts(),
+                    customProviders = engine.settingsRepository.loadCustomProviders(),
+                    calls = engine.callLogStore.list(),
+                    logs = engine.requestLog.lines(),
+                    settings = engine.settings(),
+                    proxy = engine.proxySettings(),
+                    keepAlive = KeepAlive.status(app),
+                    security = engine.securitySettings(),
+                    evidences = engine.sanitizer.evidenceList(),
+                    modelExposure = engine.modelExposureSettings(),
+                    failover = engine.failoverSettings(),
+                    overlayKeepAlive = dev.aigw.app.data.KeepAlivePrefs.overlayEnabled(engine.store()),
+                    liveNotification = dev.aigw.app.data.KeepAlivePrefs.liveNotificationEnabled(engine.store()),
+                )
+            }
             _state.value = _state.value.copy(
                 running = snapshot.running,
                 port = snapshot.port,
@@ -484,27 +492,15 @@ class AppViewModel(
                 logs = snapshot.logs,
                 settings = snapshot.settings,
                 proxy = snapshot.proxy,
-                keepAlive = keepAlive,
+                keepAlive = snapshot.keepAlive,
                 security = snapshot.security,
                 evidences = snapshot.evidences,
                 modelExposure = snapshot.modelExposure,
                 failover = snapshot.failover,
                 overlayKeepAlive = snapshot.overlayKeepAlive,
                 liveNotification = snapshot.liveNotification,
-                loginPending = snapshot.loginPending,
             )
         }
-    }
-
-    /**
-     * 是否有进行中的操作，使主进程此刻不宜被回收（否则会丢结果）：
-     * 登录轮询/回调监听、更新下载/检查、批量动作。
-     */
-    fun shouldHoldProcess(): Boolean {
-        val current = _state.value
-        val downloading = current.updateDownload.let { it is UpdateDownload.Probing || it is UpdateDownload.Downloading }
-        return current.busy.isNotEmpty() || current.batchProgress != null ||
-            downloading || current.updateChecking || current.loginPending
     }
 
     /**
@@ -515,11 +511,9 @@ class AppViewModel(
      */
     fun refreshRecords() {
         viewModelScope.launch {
-            val payload = withContext(Dispatchers.IO) {
-                runCatching { client.records() }.getOrNull()
-            } ?: return@launch
-            val calls = payload.calls
-            val logs = payload.logs
+            val (calls, logs) = withContext(Dispatchers.IO) {
+                engine.callLogStore.list() to engine.requestLog.lines()
+            }
             val current = _state.value
             // 记录页每 5 秒轮询一次：内容没变就不赋值。CallRecord 带大段请求/响应原文，
             // 整体 equals 在主线程上是 O(总字符数) 的开销。
@@ -542,10 +536,10 @@ class AppViewModel(
      */
     fun refreshStorage() {
         viewModelScope.launch {
-            val payload = withContext(Dispatchers.IO) {
-                runCatching { client.storage() }.getOrNull()
-            } ?: return@launch
-            _state.value = _state.value.copy(storage = payload.report, storedCalls = payload.storedCount)
+            val (report, count) = withContext(Dispatchers.IO) {
+                engine.storageReport() to engine.callLogStore.storedCount()
+            }
+            _state.value = _state.value.copy(storage = report, storedCalls = count)
         }
     }
 
@@ -557,7 +551,7 @@ class AppViewModel(
             val quiet = silent || _state.value.models.isNotEmpty()
             if (!quiet) _state.value = _state.value.copy(busy = "正在拉取模型目录")
             val participants = withContext(Dispatchers.IO) {
-                runCatching { client.enabledProviderIds() }.getOrDefault(emptyList())
+                engine.providers().filter { it.enabled }.map { it.id }
             }
             if (gen != modelsGeneration) return@launch
             _state.value = _state.value.copy(
@@ -567,7 +561,7 @@ class AppViewModel(
             )
             val (catalog, error) = withContext(Dispatchers.IO) {
                 runCatching {
-                    client.modelsStreaming(forceRefresh = forceRefresh) { chunk ->
+                    engine.modelsStreaming(forceRefresh = forceRefresh) { chunk ->
                         viewModelScope.launch {
                             if (gen == modelsGeneration) applyModelsChunk(chunk)
                         }
@@ -599,18 +593,17 @@ class AppViewModel(
      */
     private suspend fun pruneStaleExposure(live: List<RoutedModel>) {
         if (live.isEmpty()) return
-        val current = _state.value.modelExposure
+        val current = engine.modelExposureSettings()
         if (current.exposed.isEmpty()) return
         val liveIds = live.map { it.fullId }.toSet()
         val prefixes = live.map { it.routePrefix }.toSet()
         val stale = current.exposed.filter { it.substringBefore('/') in prefixes && it !in liveIds }
         if (stale.isEmpty()) return
-        val updated = current.copy(exposed = current.exposed - stale.toSet())
         // 同步落盘（加密存储 commit），必须在 IO 线程
         withContext(Dispatchers.IO) {
-            runCatching { client.updateModelExposure(updated) }
+            engine.updateModelExposure(current.copy(exposed = current.exposed - stale.toSet()))
         }
-        _state.value = _state.value.copy(modelExposure = updated)
+        _state.value = _state.value.copy(modelExposure = engine.modelExposureSettings())
     }
 
     /**
@@ -643,16 +636,14 @@ class AppViewModel(
         _state.value = _state.value.copy(modelTestLatencies = current)
 
         viewModelScope.launch {
-            val outcome = withContext(Dispatchers.IO) {
-                runCatching {
-                    client.probeModelLatency(routedModel.providerId, routedModel.model.id, routedModel.region)
-                }.getOrNull()
+            val result = withContext(Dispatchers.IO) {
+                engine.probeModelLatency(routedModel.providerId, routedModel.model.id, routedModel.region)
             }
             val updated = _state.value.modelTestLatencies.toMutableMap()
-            updated[fullId] = when {
-                outcome == null -> ModelTestStatus.Failed("探测失败")
-                outcome.latencyMs > 0 -> ModelTestStatus.Success(outcome.latencyMs)
-                else -> ModelTestStatus.Failed(outcome.error.ifEmpty { "连接失败" })
+            updated[fullId] = if (result.latencyMs > 0) {
+                ModelTestStatus.Success(result.latencyMs)
+            } else {
+                ModelTestStatus.Failed(result.error.ifEmpty { "连接失败" })
             }
             _state.value = _state.value.copy(modelTestLatencies = updated)
         }
@@ -662,14 +653,14 @@ class AppViewModel(
 
     fun updateModelExposure(updated: ModelExposureSettings) {
         viewModelScope.launch {
-            withContext(Dispatchers.IO) { runCatching { client.updateModelExposure(updated) } }
+            withContext(Dispatchers.IO) { engine.updateModelExposure(updated) }
             _state.value = _state.value.copy(modelExposure = updated)
         }
     }
 
     /** 单个模型勾选/取消勾选。 */
     fun toggleModelExposed(fullId: String, checked: Boolean) {
-        val current = _state.value.modelExposure
+        val current = engine.modelExposureSettings()
         val exposed = current.exposed.toMutableSet()
         if (checked) exposed.add(fullId) else exposed.remove(fullId)
         updateModelExposure(current.copy(exposed = exposed))
@@ -677,7 +668,7 @@ class AppViewModel(
 
     /** 按分组（routePrefix）批量勾选/取消勾选当前已加载的模型。 */
     fun toggleGroupExposed(routePrefix: String, checked: Boolean) {
-        val current = _state.value.modelExposure
+        val current = engine.modelExposureSettings()
         val exposed = current.exposed.toMutableSet()
         val groupIds = _state.value.models.filter { it.routePrefix == routePrefix }.map { it.fullId }
         if (checked) exposed.addAll(groupIds) else exposed.removeAll(groupIds.toSet())
@@ -699,10 +690,10 @@ class AppViewModel(
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = "正在启动服务")
             // 先拉前台服务再启动引擎：startForegroundService 立即弹出通知，
-            // 引擎 start 幂等（server != null 直接返回），前台服务里会再调一次兑底
+            // engine.start() 幂等（server != null 直接返回），Service 里会再调一次兑底
             ContextCompat.startForegroundService(app, Intent(app, GatewayService::class.java))
             val error = withContext(Dispatchers.IO) {
-                runCatching { client.startGateway() }.exceptionOrNull()?.let { it.message ?: "启动失败" }
+                runCatching { engine.start() }.exceptionOrNull()?.let { it.message ?: "启动失败" }
             }
             _state.value = _state.value.copy(busy = "")
             if (error != null) {
@@ -717,7 +708,7 @@ class AppViewModel(
 
     fun stopGateway() {
         viewModelScope.launch {
-            withContext(Dispatchers.IO) { runCatching { client.stopGateway() } }
+            withContext(Dispatchers.IO) { engine.stop() }
             app.stopService(Intent(app, GatewayService::class.java))
             _state.value = _state.value.copy(notice = "服务已停止")
             refresh()
@@ -739,21 +730,21 @@ class AppViewModel(
 
     fun updateSettings(updated: GatewaySettings) {
         viewModelScope.launch {
-            withContext(Dispatchers.IO) { runCatching { client.updateSettings(updated) } }
+            withContext(Dispatchers.IO) { engine.updateSettings(updated) }
             refresh()
         }
     }
 
     fun updateSecuritySettings(updated: dev.aigw.core.security.SecuritySettings) {
         viewModelScope.launch {
-            withContext(Dispatchers.IO) { runCatching { client.updateSecuritySettings(updated) } }
+            withContext(Dispatchers.IO) { engine.updateSecuritySettings(updated) }
             refresh()
         }
     }
 
     fun updateFailoverSettings(updated: dev.aigw.core.failover.ModelFailoverSettings) {
         viewModelScope.launch {
-            withContext(Dispatchers.IO) { runCatching { client.updateFailoverSettings(updated) } }
+            withContext(Dispatchers.IO) { engine.updateFailoverSettings(updated) }
             refresh()
         }
     }
@@ -766,10 +757,22 @@ class AppViewModel(
      */
     fun setOverlayKeepAlive(enabled: Boolean) {
         viewModelScope.launch {
-            val notice = withContext(Dispatchers.IO) {
-                runCatching { client.setOverlayKeepAlive(enabled) }.getOrDefault("")
+            withContext(Dispatchers.IO) { dev.aigw.app.data.KeepAlivePrefs.setOverlayEnabled(engine.store(), enabled) }
+            if (enabled) {
+                if (!engine.isRunning()) {
+                    notice("已开启，悬浮窗将在网关服务启动后显示")
+                } else {
+                    val label = "网关 ${engine.settings().port}"
+                    val shown = dev.aigw.app.service.FloatingKeepAlive.show(app, label)
+                    notice(
+                        if (shown) "悬浮窗保活已开启"
+                        else "已开启，但缺少「显示在其他应用上层」权限，请在上方授权",
+                    )
+                }
+            } else {
+                dev.aigw.app.service.FloatingKeepAlive.hide(app)
+                notice("悬浮窗保活已关闭")
             }
-            _state.value = _state.value.copy(notice = notice)
             refresh()
         }
     }
@@ -778,7 +781,10 @@ class AppViewModel(
      * 授权返回后重新应用悬浮窗：仅在网关服务运行时补显示（开关开着且未在显示）。
      */
     fun reapplyOverlayIfEnabled() {
-        viewModelScope.launch { withContext(Dispatchers.IO) { runCatching { client.reapplyOverlay() } } }
+        if (!engine.isRunning()) return
+        if (!dev.aigw.app.data.KeepAlivePrefs.overlayEnabled(engine.store())) return
+        if (dev.aigw.app.service.FloatingKeepAlive.isShowing()) return
+        dev.aigw.app.service.FloatingKeepAlive.show(app, "网关 ${engine.settings().port}")
     }
 
     /**
@@ -790,23 +796,24 @@ class AppViewModel(
     fun setLiveNotification(enabled: Boolean) {
         _state.value = _state.value.copy(liveNotification = enabled)
         viewModelScope.launch {
-            val notice = withContext(Dispatchers.IO) {
-                runCatching { client.setLiveNotification(enabled) }.getOrDefault("")
+            withContext(Dispatchers.IO) {
+                dev.aigw.app.data.KeepAlivePrefs.setLiveNotificationEnabled(engine.store(), enabled)
             }
-            _state.value = _state.value.copy(notice = notice)
+            dev.aigw.app.service.LiveStatusNotifier.setEnabled(app, enabled)
+            notice(if (enabled) "实时状态通知已开启" else "实时状态通知已关闭")
         }
     }
 
     /** 重新加载反审核脱敏处理链。 */
     fun reloadSanitizerPipeline() = action {
-        val count = client.reloadSanitizerPipeline()
+        val count = engine.reloadSanitizerPipeline()
         "处理链已重载，生效规则数：$count"
     }
 
     /** 清空出网取证流水。 */
     fun clearEvidences() {
+        engine.sanitizer.clearEvidence()
         _state.value = _state.value.copy(evidences = emptyList())
-        viewModelScope.launch { withContext(Dispatchers.IO) { runCatching { client.clearEvidences() } } }
     }
 
     fun setDynamicColor(enabled: Boolean) {
@@ -878,11 +885,11 @@ class AppViewModel(
         }
     }
 
-    fun providerSettings(providerId: String): ProviderSettings = client.providerSettings(providerId)
+    fun providerSettings(providerId: String): ProviderSettings = engine.providerSettings(providerId)
 
     fun updateProviderSettings(providerId: String, settings: ProviderSettings) {
         viewModelScope.launch {
-            withContext(Dispatchers.IO) { runCatching { client.updateProviderSettings(providerId, settings) } }
+            withContext(Dispatchers.IO) { engine.updateProviderSettings(providerId, settings) }
             refresh()
         }
     }
@@ -897,9 +904,7 @@ class AppViewModel(
         val settings = providerSettings(providerId)
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
-                runCatching {
-                    client.updateProviderSettings(providerId, settings.copy(options = settings.options + ("region" to region)))
-                }
+                engine.updateProviderSettings(providerId, settings.copy(options = settings.options + ("region" to region)))
             }
         }
         beginBrowserLogin(providerId, region)
@@ -924,7 +929,7 @@ class AppViewModel(
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = "正在准备登录")
             val result = withContext(Dispatchers.IO) {
-                runCatching { client.beginBrowserLogin(providerId, region) }
+                runCatching { engine.beginBrowserLogin(providerId, region) }
             }
             _state.value = _state.value.copy(busy = "")
             result.fold(
@@ -942,9 +947,6 @@ class AppViewModel(
                 },
                 onFailure = { _state.value = _state.value.copy(notice = it.message ?: "打开登录页失败") },
             )
-            // 刷新一次让镜像里的 loginPending 同步：循环型登录在浏览器里完成，
-            // 期间 UI 无 busy 状态，退到后台是否可回收就靠它判定。
-            refresh()
         }
     }
 
@@ -963,13 +965,7 @@ class AppViewModel(
             val deadline = System.currentTimeMillis() + 5 * 60 * 1000
             var message = "授权超时，请重试"
             while (System.currentTimeMillis() < deadline) {
-                val poll = withContext(Dispatchers.IO) {
-                    runCatching { client.pollDeviceAuth(providerId, state, region) }.getOrNull()
-                }
-                if (poll == null) {
-                    message = "授权查询失败"
-                    break
-                }
+                val poll = withContext(Dispatchers.IO) { engine.pollDeviceAuth(providerId, state, region) }
                 when (poll) {
                     is DeviceAuthPoll.Pending -> delay(3_000)
                     is DeviceAuthPoll.Success -> {
@@ -1026,7 +1022,7 @@ class AppViewModel(
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = "正在发送验证码")
             val result = withContext(Dispatchers.IO) {
-                runCatching { client.sendSmsCode(providerId, phone, ccode.ifBlank { "86" }) }
+                runCatching { engine.sendSmsCode(providerId, phone, ccode.ifBlank { "86" }) }
             }
             _state.value = _state.value.copy(busy = "")
             result.fold(
@@ -1063,9 +1059,7 @@ class AppViewModel(
             _state.value = _state.value.copy(busy = "正在登录")
             val msgid = smsMsgIds[providerId].orEmpty()
             val outcome = withContext(Dispatchers.IO) {
-                runCatching {
-                    client.completeSmsLogin(providerId, phone, code, msgid, ccode.ifBlank { "86" })
-                }.getOrElse { LoginOutcome(LoginState.FAILED, error = it.message ?: "登录失败") }
+                engine.completeSmsLogin(providerId, phone, code, msgid, ccode.ifBlank { "86" })
             }
             _state.value = _state.value.copy(busy = "", notice = noticeOf(outcome))
             onResult(if (outcome.ok) "" else outcome.error)
@@ -1077,10 +1071,7 @@ class AppViewModel(
     fun importCredentials(providerId: String, raw: String) {
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = "正在导入")
-            val outcome = withContext(Dispatchers.IO) {
-                runCatching { client.importAccountJson(providerId, raw) }
-                    .getOrElse { LoginOutcome(LoginState.FAILED, error = it.message ?: "导入失败") }
-            }
+            val outcome = withContext(Dispatchers.IO) { engine.importAccountJson(providerId, raw) }
             _state.value = _state.value.copy(busy = "", notice = noticeOf(outcome))
             refresh()
         }
@@ -1090,41 +1081,53 @@ class AppViewModel(
     fun addCustomAccount(providerId: String, nickname: String, apiKey: String, models: List<String>) = action {
         val key = apiKey.trim()
         if (key.isEmpty()) throw IllegalStateException("API Key 不能为空")
-        val config = client.customProviderConfig(providerId)
+        val provider = engine.registry.get(providerId) as? CustomProvider
             ?: throw IllegalStateException("供应商不存在")
         val uid = CustomProvider.uidOf(key)
-        if (_state.value.accounts.any { it.providerId == providerId && it.uid == uid }) {
-            throw IllegalStateException("这个 API Key 已经添加过了")
-        }
-        client.addAccount(providerId, uid, nickname.trim().ifEmpty { config.name }, CustomProvider.secretOf(key))
+        if (engine.account(providerId, uid) != null) throw IllegalStateException("这个 API Key 已经添加过了")
+        engine.addAccount(providerId, uid, nickname.trim().ifEmpty { provider.displayName }, CustomProvider.secretOf(key))
         saveCustomModels(providerId, models)
         "账号已添加"
     }
 
     /** 把模型列表写入供应商配置（供「添加账号」时一并保存）。 */
     private fun saveCustomModels(providerId: String, models: List<String>) {
-        client.saveCustomModels(providerId, models)
+        val repository = engine.settingsRepository
+        if (repository.loadCustomProviders().none { it.providerId == providerId }) return
+        repository.saveCustomProviders(
+            repository.loadCustomProviders().map { if (it.providerId == providerId) it.copy(models = models) else it },
+        )
+        engine.reloadCustomProviders()
     }
 
     /** 修改账号显示名称。 */
     fun renameAccount(providerId: String, uid: String, nickname: String) = action {
-        val account = client.account(providerId, uid) ?: throw IllegalStateException("账号不存在")
+        val account = engine.account(providerId, uid) ?: throw IllegalStateException("账号不存在")
         val name = nickname.trim()
         if (name.isEmpty()) throw IllegalStateException("名称不能为空")
-        client.addAccount(providerId, uid, name, account.secret)
+        engine.addAccount(providerId, uid, name, account.secret)
         "名称已更新"
     }
 
     /** 读账号的 API Key（仅自定义供应商的凭证里有）。 */
-    fun accountApiKey(providerId: String, uid: String): String = client.customApiKey(providerId, uid)
+    fun accountApiKey(providerId: String, uid: String): String {
+        val account = engine.account(providerId, uid) ?: return ""
+        return runCatching {
+            com.google.gson.JsonParser.parseString(account.secret).asJsonObject.get("apiKey")?.asString.orEmpty()
+        }.getOrDefault("")
+    }
 
     /** 读自定义供应商已保存的模型列表。 */
-    fun customModels(providerId: String): List<String> =
-        client.customProviderConfig(providerId)?.models ?: emptyList()
+    fun customModels(providerId: String): List<String> {
+        val provider = engine.registry.get(providerId) as? CustomProvider ?: return emptyList()
+        return provider.savedModels()
+    }
 
     /** 读自定义供应商的接口地址。 */
-    fun customBaseUrl(providerId: String): String =
-        client.customProviderConfig(providerId)?.baseUrl ?: ""
+    fun customBaseUrl(providerId: String): String {
+        val provider = engine.registry.get(providerId) as? CustomProvider ?: return ""
+        return provider.baseUrl
+    }
 
     private fun noticeOf(outcome: LoginOutcome): String =
         if (outcome.ok) "登录成功：${outcome.nickname.ifEmpty { outcome.uid }}" else "失败：${outcome.error}"
@@ -1132,32 +1135,33 @@ class AppViewModel(
     // ------------------------------------------------------------------ 账号
 
     fun setAccountEnabled(providerId: String, uid: String, enabled: Boolean) = action {
-        client.setAccountEnabled(providerId, uid, enabled)
+        engine.setAccountEnabled(providerId, uid, enabled)
         if (enabled) "已启用该账号" else "已停用该账号"
     }
 
     fun removeAccount(providerId: String, uid: String) = action {
-        if (!client.removeAccount(providerId, uid)) throw IllegalStateException("账号不存在")
+        if (!engine.removeAccount(providerId, uid)) throw IllegalStateException("账号不存在")
         "账号已删除"
     }
 
     /** 调整账号使用优先级（↑/↓）：排在前面的先用，同级仍按余额。 */
     fun moveAccountPriority(providerId: String, uid: String, up: Boolean) = action {
-        if (!client.moveAccountPriority(providerId, uid, up)) throw IllegalStateException("已到列表尽头")
+        if (!engine.moveAccountPriority(providerId, uid, up)) throw IllegalStateException("已到列表尽头")
         ""
     }
 
     /** 导出账号为 JSON 文本；[selection] 为 `providerId/uid` 集合，空集表示全部。 */
-    fun exportAccountsJson(selection: Set<String>): String = client.exportAccounts(selection)
+    fun exportAccountsJson(selection: Set<String>): String = engine.exportAccounts(selection)
 
     /** 解析导出内容（只读），供导入前预览；格式不对抛错，消息可直接展示。 */
-    fun parseAccountTransfer(json: String) = client.parseAccountTransfer(json)
+    fun parseAccountTransfer(json: String) = engine.parseAccountTransfer(json)
 
     /** 导入勾选的账号；返回逐条结果。 */
     fun importAccountsJson(json: String, selection: Set<String>, overwrite: Boolean) =
-        client.importAccounts(json, overwrite, selection)
+        engine.importAccounts(json, overwrite, selection)
 
-    /** 刷新额度；uid 为空表示刷新该供应商的全部账号。
+    /**
+     * 刷新额度；uid 为空表示刷新该供应商的全部账号。
      *
      * 单账号与「某个供应商全部账号」都可能从供应商详情页这类没有批量结果面板的页面触发，
      * 所以走提示（notice）而不是结果面板；全局的「刷新全部额度」才走 [runBatch]（首页/任务中心有面板）。
@@ -1165,7 +1169,7 @@ class AppViewModel(
     fun refreshCredits(providerId: String, uid: String?) {
         if (uid != null) {
             action {
-                val result = client.refreshCredits(providerId, uid)
+                val result = engine.refreshCredits(providerId, uid)
                 if (result.error.isNotEmpty()) throw IllegalStateException(result.error)
                 "额度已刷新"
             }
@@ -1173,7 +1177,7 @@ class AppViewModel(
         }
         // 有界并发（默认并发度）替掉串行；结果汇总成一句话，避免整批失败拼成一条读不完的串。
         action {
-            val results = client.refreshAllCreditsForProvider(providerId)
+            val results = engine.refreshAllCredits(providerId)
             if (results.isEmpty()) throw IllegalStateException("该供应商还没有账号")
             summarizeCredits(results, "（${results.size} 个账号）")
         }
@@ -1181,8 +1185,8 @@ class AppViewModel(
 
     /** 刷新全部供应商的额度（首页 / 任务中心入口）：有进度与结构化结果面板。 */
     fun refreshAllCredits() = runBatch("刷新额度") { onProgress ->
-        if (client.accounts().isEmpty()) throw IllegalStateException("还没有账号，先去「供应商」页添加")
-        client.refreshAllCredits(onProgress = onProgress).map { it.toBatchResult() }
+        if (engine.accounts().isEmpty()) throw IllegalStateException("还没有账号，先去「供应商」页添加")
+        engine.refreshAllCredits(onProgress = onProgress).map { it.toBatchResult() }
     }
 
     /** 额度刷新结果 → 批量结果条目（error 为空即成功）。 */
@@ -1206,9 +1210,9 @@ class AppViewModel(
      * 并发与失败隔离由 [GatewayEngine.performActionAll] 负责；这里只负责选目标与汇总结果。
      */
     fun checkinAll() = runBatch("批量签到") { onProgress ->
-        val targets = client.batchTargets(ACTION_CHECKIN)
+        val targets = batchTargets(ACTION_CHECKIN, ProviderCapability.CHECKIN)
         if (targets.isEmpty()) throw IllegalStateException("还没有支持签到的账号")
-        client.performActionAll(targets, ACTION_CHECKIN, onProgress = onProgress)
+        engine.performActionAll(targets, ACTION_CHECKIN, onProgress = onProgress)
     }
 
     /**
@@ -1225,25 +1229,39 @@ class AppViewModel(
                 .ifEmpty { "任务完成（${results.size} 个账号）" }
         },
     ) { onProgress ->
-        val targets = client.batchTargets(ACTION_TASKS)
+        val targets = batchTargets(ACTION_TASKS, ProviderCapability.TASKS)
         if (targets.isEmpty()) throw IllegalStateException("还没有支持任务的账号")
-        client.performActionAll(targets, ACTION_TASKS, onProgress = onProgress)
+        engine.performActionAll(targets, ACTION_TASKS, onProgress = onProgress)
     }
+
+    /**
+     * 选批量目标：供应商声明支持该能力，且**这个账号**适用该动作。
+     *
+     * 账号级判定交给供应商（区域型供应商的国际版、企业账号本就没有签到/成长中心），
+     * 于是这类账号压根不进入流程，而不是跑完再逐条报错。
+     */
+    private fun batchTargets(action: String, capability: ProviderCapability): List<BatchTarget> =
+        engine.providers()
+            .filter { capability in it.capabilities }
+            .flatMap { info -> engine.accounts(info.id) }
+            .filter { account -> engine.supportsAction(account.providerId, account.uid, action) }
+            .map { BatchTarget(it.providerId, it.uid) }
 
     /**
      * 批量动作的可执行目标概览：有哪些供应商、各几个账号会被实际执行。
      *
      * 界面用它决定按钮是否可点、并列出「这次会动到谁」——避免用户点下去才看到
-     * 「还没有支持任务的账号」这种无意义报错。目标由引擎在快照里一并算好，此处只读镜像。
+     * 「还没有支持任务的账号」这种无意义报错。
      */
-    fun batchTargetSummary(action: String, capability: ProviderCapability): List<Pair<String, Int>> {
-        val targets = when (action) {
-            ACTION_CHECKIN -> client.checkinTargets()
-            ACTION_TASKS -> client.taskTargets()
-            else -> emptyList()
-        }
-        return targets.map { it.displayName to it.count }
-    }
+    fun batchTargetSummary(action: String, capability: ProviderCapability): List<Pair<String, Int>> =
+        engine.providers()
+            .filter { capability in it.capabilities }
+            .map { info ->
+                val count = engine.accounts(info.id)
+                    .count { engine.supportsAction(it.providerId, it.uid, action) }
+                info.displayName to count
+            }
+            .filter { it.second > 0 }
 
     /**
      * 跑一批批量动作：后台 IO 执行、过程中把进度写回状态、结束后给结构化结果并刷新界面。
@@ -1308,53 +1326,81 @@ class AppViewModel(
     }
 
     fun performAction(providerId: String, uid: String, action: String, payload: JsonObject = JsonObject()) = action {
-        val result: ProviderActionResult = client.performAction(providerId, uid, action, payload)
+        val result: ProviderActionResult = engine.performAction(providerId, uid, action, payload)
         if (!result.ok) throw IllegalStateException(result.message)
         result.message.ifEmpty { "操作完成" }
     }
 
     fun updateAccountSecret(providerId: String, uid: String, secret: String) {
         viewModelScope.launch {
-            withContext(Dispatchers.IO) { runCatching { client.updateAccountSecret(providerId, uid, secret) } }
+            withContext(Dispatchers.IO) { engine.updateAccountSecret(providerId, uid, secret) }
             refresh()
         }
     }
 
     // ------------------------------------------------------------------ 设备指纹（Trae 专属）
 
-    fun deviceIdOf(providerId: String, uid: String): String = client.deviceId(providerId, uid)
+    private fun traeProvider(): TraeProvider =
+        engine.registry.get(TraeProvider.ID) as? TraeProvider
+            ?: throw IllegalStateException("Trae 供应商不可用")
+
+    fun deviceIdOf(providerId: String, uid: String): String {
+        if (providerId != TraeProvider.ID) return ""
+        val provider = engine.registry.get(providerId) as? TraeProvider ?: return ""
+        val account = engine.account(providerId, uid) ?: return ""
+        return provider.deviceIdOf(account)
+    }
 
     /**
-     * 账号所属区域（无区域概念的供应商返回空串）。
-     *
-     * 判定统一走 provider 的 `regionOf`——各家的凭证结构与区域字段口径都不同，
-     * UI 再解析一遍 secret 必然走样；这里读引擎快照里算好的镜像。
+     * 账号所属区域（无区域概念的供应商返回空串）；判定统一走 provider 的
+     * [dev.aigw.core.provider.RegionAwareSupport.regionOf]——各家的凭证结构与区域字段口径
+     * 都不同（Trae 的 secret 是嵌套结构且存区域 id，WorkBuddy 是扁平结构且存主机名），
+     * UI 再解析一遍 secret 必然走样。
      */
-    fun accountRegion(providerId: String, uid: String): String = client.region(providerId, uid)
+    fun accountRegion(providerId: String, uid: String): String {
+        val provider = engine.registry.get(providerId) as? dev.aigw.core.provider.RegionAwareSupport
+            ?: return ""
+        val account = engine.account(providerId, uid) ?: return ""
+        return provider.regionOf(account).orEmpty()
+    }
 
     fun regenerateDeviceId(providerId: String, uid: String) = action {
-        val result = client.regenerateTraeDeviceIds(providerId, uid)
-        if (result.error.isNotEmpty()) throw IllegalStateException(result.error)
-        client.updateAccountSecret(providerId, uid, result.secret)
+        val provider = traeProvider()
+        val account = engine.account(providerId, uid) ?: throw IllegalStateException("账号不存在")
+        engine.updateAccountSecret(providerId, uid, provider.regenerateDeviceIds(account))
         "已重新生成设备指纹，重新签到试试"
     }
 
     fun setDeviceId(providerId: String, uid: String, value: String) = action {
-        val result = client.setTraeDeviceId(providerId, uid, value)
-        if (result.error.isNotEmpty()) throw IllegalStateException(result.error)
-        client.updateAccountSecret(providerId, uid, result.secret)
+        val provider = traeProvider()
+        val error = provider.validateDeviceId(value)
+        if (error.isNotEmpty()) throw IllegalStateException(error)
+        val account = engine.account(providerId, uid) ?: throw IllegalStateException("账号不存在")
+        engine.updateAccountSecret(providerId, uid, provider.withDeviceId(account, value))
         "设备指纹已更新，重新签到试试"
     }
 
     // ------------------------------------------------------------------ 自定义供应商
 
     fun saveCustomProvider(config: CustomProviderConfig) = action {
-        client.saveCustomProvider(config)
+        val list = engine.settingsRepository.loadCustomProviders().toMutableList()
+        val index = list.indexOfFirst { it.key == config.key }
+        if (index >= 0) list[index] = config else list.add(config)
+        engine.settingsRepository.saveCustomProviders(list)
+        engine.reloadCustomProviders()
+        engine.syncCustomAccounts(config)
         "供应商已保存"
     }
 
     fun removeCustomProvider(key: String) = action {
-        client.removeCustomProvider(key)
+        val providerId = "custom:$key"
+        // 先清掉账号池里的 key，再删配置
+        for (account in engine.accounts(providerId)) {
+            engine.removeAccount(providerId, account.uid)
+        }
+        val list = engine.settingsRepository.loadCustomProviders().filterNot { it.key == key }
+        engine.settingsRepository.saveCustomProviders(list)
+        engine.reloadCustomProviders()
         "供应商已删除"
     }
 
@@ -1362,7 +1408,7 @@ class AppViewModel(
 
     fun updateProxySettings(settings: ProxySettings) {
         _state.value = _state.value.copy(proxy = settings)
-        viewModelScope.launch { withContext(Dispatchers.IO) { runCatching { client.updateProxySettings(settings) } } }
+        viewModelScope.launch { withContext(Dispatchers.IO) { engine.updateProxySettings(settings) } }
     }
 
     // ------------------------------------------------------------------ 额度包
@@ -1370,9 +1416,7 @@ class AppViewModel(
     /** 拉取某账号的额度包明细（会打上游）。 */
     fun loadCreditPacks(providerId: String, uid: String) {
         viewModelScope.launch {
-            val packs = withContext(Dispatchers.IO) {
-                runCatching { client.creditPacks(providerId, uid) }.getOrDefault(emptyList())
-            }
+            val packs = withContext(Dispatchers.IO) { engine.creditPacks(providerId, uid) }
             _state.value = _state.value.copy(
                 creditPacks = _state.value.creditPacks + ("$providerId/$uid" to packs),
             )
@@ -1382,9 +1426,7 @@ class AppViewModel(
     /** 拉取某账号的成长任务明细（会打上游）；支持任务中心的供应商才返回结果。 */
     fun loadTaskList(providerId: String, uid: String) {
         viewModelScope.launch {
-            val view = withContext(Dispatchers.IO) {
-                runCatching { client.taskList(providerId, uid) }.getOrNull()
-            }
+            val view = withContext(Dispatchers.IO) { engine.taskList(providerId, uid) }
             if (view == null) return@launch
             _state.value = _state.value.copy(
                 taskLists = _state.value.taskLists + ("$providerId/$uid" to view),
@@ -1395,9 +1437,7 @@ class AppViewModel(
     /** 拉取某账号的积分流水明细（会打上游）；支持账本的供应商才返回结果。 */
     fun loadPointsBills(providerId: String, uid: String) {
         viewModelScope.launch {
-            val view = withContext(Dispatchers.IO) {
-                runCatching { client.pointsBills(providerId, uid) }.getOrNull()
-            }
+            val view = withContext(Dispatchers.IO) { engine.pointsBills(providerId, uid) }
             if (view == null) return@launch
             _state.value = _state.value.copy(
                 pointsBills = _state.value.pointsBills + ("$providerId/$uid" to view),
@@ -1410,30 +1450,30 @@ class AppViewModel(
     /** 更新保留天数（越界由 core 夹回 1~3650）。 */
     fun setLogRetentionDays(days: Int) = action {
         val clamped = GatewaySettings.clampRetentionDays(days)
-        client.updateSettings(_state.value.settings.copy(logRetentionDays = clamped))
+        engine.updateSettings(engine.settings().copy(logRetentionDays = clamped))
         if (clamped != days) "保留天数需在 1~3650 之间，已按 $clamped 天保存" else "保留天数已设为 $clamped 天"
     }
 
     // ------------------------------------------------------------------ 记录
 
     fun deleteCall(id: String) = action(alsoRefreshStorage = true) {
-        client.deleteCall(id)
+        engine.callLogStore.delete(id)
         "记录已删除"
     }
 
     fun clearCalls() = action(alsoRefreshStorage = true) {
-        client.clearCalls()
+        engine.callLogStore.clear()
         "调用记录已清空"
     }
 
     fun clearLogs() = action(alsoRefreshStorage = true) {
-        client.clearLogs()
+        engine.requestLog.clear()
         "请求日志已清空"
     }
 
-    /** 回读调用记录某字段的完整原文（溢出文件缺失时回落到摘要，都缺失返回 null）。 */
+    /** 回读调用记录某字段的完整原文（溢出文件缺失时返回 null，调用方回落用摘要）。 */
     fun engineFullText(id: String, field: dev.aigw.core.usage.CallTextField): String? =
-        runCatching { client.callFullText(id, field) }.getOrNull()
+        engine.callLogStore.fullText(id, field)
 
     // ------------------------------------------------------------------ 关于与更新
 

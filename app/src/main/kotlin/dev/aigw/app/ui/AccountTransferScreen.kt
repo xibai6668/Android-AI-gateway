@@ -99,12 +99,7 @@ fun AccountTransferScreen(
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
-            val exported = withContext(Dispatchers.IO) { runCatching { currentExportJson() }.getOrNull() }
-            if (exported == null) {
-                viewModel.notice("导出失败，请重试")
-                return@launch
-            }
-            val json = exported
+            val json = withContext(Dispatchers.IO) { currentExportJson() }
             val ok = withContext(Dispatchers.IO) {
                 runCatching {
                     context.contentResolver.openOutputStream(uri)?.use { it.write(json.toByteArray()) } != null
@@ -175,18 +170,10 @@ fun AccountTransferScreen(
                         viewModel.notice("没有选中任何账号")
                         return@OutlineActionButton
                     }
-                    scope.launch {
-                        val json = withContext(Dispatchers.IO) {
-                            runCatching { currentExportJson() }.getOrNull()
-                        }
-                        if (json == null) {
-                            viewModel.notice("导出失败，请重试")
-                            return@launch
-                        }
-                        exportJson = json
-                        clipboard.setText(AnnotatedString(json))
-                        viewModel.notice("已复制 $exportCount 个账号到剪贴板")
-                    }
+                    val json = currentExportJson()
+                    exportJson = json
+                    clipboard.setText(AnnotatedString(json))
+                    viewModel.notice("已复制 $exportCount 个账号到剪贴板")
                 },
             )
             OutlineActionButton(
@@ -269,7 +256,7 @@ fun AccountTransferScreen(
                     return@LaunchedEffect
                 }
                 delay(250)
-                runCatching { withContext(Dispatchers.IO) { viewModel.parseAccountTransfer(text) } }
+                runCatching { viewModel.parseAccountTransfer(text) }
                     .onSuccess { accounts ->
                         parsed = accounts.map { it.toSelectable() }
                         // 只保留仍然存在的勾选项，避免换一份文件后沿用上一份的选择
@@ -338,20 +325,9 @@ fun AccountTransferScreen(
                             importError = "没有选中任何账号"
                             return@Button
                         }
-                        scope.launch {
-                            val outcome = withContext(Dispatchers.IO) {
-                                runCatching {
-                                    viewModel.importAccountsJson(importText, importSelection, overwrite)
-                                }.getOrNull()
-                            }
-                            if (outcome == null) {
-                                importError = "导入失败，请重试"
-                                return@launch
-                            }
-                            result = outcome
-                            importError = ""
-                            viewModel.refresh()
-                        }
+                        result = viewModel.importAccountsJson(importText, importSelection, overwrite)
+                        importError = ""
+                        viewModel.refresh()
                     },
                     enabled = importSelection.isNotEmpty(),
                     modifier = Modifier.fillMaxWidth(),

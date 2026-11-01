@@ -6,9 +6,6 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
-import android.os.Process
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -93,26 +90,6 @@ class MainActivity : ComponentActivity() {
 
     private var viewModel: AppViewModel? = null
 
-    private val backgroundHandler = Handler(Looper.getMainLooper())
-
-    /**
-     * 退到后台满 [BACKGROUND_RELEASE_DELAY_MS] 后释放主进程：
-     * 网关（含在途请求）都在 :gateway 独立进程，主进程只是 UI，释放它不影响转发；
-     * 用户再回到应用时冷启动，换取后台只留必要进程。
-     */
-    private val releaseUiProcess = object : Runnable {
-        override fun run() {
-            // 有进行中的操作（登录回调监听、更新下载、批量动作）时本轮不释放，稍后重试；
-            // 否则会把结果丢掉（登录回调服务只存在于 :gateway，UI 进程被回收后它也可能被回收）。
-            if (viewModel?.shouldHoldProcess() == true) {
-                backgroundHandler.postDelayed(this, BACKGROUND_RELEASE_RETRY_MS)
-                return
-            }
-            finishAndRemoveTask()
-            Process.killProcess(Process.myPid())
-        }
-    }
-
     private val gatewayToggledReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             // 磁贴启停后通知界面刷新（磁贴无法直接触达 ViewModel）
@@ -139,19 +116,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    override fun onStart() {
-        super.onStart()
-        backgroundHandler.removeCallbacks(releaseUiProcess)
-    }
-
-    override fun onStop() {
-        super.onStop()
-        backgroundHandler.removeCallbacks(releaseUiProcess)
-        backgroundHandler.postDelayed(releaseUiProcess, BACKGROUND_RELEASE_DELAY_MS)
-    }
-
     override fun onDestroy() {
-        backgroundHandler.removeCallbacks(releaseUiProcess)
         runCatching { unregisterReceiver(gatewayToggledReceiver) }
         viewModel = null
         super.onDestroy()
@@ -171,14 +136,6 @@ class MainActivity : ComponentActivity() {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T =
             AppViewModel(application) as T
-    }
-
-    private companion object {
-        /** 进入后台多久后释放主进程。 */
-        const val BACKGROUND_RELEASE_DELAY_MS = 30_000L
-
-        /** 有进行中的操作时的重试间隔。 */
-        const val BACKGROUND_RELEASE_RETRY_MS = 10_000L
     }
 }
 
