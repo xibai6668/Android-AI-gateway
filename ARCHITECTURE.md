@@ -123,7 +123,7 @@
 - **为什么不能两个进程各持一份引擎**：落盘是 `EncryptedSharedPreferences`，`commit()` 是**整文件重写**，
   两个进程各持一份会互相把对方的写入（凭证/账号池/日志）用旧快照覆盖回去，属数据损坏级问题。
 - **读取**：`snapshot()` 一次取回 UI 首屏所需的全部只读数据（含派生镜像：`providerSettings`/设备指纹/区域/批量目标），
-  UI 在组合期只读镜像，零 IPC。
+  UI 在组合期只读镜像，零 IPC；客户端只保留派生字段，不留整份快照（调用记录/日志由 `AppUiState` 唯一持有）。
 - **写入**：全部命令走 `invoke`（同步返回 JSON），参数/返回用 Gson 映射 core 数据类；
   仅 `DeviceAuthPoll`（sealed）用 `DeviceAuthPollDto` 三态表示。
 - **事件**：在途请求、账号变化、首屏就绪、模型目录分片、批量进度由 `MSG_EVENT` 单向推送。
