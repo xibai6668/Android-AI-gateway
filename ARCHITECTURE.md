@@ -100,9 +100,13 @@
 
 | 文件 | 职责 |
 |---|---|
-| `AiGatewayApp.kt` | Application：构造引擎（单例）+ 通知渠道 |
-| `service/GatewayService.kt` | 前台服务：`startForeground` 必须在 `onStartCommand` 第一行（系统超时 5s 强杀），START_NOT_STICKY 不自重建（自重建是灰色软件检测特征），WakeLock+WifiLock |
-| `service/GatewayTileService.kt` | 控制中心磁贴开关 |
+| `AiGatewayApp.kt` | Application：按进程名分流——**仅 `:gateway` 进程构造引擎**（单例）+ 通知渠道；主进程只提供 `client`（IPC 入口） |
+| `ipc/GatewayProtocol.kt` | IPC 协议：命令/事件名、Messenger 消息码、快照 DTO（`UiSnapshot` 等）、Gson 编解码 |
+| `ipc/GatewayBridgeService.kt` | `:gateway` 侧绑定服务：把命令分发到引擎，把引擎事件推给主进程 |
+| `ipc/GatewayClient.kt` | 主进程侧入口：绑定/重连/超时、命令封装、快照镜像（供组合期零 IPC 读取） |
+| `data/UiPrefsStore.kt` | 主进程独有的轻量偏好（外观/更新检查），与引擎加密存储分开，避免两进程互相覆盖 |
+| `service/GatewayService.kt` | 前台服务（**在 `:gateway` 进程**）：`startForeground` 必须在 `onStartCommand` 第一行（系统超时 5s 强杀），START_NOT_STICKY 不自重建（自重建是灰色软件检测特征），WakeLock+WifiLock |
+| `service/GatewayTileService.kt` | 控制中心磁贴开关（**在 `:gateway` 进程**，点击只拉起网关进程） |
 | `service/FloatingKeepAlive.kt` | 可选的「悬浮窗保活」：`TYPE_APPLICATION_OVERLAY` 小悬浮标签（可拖动、点按回应用），由前台服务按开关启停 |
 | `data/EncryptedKeyValueStore.kt` | 写操作用 `commit()`（同步）而非 `apply()`——换 token 后必须立刻可读 |
 | `data/ApkInstaller.kt` | 应用内更新安装：校验安装包版本、「安装未知应用」权限引导、FileProvider 交付系统安装器 |
@@ -110,6 +114,24 @@
 | `ui/ResilienceScreen.kt` | 并发与容错设置页：并发闸门参数、重试退避、熔断器（每个对话框一个参数组） |
 | `ui/LogsScreen.kt` | 记录页：调用记录（详情可展开全文、大文本折叠）+ 请求日志（级别过滤/清空/容量设置在标签旁） |
 | `ui/Motion.kt` | 全局动效参数与Modifier |
+
+#### 进程划分与 IPC（v2.23.0）
+
+网关引擎（含 HTTP 服务、账号池、存储）**只存在于 `:gateway` 进程**；主进程（Compose UI）不构造引擎，
+经 `ipc/GatewayBridgeService`（Messenger 通道：`MSG_INVOKE`/`MSG_REPLY`/`MSG_REGISTER`/`MSG_EVENT`）访问。
+
+- **为什么不能两个进程各持一份引擎**：落盘是 `EncryptedSharedPreferences`，`commit()` 是**整文件重写**，
+  两个进程各持一份会互相把对方的写入（凭证/账号池/日志）用旧快照覆盖回去，属数据损坏级问题。
+- **读取**：`snapshot()` 一次取回 UI 首屏所需的全部只读数据（含派生镜像：`providerSettings`/设备指纹/区域/批量目标），
+  UI 在组合期只读镜像，零 IPC。
+- **写入**：全部命令走 `invoke`（同步返回 JSON），参数/返回用 Gson 映射 core 数据类；
+  仅 `DeviceAuthPoll`（sealed）用 `DeviceAuthPollDto` 三态表示。
+- **事件**：在途请求、账号变化、首屏就绪、模型目录分片、批量进度由 `MSG_EVENT` 单向推送。
+- **生命周期**：磁贴点击只拉起 `:gateway`；App 进后台 30 秒且无进行中操作（登录回调监听/更新下载/批量动作）时，
+  主进程 `finishAndRemoveTask()` 并释放，只留网关进程（在途转发不中断）。
+- **UI 专属偏好**（外观、更新检查）落在主进程独立的明文 `aigw.ui`（`data/UiPrefsStore.kt`），不进引擎加密存储。
+- **R8**：IPC 用 Gson 反射，需 `-keepattributes Signature` 与 `dev.aigw.core.**`/`dev.aigw.app.ipc.**` 的字段保留规则
+  （见 `app/proguard-rules.pro`）。
 
 #### 模型目录流式加载（UI 交接要点）
 

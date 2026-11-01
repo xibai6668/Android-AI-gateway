@@ -82,7 +82,8 @@ class CustomUi(override val id: String) : ProviderUi {
     private fun AddAccountSection(accounts: List<AccountStatus>, actions: ProviderUiActions) {
         var expanded by rememberSaveable { mutableStateOf(false) }
         var fetchedModels by remember { mutableStateOf<List<String>?>(null) }
-        var models by rememberSaveable { mutableStateOf(actions.customModelsOf(id).joinToString("\n")) }
+        val storedModels = actions.customModelsOf(id).joinToString("\n")
+        var models by rememberSaveable(storedModels) { mutableStateOf(storedModels) }
         SectionCard(modifier = Modifier.animateContentSize()) {
             if (!expanded) {
                 Button(
