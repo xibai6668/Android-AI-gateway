@@ -31,6 +31,9 @@ enum class ProviderCapability {
     /** 有可批量执行的「任务」（如 Loomy 的新手任务）。 */
     TASKS,
 
+    /** 任务不只是接取/领奖，还能**自动完成**（如 WorkBuddy 成长中心：按埋点配方推进进度后再领奖）。 */
+    TASK_AUTO_COMPLETE,
+
     /** 有积分/额度流水账本，可查逐笔明细（如小浣熊的积分流水）。 */
     POINTS_BILLS,
 }
@@ -46,6 +49,14 @@ const val ACTION_CHECKIN = "checkin"
  * 各家含义不同，由 provider 自己解释：Loomy = 新手任务；WorkBuddy = 成长中心（任务+旅行+盲盒）。
  */
 const val ACTION_TASKS = "tasks"
+
+/**
+ * 自动完成账号的任务（而不只是接取与领奖）。
+ *
+ * WorkBuddy 的实现：按官方客户端的行为逐条推进成长任务（上报埋点事件 / 发真实对话），
+ * 再统一接单、回读进度、领奖。不具备该能力的供应商保持 [ACTION_TASKS] 的原行为。
+ */
+const val ACTION_COMPLETE_TASKS = "complete_tasks"
 
 /**
  * 一个额度包/账本条目。
