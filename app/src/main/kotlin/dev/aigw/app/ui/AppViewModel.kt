@@ -40,7 +40,6 @@ import dev.aigw.core.gateway.ProxySettings
 import dev.aigw.core.pool.AccountStatus
 import dev.aigw.core.pool.PoolSummary
 import dev.aigw.core.provider.ACTION_CHECKIN
-import dev.aigw.core.provider.ACTION_COMPLETE_TASKS
 import dev.aigw.core.provider.ACTION_TASKS
 import dev.aigw.core.provider.DeviceAuthPoll
 import dev.aigw.core.provider.ProviderActionResult
@@ -1217,46 +1216,26 @@ class AppViewModel(
     }
 
     /**
-     * 对所有支持任务的账号批量执行任务（Loomy 的新手任务、WorkBuddy 成长中心的接单与领奖）。
+     * 对所有支持任务的账号批量执行任务（Loomy 的新手任务、WorkBuddy 成长中心）。
      *
-     * 这一步只负责「接取 + 领取已达标的奖励」，任务本身的进度要用户自己去官方客户端做；
-     * 想让任务也被做完，用 [autoCompleteAllTasks]。
+     * WorkBuddy 侧是「一条龙」：先接单、按官方客户端的口径把未完成的任务推进（上报埋点 /
+     * 真发对话），再统一领已达标的奖励；没配方的任务会在结果里点名。
      * 全部成功时把各账号的上游原话拼进提示（如 Loomy 的领取结果），失败时走结果面板逐条展示。
      */
-    fun runAllTasks() = runBatch(
-        busyText = "批量任务",
-        successNotice = { results ->
-            results.filter { it.message.isNotEmpty() }
-                .joinToString("；") { "${it.nickname.ifEmpty { it.uid }}：${it.message}" }
-                .ifEmpty { "任务完成（${results.size} 个账号）" }
-        },
-    ) { onProgress ->
-        val targets = batchTargets(ACTION_TASKS, ProviderCapability.TASKS)
-        if (targets.isEmpty()) throw IllegalStateException("还没有支持任务的账号")
-        engine.performActionAll(targets, ACTION_TASKS, onProgress = onProgress)
-    }
-
-    /**
-     * 对所有支持自动完成的账号批量「把任务做完」（目前是 WorkBuddy 成长中心）。
-     *
-     * 与 [runAllTasks] 的分工：那个只接单 + 领已达标的奖励，任务进度得用户自己去官方客户端做；
-     * 这个会按官方客户端的口径逐条推进任务（上报埋点 / 真发对话）再统一领奖。
-     * 上游动作与用户自己的操作等价，所以只在用户主动点按钮时触发，不做定时自动跑。
-     */
-    fun autoCompleteAllTasks(): Unit {
+    fun runAllTasks(): Unit {
         // 任务进度马上会被推进，已缓存的快照就过期了：清掉，账号页下次进入会重新拉
         _state.value = _state.value.copy(taskLists = emptyMap())
         runBatch(
-            busyText = "自动完成任务",
+            busyText = "批量任务",
             successNotice = { results ->
                 results.filter { it.message.isNotEmpty() }
                     .joinToString("；") { "${it.nickname.ifEmpty { it.uid }}：${it.message}" }
-                    .ifEmpty { "任务已处理（${results.size} 个账号）" }
+                    .ifEmpty { "任务完成（${results.size} 个账号）" }
             },
         ) { onProgress ->
-            val targets = batchTargets(ACTION_COMPLETE_TASKS, ProviderCapability.TASK_AUTO_COMPLETE)
-            if (targets.isEmpty()) throw IllegalStateException("还没有支持自动完成任务的账号")
-            engine.performActionAll(targets, ACTION_COMPLETE_TASKS, onProgress = onProgress)
+            val targets = batchTargets(ACTION_TASKS, ProviderCapability.TASKS)
+            if (targets.isEmpty()) throw IllegalStateException("还没有支持任务的账号")
+            engine.performActionAll(targets, ACTION_TASKS, onProgress = onProgress)
         }
     }
 
@@ -1355,7 +1334,7 @@ class AppViewModel(
         val result: ProviderActionResult = engine.performAction(providerId, uid, action, payload)
         if (!result.ok) throw IllegalStateException(result.message)
         // 任务进度刚变，账号页里缓存的快照要重拉，否则仍显示「未完成」
-        if (action == ACTION_COMPLETE_TASKS) loadTaskList(providerId, uid)
+        if (action == ACTION_TASKS) loadTaskList(providerId, uid)
         result.message.ifEmpty { "操作完成" }
     }
 

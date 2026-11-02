@@ -45,7 +45,6 @@ import dev.aigw.core.pool.AccountStatus
 import dev.aigw.core.provider.ProviderTask
 
 import dev.aigw.core.provider.ACTION_CHECKIN
-import dev.aigw.core.provider.ACTION_COMPLETE_TASKS
 import dev.aigw.core.provider.ACTION_TASKS
 import dev.aigw.core.provider.codebuddy.CodeBuddyProvider
 
@@ -200,9 +199,6 @@ object CodeBuddyUi : ProviderUi {
                         ChoiceChip("成长中心", false) {
                             actions.onAction(id, status.uid, ACTION_TASKS, JsonObject())
                         }
-                        ChoiceChip("自动完成", false) {
-                            actions.onAction(id, status.uid, ACTION_COMPLETE_TASKS, JsonObject())
-                        }
                     }
                     TaskListSection(status, actions)
                 }
@@ -215,8 +211,8 @@ object CodeBuddyUi : ProviderUi {
      *
      * 对照参考实现（WorkBuddy 反代）：`GET /v2/activity/growth/tasks` 的 `data.tasks[]`，
      * 每条含 title / progress.current / progress.target / accept_status / reward_credit。
-     * 顶部「成长中心」按钮跑一键批量（接单 + 领奖），「自动完成」把任务本身也做完，
-     * 单条任务上的「领取」只领该条。
+     * 顶部「成长中心」按钮跑全流程：接单 → 把未完成的推进 → 领奖；
+     * 单条任务上的「领取」只动这一条。
      */
     @Composable
     private fun TaskListSection(status: AccountStatus, actions: ProviderUiActions) {

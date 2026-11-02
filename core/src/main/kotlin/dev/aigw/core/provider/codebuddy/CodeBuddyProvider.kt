@@ -4,7 +4,6 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import dev.aigw.core.provider.ACTION_CHECKIN
-import dev.aigw.core.provider.ACTION_COMPLETE_TASKS
 import dev.aigw.core.provider.ACTION_TASKS
 import dev.aigw.core.provider.AggregatedChatCall
 import dev.aigw.core.provider.AuthKind
@@ -73,7 +72,6 @@ class CodeBuddyProvider internal constructor(
         ProviderCapability.CREDIT_REFRESH,
         ProviderCapability.CHECKIN,
         ProviderCapability.TASKS,
-        ProviderCapability.TASK_AUTO_COMPLETE,
     )
 
     // ------------------------------------------------------------------ 模型
@@ -263,7 +261,7 @@ class CodeBuddyProvider internal constructor(
         val credential = parse(account)
         if (credential != null && regionOf(credential) == REGION_GLOBAL) {
             return when (action) {
-                ACTION_CHECKIN, ACTION_TASKS, ACTION_COMPLETE_TASKS ->
+                ACTION_CHECKIN, ACTION_TASKS ->
                     ProviderActionResult.failure("国际版没有签到与成长中心")
                 else -> ProviderActionResult.unsupported(action)
             }
@@ -271,37 +269,18 @@ class CodeBuddyProvider internal constructor(
         // 企业账号没有个人成长体系：同属不适用，选目标时已排掉
         if (credential != null && credential.enterpriseId.isNotEmpty()) {
             return when (action) {
-                ACTION_CHECKIN, ACTION_TASKS, ACTION_COMPLETE_TASKS ->
+                ACTION_CHECKIN, ACTION_TASKS ->
                     ProviderActionResult.failure("企业账号没有个人成长体系（签到/任务仅个人账号可用）")
                 else -> ProviderActionResult.unsupported(action)
             }
         }
-        // 指定了具体任务就是「只领这一个」（详情页单个任务上的领取按钮）
+        // 指定了具体任务就是「只动这一个」（任务列表里单条任务上的按钮）
         val singleTask = payload.get("task_code")?.asString.orEmpty()
         return when (action) {
             ACTION_CHECKIN -> checkin(account)
-            ACTION_TASKS -> if (singleTask.isEmpty()) growth(account) else claimSingleTask(account, singleTask)
-            ACTION_COMPLETE_TASKS -> completeTasks(account, singleTask)
+            ACTION_TASKS -> growth(account, singleTask)
             else -> ProviderActionResult.unsupported(action)
         }
-    }
-
-    /** 单个任务的领奖（详情页用）：先确保已接单，再领奖。 */
-    private fun claimSingleTask(account: ProviderAccount, taskCode: String): ProviderActionResult {
-        val credential = parse(account) ?: return ProviderActionResult.failure("凭证无法解析")
-        val base = "${chatBase(credential)}$PATH_GROWTH"
-        val headers = billingHeaders(credential)
-        val parts = ArrayList<String>()
-        acceptTaskCodes(credential, base, headers, listOf(taskCode), parts)
-        val body = fetchTasksBody(credential, base, headers)
-            ?: return ProviderActionResult.failure("拉取任务列表失败")
-        val task = parseGrowthTasks(body).tasks.firstOrNull { it.code == taskCode }
-            ?: return ProviderActionResult.failure("任务不存在：$taskCode")
-        if (!task.progressDone) {
-            return ProviderActionResult.failure("「${task.title}」还没完成，无法领奖")
-        }
-        claimTaskReward(credential, task, parts)
-        return ProviderActionResult.success(parts.joinToString("；").ifEmpty { "「${task.title}」暂无可领取的奖励" })
     }
 
     /**
@@ -309,11 +288,12 @@ class CodeBuddyProvider internal constructor(
      *
      * 顺序按官方客户端的行为链：
      *   签到日历 → 新手礼包 / 补偿 → 领养 Buddy → 连登档位兑奖 → 抽奖
-     *   → 领旅行礼物 / 派 Buddy 出发 → 领任务 → 开盲盒 → 开学季
+     *   → 领旅行礼物 / 派 Buddy 出发 → **成长任务：接单 → 推进 → 领奖** → 开盲盒 → 开学季
      *
      * 各步单独容错：某一步的业务拒绝（活动未开、无配额、条件未达）不该让其它步失败。
+     * [singleTask] 非空时只处理那一条任务（其余步骤照跑）。
      */
-    private fun growth(account: ProviderAccount): ProviderActionResult {
+    private fun growth(account: ProviderAccount, singleTask: String = ""): ProviderActionResult {
         val credential = parse(account) ?: return ProviderActionResult.failure("凭证无法解析")
         val base = "${chatBase(credential)}$PATH_GROWTH"
         val headers = billingHeaders(credential)
@@ -324,7 +304,7 @@ class CodeBuddyProvider internal constructor(
         redeemStreak(credential, headers, parts)
         drawLottery(credential, headers, parts)
         claimTravel(credential, base, headers, parts)
-        claimTasks(credential, base, headers, parts)
+        completeGrowthTasks(account, credential, base, headers, singleTask, parts)
         openBlindBox(credential, base, headers, parts)
         claimSchoolSeason(credential, headers, parts)
 
@@ -542,30 +522,6 @@ class CodeBuddyProvider internal constructor(
      */
     private fun dataOrRoot(obj: JsonObject): JsonObject = obj.objOrNull("data") ?: obj
 
-    /**
-     * 任务：未领取的先接单（进度从接单那刻才开始计），已接单且达标的领奖。
-     */
-    private fun claimTasks(
-        credential: Credential,
-        base: String,
-        headers: Map<String, String>,
-        parts: MutableList<String>,
-    ) {
-        runCatching {
-            val tasks = fetchTasksBody(credential, base, headers)
-                ?.let { parseGrowthTasks(it).tasks }
-                .orEmpty()
-            if (tasks.isEmpty()) return@runCatching
-            // 1) 先接单：上游要求先接单才记进度（官方客户端上的「去完成」）
-            acceptTaskCodes(credential, base, headers, tasks.filter { needsTaskAccept(it) }.map { it.code }, parts)
-            // 2) 再领奖：奖励不在 accept 响应里，要单独调 claim（官方客户端上的「领取奖励」）
-            for (task in tasks) {
-                if (!task.claimable) continue
-                claimTaskReward(credential, task, parts)
-            }
-        }
-    }
-
     /** 拉任务列表原始报文；上游非 2xx 或网络异常时返回 null（调用方各自处理）。 */
     private fun fetchTasksBody(credential: Credential, base: String, headers: Map<String, String>): String? =
         runCatching {
@@ -643,36 +599,37 @@ class CodeBuddyProvider internal constructor(
      * 顺序与官方客户端一致：**先接单再做事**（没接单不计进度），最后领奖。
      * 没有配方的任务不假装完成，在结果里点名列出。
      *
-     * [singleTask] 非空时只处理这一条（详情页单条任务上的按钮）。
+     * 结果累加进 [parts]；[singleTask] 非空时只处理这一条（任务列表里单条任务上的按钮）。
      */
-    private fun completeTasks(account: ProviderAccount, singleTask: String): ProviderActionResult {
-        val credential = parse(account) ?: return ProviderActionResult.failure("凭证无法解析")
-        val base = "${chatBase(credential)}$PATH_GROWTH"
-        val headers = billingHeaders(credential)
-        val adopted = ArrayList<String>()
-        val notes = ArrayList<String>()
-        val pushed = ArrayList<String>()
-        val claimed = ArrayList<String>()
+    private fun completeGrowthTasks(
+        account: ProviderAccount,
+        credential: Credential,
+        base: String,
+        headers: Map<String, String>,
+        singleTask: String,
+        parts: MutableList<String>,
+    ) {
         fun scoped(task: ProviderTask): Boolean = singleTask.isEmpty() || task.code == singleTask
 
-        // 前置：没有 Buddy 实例时上游会拒掉其余任务的接单（prerequisite not met: first_buddy）
-        runCatching { adoptBuddy(credential, headers, adopted) }
-
         val before = fetchTasksBody(credential, base, headers)?.let { parseGrowthTasks(it).tasks }
-            ?: return ProviderActionResult.failure("拉取任务列表失败")
+        if (before == null) {
+            parts.add("拉取任务列表失败")
+            return
+        }
         acceptTaskCodes(
             credential,
             base,
             headers,
             // 未解锁的先不接：接了也只会拿到「task locked until …」
             before.filter { scoped(it) && !it.locked && needsTaskAccept(it) }.map { it.code },
-            notes,
+            parts,
         )
 
+        val pushed = ArrayList<String>()
         for (task in before.filter { scoped(it) && !it.completed && !it.locked }) {
             val recipe = CodeBuddyTaskComplete.recipeFor(task.code) ?: continue
             if (recipe.nightOnly && !isNightWindow()) {
-                notes.add("「${recipe.label}」只在 23:00-08:00 计数，已跳过")
+                parts.add("「${recipe.label}」只在 23:00-08:00 计数，已跳过")
                 continue
             }
             val gap = if (task.target > 0) (task.target - task.current).toInt().coerceAtLeast(1) else 1
@@ -697,27 +654,18 @@ class CodeBuddyProvider internal constructor(
             }
             if (rounds > 0) pushed.add("${recipe.label}×$rounds")
         }
+        if (pushed.isNotEmpty()) parts.add("已推进 " + pushed.joinToString("、"))
 
         // 回读一次再领奖：上游记进度有延迟，判据用进度本身而不是 accept_status
         val after = fetchTasksBody(credential, base, headers)?.let { parseGrowthTasks(it).tasks }.orEmpty()
         for (task in after.filter { scoped(it) && !it.locked && it.claimable }) {
-            claimTaskReward(credential, task, claimed)
+            claimTaskReward(credential, task, parts)
         }
 
-        val summary = ArrayList<String>()
-        summary.addAll(adopted)
-        if (pushed.isNotEmpty()) summary.add("已推进 " + pushed.joinToString("、"))
-        summary.addAll(claimed)
-        summary.addAll(notes)
-        var message = summary.joinToString("；")
         val unsupported = after
             .filter { scoped(it) && !it.completed && !it.locked && CodeBuddyTaskComplete.recipeFor(it.code) == null }
             .map { it.title }
-        if (unsupported.isNotEmpty()) {
-            val tail = "暂不支持自动完成：" + unsupported.joinToString("、")
-            message = if (message.isEmpty()) tail else "$message；$tail"
-        }
-        return ProviderActionResult.success(message.ifEmpty { "没有需要完成的任务" })
+        if (unsupported.isNotEmpty()) parts.add("暂不支持自动完成：" + unsupported.joinToString("、"))
     }
 
     /**
@@ -869,7 +817,7 @@ class CodeBuddyProvider internal constructor(
      * 批量选目标时就会把这两种排掉，不会跑完再报错。
      */
     override fun supportsAction(account: ProviderAccount, action: String): Boolean {
-        if (action != ACTION_CHECKIN && action != ACTION_TASKS && action != ACTION_COMPLETE_TASKS) return true
+        if (action != ACTION_CHECKIN && action != ACTION_TASKS) return true
         val credential = parse(account) ?: return true
         if (regionOf(credential) == REGION_GLOBAL) return false
         return credential.enterpriseId.isEmpty()

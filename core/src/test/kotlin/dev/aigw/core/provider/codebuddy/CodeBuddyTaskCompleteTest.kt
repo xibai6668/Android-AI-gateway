@@ -5,7 +5,7 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
-import dev.aigw.core.provider.ACTION_COMPLETE_TASKS
+import dev.aigw.core.provider.ACTION_TASKS
 import dev.aigw.core.provider.ProviderAccount
 import java.net.InetSocketAddress
 import kotlin.test.Test
@@ -138,7 +138,7 @@ class CodeBuddyTaskCompleteTest {
             task("automation_1", "设置自动化任务", 0, 1),
         ),
     ) { base, upstream ->
-        val result = provider(base).performAction(account(), ACTION_COMPLETE_TASKS, JsonObject())
+        val result = provider(base).performAction(account(), ACTION_TASKS, JsonObject())
 
         // 先接单：没接单上游不记进度
         assertEquals(1, upstream.accepts.size, "应合并成一次批量接单")
@@ -162,7 +162,7 @@ class CodeBuddyTaskCompleteTest {
 
     @Test
     fun `上报信封带稳定设备指纹`() = withUpstream(tasksBody(task("automation_1", "设置自动化任务", 0, 1))) { base, upstream ->
-        provider(base).performAction(account(), ACTION_COMPLETE_TASKS, JsonObject())
+        provider(base).performAction(account(), ACTION_TASKS, JsonObject())
         val event = upstream.reports.first().first().asJsonObject
         assertEquals(CodeBuddyTaskComplete.derive("u1", "machine"), event.get("machineId").asString)
         assertEquals(CodeBuddyTaskComplete.derive("u1", "session"), event.get("sessionId").asString)
@@ -175,7 +175,7 @@ class CodeBuddyTaskCompleteTest {
     fun `进度已达标只领奖不再上报`() = withUpstream(
         tasksBody(task("template_5", "使用5个模板", 5, 5, status = "in_progress")),
     ) { base, upstream ->
-        val result = provider(base).performAction(account(), ACTION_COMPLETE_TASKS, JsonObject())
+        val result = provider(base).performAction(account(), ACTION_TASKS, JsonObject())
         assertTrue(upstream.reports.isEmpty(), "已达标的任务不该再推进：${upstream.reports}")
         assertEquals(listOf("template_5"), upstream.claims)
         assertTrue(result.ok, result.message)
@@ -185,17 +185,17 @@ class CodeBuddyTaskCompleteTest {
     fun `已领取的任务完全不碰`() = withUpstream(
         tasksBody(task("template_5", "使用5个模板", 5, 5, status = "claimed")),
     ) { base, upstream ->
-        val result = provider(base).performAction(account(), ACTION_COMPLETE_TASKS, JsonObject())
+        val result = provider(base).performAction(account(), ACTION_TASKS, JsonObject())
         assertTrue(upstream.reports.isEmpty(), upstream.reports.toString())
         assertTrue(upstream.claims.isEmpty(), upstream.claims.toString())
-        assertEquals("没有需要完成的任务", result.message)
+        assertEquals("成长中心没有可领取的内容", result.message)
     }
 
     @Test
     fun `没有配方的任务如实点名而不是假装完成`() = withUpstream(
         tasksBody(task("wb_wechat_oa_subscribe_task", "关注公众号", 0, 1)),
     ) { base, upstream ->
-        val result = provider(base).performAction(account(), ACTION_COMPLETE_TASKS, JsonObject())
+        val result = provider(base).performAction(account(), ACTION_TASKS, JsonObject())
         assertTrue(upstream.reports.isEmpty(), upstream.reports.toString())
         assertTrue(result.message.contains("暂不支持自动完成"), result.message)
         assertTrue(result.message.contains("关注公众号"), result.message)
@@ -203,7 +203,7 @@ class CodeBuddyTaskCompleteTest {
 
     @Test
     fun `对话类任务先真发对话再上报，且埋点会话与真实会话一致`() = withUpstream(tasksBody(task("chat_5", "和AI聊天5次", 2, 5))) { base, upstream ->
-        provider(base).performAction(account(), ACTION_COMPLETE_TASKS, JsonObject())
+        provider(base).performAction(account(), ACTION_TASKS, JsonObject())
         assertEquals(3, upstream.chatConversationIds.size, "缺口 3 次就该真发 3 次对话")
         assertEquals(3, upstream.codes().count { it == "chat_request_send" }, upstream.codes().toString())
         assertEquals(3, upstream.codes().count { it == "chat_request_response" }, upstream.codes().toString())
@@ -220,7 +220,7 @@ class CodeBuddyTaskCompleteTest {
     ) { base, upstream ->
         // CST 2023-11-15 14:00（UTC 06:00），不在 23:00-08:00 窗口
         val result = provider(base, now = 1_700_028_000_000L)
-            .performAction(account(), ACTION_COMPLETE_TASKS, JsonObject())
+            .performAction(account(), ACTION_TASKS, JsonObject())
         assertTrue(upstream.reports.isEmpty(), "窗口外不该上报：${upstream.reports}")
         assertTrue(upstream.chatConversationIds.isEmpty())
         assertTrue(result.message.contains("23:00-08:00"), result.message)
@@ -230,7 +230,7 @@ class CodeBuddyTaskCompleteTest {
     fun `夜猫子在一天内的窗口内推进且 mode 为 night`() = withUpstream(
         tasksBody(task("black_cat", "夜猫子活动", 0, 1)),
     ) { base, upstream ->
-        val result = provider(base).performAction(account(), ACTION_COMPLETE_TASKS, JsonObject())
+        val result = provider(base).performAction(account(), ACTION_TASKS, JsonObject())
         val send = upstream.eventsOf("chat_request_send").single()
         assertEquals("night", send.get("mode").asString, "mode 不能被信封的 CLOUD 吃掉")
         assertEquals(upstream.chatConversationIds.single(), send.get("conversationId").asString)
@@ -241,7 +241,7 @@ class CodeBuddyTaskCompleteTest {
     fun `召唤专家的事件声明专家模型口径`() = withUpstream(
         tasksBody(task("expert_5", "召唤5次专家", 0, 5)),
     ) { base, upstream ->
-        provider(base).performAction(account(), ACTION_COMPLETE_TASKS, JsonObject())
+        provider(base).performAction(account(), ACTION_TASKS, JsonObject())
         val uses = upstream.eventsOf("expert_actual_use")
         assertEquals(5, uses.size, upstream.codes().toString())
         assertEquals("deepseek-v4-flash", uses.first().get("requestModelId").asString)
@@ -252,7 +252,7 @@ class CodeBuddyTaskCompleteTest {
     fun `技能类任务用真实会话 id 而非自造值`() = withUpstream(
         tasksBody(task("skill_1", "尝鲜热门技能", 0, 1)),
     ) { base, upstream ->
-        provider(base).performAction(account(), ACTION_COMPLETE_TASKS, JsonObject())
+        provider(base).performAction(account(), ACTION_TASKS, JsonObject())
         val conversationId = upstream.chatConversationIds.single()
         val skill = upstream.eventsOf("skill_info").single()
         assertEquals(conversationId, skill.get("conversationId").asString)
@@ -269,7 +269,7 @@ class CodeBuddyTaskCompleteTest {
         ),
     ) { base, upstream ->
         val payload = JsonObject().apply { addProperty("task_code", "automation_1") }
-        provider(base).performAction(account(), ACTION_COMPLETE_TASKS, payload)
+        provider(base).performAction(account(), ACTION_TASKS, payload)
         assertEquals(listOf("automation_1"), upstream.accepts.single().map { it.asString })
         assertEquals(1, upstream.reports.size, upstream.reports.toString())
         val codes = upstream.reports.single().map { it.asJsonObject.get("eventCode").asString }
@@ -280,14 +280,14 @@ class CodeBuddyTaskCompleteTest {
     fun `未解锁的任务不接单也不推进`() = withUpstream(
         tasksBody(task("template_5", "使用5个模板", 0, 5, locked = true)),
     ) { base, upstream ->
-        provider(base).performAction(account(), ACTION_COMPLETE_TASKS, JsonObject())
+        provider(base).performAction(account(), ACTION_TASKS, JsonObject())
         assertTrue(upstream.accepts.isEmpty(), "未解锁的任务连 accept 都别打：${upstream.accepts}")
         assertTrue(upstream.reports.isEmpty(), upstream.reports.toString())
         assertTrue(upstream.claims.isEmpty(), upstream.claims.toString())
     }
 
     @Test
-    fun `国际版与企业账号不进自动完成流程`() {
+    fun `国际版与企业账号不进任务流程`() {
         val global = assertNotNull(
             provider("http://placeholder").importCredentials(
                 """{"accessToken":"tok","uid":"g1","domain":"workbuddy.ai"}""",
@@ -299,16 +299,10 @@ class CodeBuddyTaskCompleteTest {
             ),
         )
         val p = provider("http://placeholder")
-        assertTrue(!p.supportsAction(global, ACTION_COMPLETE_TASKS))
-        assertTrue(!p.supportsAction(enterprise, ACTION_COMPLETE_TASKS))
-        val result = p.performAction(global, ACTION_COMPLETE_TASKS, JsonObject())
+        assertTrue(!p.supportsAction(global, ACTION_TASKS))
+        assertTrue(!p.supportsAction(enterprise, ACTION_TASKS))
+        val result = p.performAction(global, ACTION_TASKS, JsonObject())
         assertTrue(!result.ok && !result.unsupported, result.message)
-    }
-
-    /** 能力位与动作名要对上，否则任务中心的「自动完成任务」按钮不会为 WorkBuddy 点亮。 */
-    @Test
-    fun `声明具备自动完成能力`() {
-        assertTrue(dev.aigw.core.provider.ProviderCapability.TASK_AUTO_COMPLETE in provider("http://x").capabilities)
     }
 }
 

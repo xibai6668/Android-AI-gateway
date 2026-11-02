@@ -26,7 +26,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.aigw.core.provider.ACTION_CHECKIN
-import dev.aigw.core.provider.ACTION_COMPLETE_TASKS
 import dev.aigw.core.provider.ACTION_TASKS
 import dev.aigw.core.provider.ProviderCapability
 
@@ -68,7 +67,6 @@ fun TaskCenterScreen(
         // 从前只有签到/刷新额度两个按钮，任务中心的「批量任务」能力根本没接到界面上。
         val checkinTargets = viewModel.batchTargetSummary(ACTION_CHECKIN, ProviderCapability.CHECKIN)
         val taskTargets = viewModel.batchTargetSummary(ACTION_TASKS, ProviderCapability.TASKS)
-        val autoTargets = viewModel.batchTargetSummary(ACTION_COMPLETE_TASKS, ProviderCapability.TASK_AUTO_COMPLETE)
 
         SectionCard(enterIndex = 0) {
             SectionLabel("批量操作")
@@ -91,13 +89,6 @@ fun TaskCenterScreen(
                     Text("批量任务")
                 }
             }
-            OutlinedButton(
-                onClick = { viewModel.autoCompleteAllTasks() },
-                enabled = autoTargets.isNotEmpty(),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text("自动完成任务")
-            }
             Button(onClick = { viewModel.refreshAllCredits() }, modifier = Modifier.fillMaxWidth()) {
                 Text("刷新全部额度")
             }
@@ -111,13 +102,7 @@ fun TaskCenterScreen(
             )
             Text(
                 text = "任务：" + taskTargets.describeTargets("没有支持批量任务的账号") +
-                    "（接取任务、领取已达标的奖励）",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                text = "自动完成：" + autoTargets.describeTargets("没有支持自动完成任务的账号") +
-                    "（按官方客户端的口径把任务做完再领奖）",
+                    "（接取任务、把未完成的做完、领取已达标的奖励）",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
