@@ -38,6 +38,17 @@ class GatewayHttpServer(
     port: Int,
 ) : NanoHTTPD(host, port) {
 
+    /** 有界的请求执行器；"/v1/health" 用它报线程与排队现状。 */
+    private val asyncRunner = BoundedAsyncRunner(onReject = { engine.logWarn(it) })
+
+    init {
+        // 默认的 thread-per-request 无上限；换成有界线程池（见 BoundedAsyncRunner 注释）
+        setAsyncRunner(asyncRunner)
+    }
+
+    /** 当前「在途 / 排队」请求数，供状态页展示与测试断言。 */
+    fun queueSnapshot(): Pair<Int, Int> = asyncRunner.snapshot()
+
     fun listeningAddress(): String = (hostname ?: "0.0.0.0") + ":" + listeningPort
 
     override fun serve(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
@@ -263,8 +274,24 @@ class GatewayHttpServer(
 
             val pMetrics = engine.metricsOf(providerId)
             val resolvedModel = provider.resolveModel(currentRoute.model)
+            val modelBreaker = engine.modelBreakerOf(providerId, resolvedModel)
 
-            // 1b. 模型级冷却：该 (供应商, 模型) 刚被判为「模型不可用」（如 6004/1005），
+            // 1b. 模型级熔断：该模型在这家供应商上连续失败达标，静默期内直接跳过这个候选。
+            // 与供应商级熔断分开：只封住这个模型，不影响同一家的其它模型。
+            if (!modelBreaker.allowRequest()) {
+                val skipReason = "$providerId/$resolvedModel(模型级熔断中，直接跳过)"
+                log("模型 [$resolvedModel] 在 [$providerId] 处于模型级熔断，跳过此候选...")
+                routeErrors.add(skipReason)
+                val next = candidateRoutes()
+                    .firstOrNull { it.providerId !in triedProviders && engine.pool.pick(it.providerId) != null }
+                if (next != null) {
+                    currentRoute = next
+                    continue
+                }
+                break
+            }
+
+            // 1c. 模型级冷却：该 (供应商, 模型) 刚被判为「模型不可用」（如 6004/1005），
             // 换号必然再撞同一道墙，直接转下一候选供应商。
             if (engine.modelCooldownOf().isCooling(providerId, resolvedModel)) {
                 val skipReason = "$providerId/$resolvedModel(模型级冷却中，直接跳过)"
@@ -339,6 +366,7 @@ class GatewayHttpServer(
                 } catch (e: Exception) {
                     providerLastError = e.message ?: "刷新凭证失败"
                     cb.recordFailure()
+                    modelBreaker.recordFailure()
                     pMetrics.record(false, System.currentTimeMillis() - startedAt, "token_refresh_failed")
                     if (engine.verboseLogging()) engine.logVerbose("返回原文", "刷新凭证异常：$providerLastError")
                     gateHandle.release()
@@ -381,6 +409,7 @@ class GatewayHttpServer(
                     providerLastError = e.message ?: "上游连接失败"
                     lastHttpStatus = 0
                     cb.recordFailure()
+                    modelBreaker.recordFailure()
                     pMetrics.record(false, elapsed, "connect_exception")
                     if (engine.verboseLogging()) engine.logVerbose("返回原文", "openChat 异常：$providerLastError")
                     finishActiveRequest()
@@ -440,6 +469,9 @@ class GatewayHttpServer(
                     }
                     // 到这里才是上游侧错误：计入熔断与健康指标
                     cb.recordFailure()
+                    modelBreaker.recordFailure()
+                    // 上游刚报错：把这个账号晾一会儿，避免下一个请求立刻又选中它
+                    engine.pool.coolDown(currentRoute.providerId, account.uid, failoverCfg.accountCooldownMs)
                     pMetrics.record(false, elapsed, failure.kind.name)
                     providerLastError = failure.message
                     failureKinds.add(failure.kind)
@@ -455,6 +487,7 @@ class GatewayHttpServer(
                     call.close()
                     lastHttpStatus = 0
                     cb.recordFailure()
+                    modelBreaker.recordFailure()
                     pMetrics.record(false, elapsed, "network_status_0")
                     providerLastError = err
                     failureKinds.add(ErrorKind.NETWORK)
@@ -525,6 +558,7 @@ class GatewayHttpServer(
 
                     // 剩余为上游侧可重试错误（5xx/429/网络/额度/404）：计入熔断与健康指标
                     cb.recordFailure()
+                    modelBreaker.recordFailure()
                     pMetrics.record(false, elapsed, "http_${call.status}")
                     providerLastError = error.message
                     lastHttpStatus = call.status
@@ -540,6 +574,7 @@ class GatewayHttpServer(
                     val elapsed = System.currentTimeMillis() - attemptStart
                     call.close()
                     cb.recordFailure()
+                    modelBreaker.recordFailure()
                     pMetrics.record(false, elapsed, "empty_completion")
                     log("${currentRoute.providerId} 返回了零内容回复，已尝试其他账号或供应商")
                     if (engine.verboseLogging()) engine.logVerbose("返回原文", aggregated)
@@ -552,7 +587,9 @@ class GatewayHttpServer(
 
                 // 成功链路：记录熔断器成功与度量指标，模型统一归一化为客户端请求的名称
                 cb.recordSuccess()
+                modelBreaker.recordSuccess()
                 engine.modelCooldownOf().clear(currentRoute.providerId, resolvedModel)
+                engine.pool.clearCooldown(currentRoute.providerId, account.uid)
                 pMetrics.record(true, System.currentTimeMillis() - attemptStart)
                 val transparentModel = requestedModel
 
@@ -570,6 +607,7 @@ class GatewayHttpServer(
                         val elapsed = System.currentTimeMillis() - attemptStart
                         call.close()
                         cb.recordFailure()
+                        modelBreaker.recordFailure()
                         pMetrics.record(false, elapsed, "stream_null")
                         providerLastError = "上游未返回流"
                         failureKinds.add(ErrorKind.SERVER)
@@ -703,6 +741,7 @@ class GatewayHttpServer(
                         id, providerId, model, uid, nickname, true,
                         result.status, httpStatus, result.usage, result.pointsConsumed,
                         result.failure, result.response, requestBody, startedAt, result.raw,
+                        firstByteMillis = result.firstByteMillis,
                     )
                 }
             },
@@ -718,6 +757,8 @@ class GatewayHttpServer(
             var failure = ""
             var sawData = false
             var firstChunkLogged = false
+            // 首字出站耗时（毫秒）：非 -1 表示已经出过首字，落进调用记录做 TTFB 归因
+            var firstByteMillis = -1L
             var sawPayload = false
             // 上游是否已自己给出 [DONE]：正常结束但没给时要补一个，否则客户端只看到截断流
             var sawDone = false
@@ -750,7 +791,8 @@ class GatewayHttpServer(
                         flushBatch(batch, writer)
                         if (!firstChunkLogged && line.startsWith("data:")) {
                             firstChunkLogged = true
-                            log("首字出站（$providerId/$model）：${System.currentTimeMillis() - startedAt}ms")
+                            firstByteMillis = System.currentTimeMillis() - startedAt
+                            log("首字出站（$providerId/$model）：${firstByteMillis}ms")
                             onFirstChunk()
                         }
                         val chunk = runCatching { parseChunk(line) }.getOrNull() ?: continue
@@ -825,7 +867,9 @@ class GatewayHttpServer(
                     engine.logVerbose("返回原文", rawLines.content())
                 }
                 // 快照交给 onClosed 统一写记录：send 的 finally 无论 produce 是否执行都会跑。
-                snapshot = RecordedSnapshot(status, usage, pointsConsumed, failure, collected.content(), rawLines.content())
+                snapshot = RecordedSnapshot(
+                    status, usage, pointsConsumed, failure, collected.content(), rawLines.content(), firstByteMillis,
+                )
             }
         }
     }
@@ -838,6 +882,8 @@ class GatewayHttpServer(
         val failure: String,
         val response: String,
         val raw: String,
+        /** 首字出站耗时（毫秒）；流全程无首字时为 -1。 */
+        val firstByteMillis: Long = -1,
     )
 
     /** 把累积的 SSE 行批量写出；非空则写出并清空缓冲，返回是否有内容。 */
@@ -872,9 +918,40 @@ class GatewayHttpServer(
         recordCall(
             newCompletionId(), providerId, model, uid, nickname, false,
             CallStatus.SUCCESS, httpStatus, usage, pointsConsumedOf(payload ?: JsonObject(), usage), "", content, requestBody, startedAt, normalized,
+            // 非流式没有「首字」概念：有内容就把总耗时当首字耗时记下，否则留 -1
+            firstByteMillis = if (content.isNotEmpty()) System.currentTimeMillis() - startedAt else -1L,
         )
         engine.refreshCreditsSoon(providerId, uid)
         return json(200, normalized)
+    }
+
+    /**
+     * 近期健康快照（供应商 × 模型）：样本数、成功率、耗时与首字延迟分位数、失败原因 Top-N。
+     *
+     * 与 `/v1/credits` 同权限：只给本机看，不往局域网暴露。数据全在内存里，重启即清零。
+     */
+    private fun health(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
+        if (!isLocalhost(session) && !authorized(session)) return unauthorized(session)
+        val root = JsonObject()
+        root.addProperty("queue", "${queueSnapshot().first} 在途 / ${queueSnapshot().second} 排队")
+        val window = JsonObject()
+        engine.healthWindowOf().snapshot().forEach { (key, summary) ->
+            val obj = JsonObject()
+            summary.forEach { (k, v) ->
+                when (v) {
+                    is Int -> obj.addProperty(k, v)
+                    is Long -> obj.addProperty(k, v)
+                    is String -> obj.addProperty(k, v)
+                    is Map<*, *> -> obj.add(k, JsonObject().apply {
+                        v.forEach { (ek, ev) -> if (ev is Number) addProperty(ek.toString(), ev) }
+                    })
+                    else -> obj.addProperty(k, v.toString())
+                }
+            }
+            window.add(key, obj)
+        }
+        root.add("models", window)
+        return json(200, root.toString())
     }
 
     private fun authorize(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
@@ -1149,12 +1226,23 @@ class GatewayHttpServer(
         requestBody: String,
         startedAt: Long,
         rawResponse: String = "",
+        /** 首字延迟（毫秒）；-1 表示本次没有产生首字（失败 / 空回复 / 非流式）。 */
+        firstByteMillis: Long = -1,
     ) {
         // 调用记录开关：关闭时不写任何记录（原文动辄几 KB，是存储的主要来源）；
         // 记录一 failover 链路的语义不变，只是不留痕。
         // 跳天自动清理必须照常执行：它是存量记录（含旧版本积压）的唯一运行期回收点，
         // 放在开关短路之后会让「关归档」变成「永不清理」。
         engine.autoPurgeIfDue()
+        // 健康窗口：不论调用记录开关是否打开都要记（它是内存里的排障视图，不占存储）
+        engine.healthWindowOf().record(
+            providerId = providerId,
+            model = model,
+            ok = status == CallStatus.SUCCESS,
+            durationMillis = System.currentTimeMillis() - startedAt,
+            firstByteMillis = firstByteMillis,
+            error = error,
+        )
         if (!engine.settings().callLoggingEnabled) return
         engine.callLogStore.add(
             CallRecord(
@@ -1172,6 +1260,7 @@ class GatewayHttpServer(
                 totalTokens = usage?.get("total_tokens")?.asLong ?: 0L,
                 cachedTokens = cachedTokensOf(usage),
                 pointsConsumed = pointsConsumed,
+                firstByteMillis = firstByteMillis,
                 durationMillis = System.currentTimeMillis() - startedAt,
                 error = error,
                 requestBody = requestBody,

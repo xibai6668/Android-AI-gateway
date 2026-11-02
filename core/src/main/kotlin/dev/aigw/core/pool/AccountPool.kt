@@ -81,8 +81,8 @@ private fun raisedAboveDefault(providerId: String, uid: String, priority: Int, s
  * 选号与额度都按 provider 独立，互不影响；新增供应商不需要改这个类。
  * 挑选策略：该 provider 内可用账号中取余额最高者；同一请求内换号重试用 [pick] 的 exclude 排除。
  *
- * 不做本地冷却：上游每次报什么就是什么，由调用方（换号重试/跨供应商 Failover）应对，
- * 避免本地状态把明明可用的账号挡在门外。
+ * 本地冷却（[coolDown]）只解决一个具体问题：**刚被上游报错过的账号不要立刻再被选中**。
+ * 它不影响禁用/启用语义，到期自动恢复，也不落盘（重启即清零，与熔断/冷却表一致）。
  */
 class AccountPool(
     private val store: KeyValueStore,
@@ -94,8 +94,7 @@ class AccountPool(
     /** 按 provider 分组的条目索引：选号只需扫该供应商的账号，不必遍历整个池。 */
     private val byProvider = HashMap<String, MutableList<Entry>>()
 
-    /**
-     * 每个账号一把落盘串行锁（键 = providerId/uid）：同一账号的凭证/状态落盘与删除在这里互斥。
+    /** 每个账号一把落盘串行锁（键 = providerId/uid）：同一账号的凭证/状态落盘与删除在这里互斥。
      *
      * 内存状态在 [lock] 写锁内更新后，落盘被移到锁外执行 `store.write`：Android 侧一次 write
      * 就是整文件的加密 commit，持写锁落盘会把整个账号池的读（含选号 [pick]）全堵住，批量并发时
@@ -106,6 +105,9 @@ class AccountPool(
      * 而不是用调用时捕获的旧快照，故最终写出去的一定是最新值（详见 [persistState]）。
      */
     private val persistLocks = ConcurrentHashMap<String, Any>()
+
+    /** 本地冷却表：`providerId/uid` → 冷却截止毫秒（仅内存）。 */
+    private val cooldowns = ConcurrentHashMap<String, Long>()
 
     init {
         load()
@@ -127,6 +129,8 @@ class AccountPool(
                 // 否则会出现「重新登录后依然 503」——旧凭证的失效状态沾在新凭证上。
                 existing.disabled = false
                 existing.reason = ""
+                // 新凭证也要清掉旧凭证留下的本地冷却，否则刚换好的账号会被晾一会儿
+                cooldowns.remove(keyOf(account.providerId, account.uid))
             } else {
                 val entry = Entry(account)
                 entries[key] = entry
@@ -146,6 +150,7 @@ class AccountPool(
             true
         }
         if (!removed) return false
+        cooldowns.remove(keyOf(providerId, uid))
         // 删除同样放到锁外，并与该账号的落盘串行：[persistState] 落盘前会重读内存，若删除先完成
         // 它会读到「条目已不在」而直接跳过，不会把刚删掉的键又写回来。
         synchronized(accountIoLock(providerId, uid)) {
@@ -288,6 +293,7 @@ class AccountPool(
         for (entry in group) {
             if (entry.account.uid in exclude) continue
             if (!entry.healthy()) continue
+            if (isCooling(providerId, entry.account.uid)) continue
             // 先比优先级（用户手动排序，最高优先），同级再比余额：
             // 用户把某个号拖到最上面，就是希望它先被用，不该被余额更高的号盖掉。
             val better = best == null || entry.priority > best.priority ||
@@ -295,6 +301,44 @@ class AccountPool(
             if (better) best = entry
         }
         best?.account
+    }
+
+    /**
+     * 把某个账号临时冷却一段时间（[durationMs] <= 0 时忽略）。
+     *
+     * 用在上游刚给过一次失败之后：失败本身已由熔断/换号处理，这里只防「下一个请求又选中它」
+     * 导致的连续失败。与禁用不同：不改变 enabled/disabled，界面上仍显示为可用。
+     */
+    fun coolDown(providerId: String, uid: String, durationMs: Long) {
+        if (durationMs <= 0) return
+        cooldowns["$providerId/$uid"] = nowMillis() + durationMs
+    }
+
+    /** 该账号是否在本地冷却中；到期项顺手清掉。 */
+    fun isCooling(providerId: String, uid: String): Boolean {
+        val key = "$providerId/$uid"
+        val deadline = cooldowns[key] ?: return false
+        if (nowMillis() >= deadline) {
+            cooldowns.remove(key, deadline)
+            return false
+        }
+        return true
+    }
+
+    /** 清掉该账号的本地冷却（成功一次或换了新凭证都该解除）。 */
+    fun clearCooldown(providerId: String, uid: String) {
+        cooldowns.remove("$providerId/$uid")
+    }
+
+    /** 当前仍在冷却中的账号：`providerId/uid` → 剩余毫秒。 */
+    fun cooldownSnapshot(): Map<String, Long> {
+        val now = nowMillis()
+        val out = LinkedHashMap<String, Long>()
+        for ((key, deadline) in cooldowns) {
+            val remaining = deadline - now
+            if (remaining > 0) out[key] = remaining else cooldowns.remove(key, deadline)
+        }
+        return out
     }
 
     /** 供界面展示的摘要；[providerId] 为空时统计全部。 */

@@ -38,6 +38,12 @@ data class CallRecord(
     val cachedTokens: Long = 0,
     /** 上游回报的本次积分消耗（如 Loomy 的 points_consumed），无则 0。 */
     val pointsConsumed: Long = 0,
+    /**
+     * 首字延迟（毫秒）：从网关收到请求到第一字节内容写向客户端。
+     * -1 表示这次请求没有产生首字（失败/空回复/非流式未拿到内容）。
+     * 排障时它是「上游排队 vs 模型思考」的直接区分依据，所以必须落库而不是只打日志。
+     */
+    val firstByteMillis: Long = -1,
     val durationMillis: Long,
     val error: String,
     /** 请求体原文（截断保存），供「调用记录」详情查看。 */
@@ -317,6 +323,7 @@ class CallLogStore(
                     totalTokens = obj.get("totalTokens")?.asLong ?: 0L,
                     cachedTokens = obj.get("cachedTokens")?.asLong ?: 0L,
                     pointsConsumed = obj.get("pointsConsumed")?.asLong ?: 0L,
+                    firstByteMillis = obj.get("firstByteMillis")?.asLong ?: -1L,
                     durationMillis = obj.get("durationMillis")?.asLong ?: 0L,
                     error = obj.get("error")?.asString.orEmpty(),
                     requestBody = obj.get("requestBody")?.asString.orEmpty(),
@@ -450,6 +457,7 @@ private fun CallRecord.toJson(): JsonObject = JsonObject().apply {
     addProperty("totalTokens", totalTokens)
     addProperty("cachedTokens", cachedTokens)
     addProperty("pointsConsumed", pointsConsumed)
+    addProperty("firstByteMillis", firstByteMillis)
     addProperty("durationMillis", durationMillis)
     addProperty("error", error)
     addProperty("requestBody", requestBody)

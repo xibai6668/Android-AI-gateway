@@ -34,6 +34,7 @@ import dev.aigw.core.provider.custom.CustomProvider
 import dev.aigw.core.provider.raccoon.RaccoonProvider
 import dev.aigw.core.provider.trae.TraeProvider
 import dev.aigw.core.store.KeyValueStore
+import dev.aigw.core.failover.weightedOrder
 import dev.aigw.core.usage.CallLogStore
 import dev.aigw.core.usage.RequestLog
 import dev.aigw.core.usage.StorageAudit
@@ -203,6 +204,9 @@ class GatewayEngine(
 
     private val circuitBreakers = ConcurrentHashMap<String, dev.aigw.core.failover.ProviderCircuitBreaker>()
     private val providerMetrics = ConcurrentHashMap<String, dev.aigw.core.failover.ProviderMetricsTracker>()
+
+    /** 供应商 × 模型的近期健康窗口（TTFB、P95、失败原因 Top-N），排障用。 */
+    private val healthWindow = dev.aigw.core.usage.ModelHealthWindow()
 
     /** 模型级冷却表：该 (供应商, 模型) 暂时不可用时直接跳过，换号无意义。仅内存。 */
     private val modelCooldown = dev.aigw.core.failover.ModelCooldownTracker(nowMillis)
@@ -379,10 +383,28 @@ class GatewayEngine(
             dev.aigw.core.failover.ProviderCircuitBreaker(providerId, config = { failoverSettings.circuitBreaker }, nowMillis = nowMillis)
         }
 
+    /**
+     * 「供应商 × 模型」级熔断器（与供应商级独立）。
+     *
+     * 用于区分「这家整体挂了」与「只是这个模型在这家不可用」：后者若计进供应商熔断，
+     * 会把该供应商其它仍可用的模型一起封掉。键为 `providerId|model`，阈值同供应商级配置。
+     */
+    fun modelBreakerOf(providerId: String, model: String): dev.aigw.core.failover.ProviderCircuitBreaker =
+        circuitBreakers.computeIfAbsent("$providerId|$model") {
+            dev.aigw.core.failover.ProviderCircuitBreaker(
+                "$providerId|$model",
+                config = { failoverSettings.circuitBreaker },
+                nowMillis = nowMillis,
+            )
+        }
+
     fun metricsOf(providerId: String): dev.aigw.core.failover.ProviderMetricsTracker =
         providerMetrics.computeIfAbsent(providerId) { dev.aigw.core.failover.ProviderMetricsTracker() }
 
     fun modelCooldownOf(): dev.aigw.core.failover.ModelCooldownTracker = modelCooldown
+
+    /** 供应商 × 模型的近期健康窗口（TTFB / P95 / 失败原因），只存内存。 */
+    fun healthWindowOf(): dev.aigw.core.usage.ModelHealthWindow = healthWindow
 
     // ------------------------------------------------------------------ 模型开放名单
 
@@ -488,7 +510,8 @@ class GatewayEngine(
             if (server != null) return
             val host = if (settings.exposeLan) null else "127.0.0.1"
             val created = GatewayHttpServer(this, host, settings.port)
-            created.start(0, false)
+            // 第二个参数是 socket 读超时（毫秒）：0 表示永不超时，半开连接会永久占住一个线程。
+            created.start(SOCKET_READ_TIMEOUT_MS, false)
             server = created
             log("网关已启动，监听 ${created.listeningAddress()}")
         }
@@ -1505,9 +1528,8 @@ class GatewayEngine(
 
         if (!configuredCandidates.isNullOrEmpty()) {
             val list = ArrayList<Route>()
-            // 按 priority 降序
-            val sorted = configuredCandidates.sortedByDescending { it.priority }
-            for (c in sorted) {
+            // 先按 priority 降序，同优先级内按 weight 加权随机（见 weightedOrder）
+            for (c in weightedOrder(configuredCandidates)) {
                 if (registry.get(c.providerId) != null && providerSettings(c.providerId).enabled) {
                     list.add(Route(c.providerId, c.upstreamModel))
                 }
@@ -1717,6 +1739,14 @@ class GatewayEngine(
 
         /** `/v1/models` 单个供应商拉取模型目录的超时（秒）：上游 READ_TIMEOUT 300s 不能无限等。 */
         const val MODELS_FETCH_TIMEOUT_SECONDS = 20L
+
+        /**
+         * 客户端连接的 socket 读超时（毫秒）。
+         *
+         * 原本传 0（永不超时），于是半开连接或卡住的客户端会永久占住一个请求线程；
+         * 60s 足够任何正常客户端把请求体发完，也远大于流式空闲心跳间隔（15s）。
+         */
+        private const val SOCKET_READ_TIMEOUT_MS = 60_000
 
         /** 区域型供应商：等待各区域目录拉取的预算（单个请求自身的读超时另算）。 */
         private const val REGIONAL_FETCH_WAIT_MS = 16_000L

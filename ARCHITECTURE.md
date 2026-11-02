@@ -72,14 +72,16 @@
 | 文件 | 职责 | 关键约束 |
 |---|---|---|
 | `gateway/GatewayEngine.kt` | 总调度器：持有 AccountPool/Registry/Settings，`resolveRoute`/`resolveCandidateRoutes` 路由解析，错误分类→重试/换号/跨供应商 Failover 决策（凭证失效才硬禁用） | 路由逻辑改动必须同步 `SmartRoutingTest` |
-| `gateway/GatewayHttpServer.kt` | NanoHTTPD 服务器：`/v1/chat/completions`（含 Failover 循环）、`/v1/models`、`/authorize`（Trae 回调） | 鉴权兼容 Bearer/x-goog-api-key/?key= |
+| `gateway/GatewayHttpServer.kt` | NanoHTTPD 服务器：`/v1/chat/completions`（含 Failover 循环）、`/v1/models`、`/v1/credits`、`/v1/health`（近期健康快照）、`/healthz`、`/authorize`（Trae 回调）；请求执行器换成了有界线程池（`BoundedAsyncRunner`） | 鉴权兼容 Bearer/x-goog-api-key/?key=；**默认 `DefaultAsyncRunner` 是每请求一线程且无上限**，慢客户端能顶到 OOM——已换成 8 线程 / 32 排队、队满直接关连接；socket 读超时 60s（原为 0=永不超时） |
+| `gateway/BoundedAsyncRunner.kt` | 有界请求执行器：固定线程池 + 有界队列，满了 `handler.close()` 快速失败 | **不要用 `CallerRunsPolicy`**：拒绝的请求会回到 accept 线程同步执行，把唯一接受循环卡死 |
 | `gateway/GatewaySettings.kt` | 全局设置（端口、apiKey、allowNoKey、maxRotate=换号上限、refreshSkewSeconds、defaultProvider） | `maxRotate` 默认 3：单请求最多试 3 个账号 |
 | `gateway/ProxySettings.kt` | 代理开关 + `DOMESTIC_SUFFIXES` 国内域名强制直连白名单 | 白名单优先级 > 一切代理设置 |
 | `gateway/ProviderBootstrap.kt` | 内置 Provider 登记处 | 新增供应商在此加一行 |
 | `gateway/LoopbackCallbackServer.kt` | OAuth 登录回调监听（Trae 51120 / Antigravity 51121） | 临时端口，用完即释放 |
 | `gateway/OpenAiApi.kt` | OpenAI 报文拼装（error/modelList） | |
-| `failover/` | 容灾调度：`FailoverConfig`（候选/重试/熔断/并发参数；`FailoverCandidate.weight`/`timeoutMs` **未生效**，仅配置兼容）、`FailoverDecision`（错误→重试/换家/终止）、`ProviderCircuitBreaker`（连续失败熔断）、`ConcurrencyGate`（全局/单账号在途上限，`concurrency` 配置热生效；**默认单账号串行 `maxPerAccount=1`、排队超时 120s**——上游按账号限并发流，同账号并发会被挂住只回一个空首 chunk，官方客户端本身也是一次一个请求）、`ProviderMetricsTracker`（健康指标，仅观测）；新增 `ModelCooldownTracker`（按 `供应商|模型` 记模型级冷却，仅内存） | 熔断只计上游侧错误，客户端 400 不计；**模型级错误（CodeBuddy `6004`、Trae `1005`）不计熔断、不换号**，只冷却该模型；并发许可覆盖含流式转发的全过程，`Handle.release` 幂等 |
-| `pool/AccountPool.kt` | 账号池：选号（余额最高者）、硬禁用（disabled）、持久化；不做本地冷却，上游错误由换号/Failover 应对 | 状态持久化在 `pool/state/<providerId>/<uid>.json`（一账号一文件；旧版 `pool/state/<providerId>.json` 首次读取时惰性迁移） |
+| `failover/` | 容灾调度：`FailoverConfig`（候选/重试/熔断/并发/账号冷却参数）、`weightedOrder`（**priority 先决、同 priority 内按 weight 加权随机**）、`FailoverDecision`（错误→重试/换家/终止）、`ProviderCircuitBreaker`（供应商级 + `供应商|模型` 级两套独立熔断器）、`ConcurrencyGate`（全局/单账号在途上限，`concurrency` 配置热生效；**默认单账号串行 `maxPerAccount=1`、排队超时 120s**——上游按账号限并发流，同账号并发会被挂住只回一个空首 chunk，官方客户端本身也是一次一个请求）、`ProviderMetricsTracker`（健康指标，仅观测）、`ModelCooldownTracker`（按 `供应商|模型` 记模型级冷却，仅内存） | 熔断只计上游侧错误，客户端 400 不计；**模型级错误（CodeBuddy `6004`、Trae `1005`）不计熔断、不换号**，只冷却该模型；并发许可覆盖含流式转发的全过程，`Handle.release` 幂等 |
+| `usage/ModelHealthWindow.kt` | 供应商 × 模型的近期健康窗口（最近 50 次）：成功率、耗时/TTFB 的 p50/p95（**nearest-rank，不做插值**）、失败原因 Top-5；仅内存 | 由 `recordCall` 统一写入，**不受「调用记录开关」影响**（它是排障视图，不占存储） |
+| `pool/AccountPool.kt` | 账号池：选号（优先级→余额）、硬禁用（disabled）、本地冷却（`coolDown`/`isCooling`，默认 15s，仅内存）、持久化 | 冷却不改变 enabled/disabled（界面仍显示可用），到期自动恢复；重新登录/换新凭证与删除账号都会清掉冷却 |
 | `protocol/OpenAiGemini.kt` | OpenAI⇄Gemini 双向转换（Antigravity 专用）：严格 user/model 角色交替、tool 聚合、thinking、safetySettings | **上游强制要求 contents 角色交替**，连续同 role 会 400 |
 | `provider/Provider.kt` | Provider 接口 + AuthKind 枚举 | 抽象边界，勿随意扩接口 |
 | `provider/ChatCall.kt` | 上游响应封装（stream/aggregated/failure 三态） | |
