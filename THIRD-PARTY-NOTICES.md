@@ -125,6 +125,47 @@
   SOFTWARE.
   ```
 
+### 9. WorkBuddy-Daily
+
+- 地址：https://github.com/L0NE-6/WorkBuddy-Daily
+- 作者：L0NE-6
+- 许可证：MIT
+- 借鉴内容（WorkBuddy / CodeBuddy 通道的**成长任务自动完成**）：
+  - 任务进度的真实口径：进度记在客户端埋点上（`POST /v2/report`，body 是**裸数组**），
+    「去完成」按钮等价于上报对应事件；每个 task_code 的事件配方
+  - 桌面指纹口径（`machineId` / `sessionId` / `qimei36` 由 uid 稳定派生、官方 5.9.3 版本三件套、
+    CPU/内存/osVersion 字段）与设备类事件链（桌面 6 连对话、Buddy 应用 5 连）
+  - 各任务的具体事件组：`template_5` / `expert_5` / `automation_1` / `create_canvas` /
+    `playbook_prompt` / `Buddy_App` / `skill_1` 以及 LOCAL 系列专家任务
+  - 顺序铁律：**先接单再做事**（没接单不计进度）、领奖判据用进度而非 `accept_status`、
+    夜猫子活动只在 CST 23:00-08:00 计数
+
+  按 MIT 要求，随附其许可全文：
+
+  ```
+  MIT License
+
+  Copyright (c) 2026 L0NE-6
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+  ```
+
 ## 二、官方文档与官方客户端（非代码借鉴）
 
 | 来源 | 用途 | 位置 |

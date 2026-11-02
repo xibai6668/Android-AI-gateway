@@ -223,6 +223,11 @@ Google 对同一个 refresh_token 的高频 token 换新有风控。0.1.53~0.1.5
   - **模型目录两条路径不通用**：国内走网页控制台 `/console/enterprises/personal/models`（无凭证 302 跳 OIDC 登录页）；国际版走客户端 product config `/v3/config`（该路径国内也能用）。国际版拿 Bearer token 打 console 路径会被后端 500，打 `/v2/enterprises/personal/models` 会挂死不返回。两份响应的结构相同（`data.agents[name=cli].models` + `data.models[]`），解析可共用。
   - 设备授权的 state 与 token **不通用**：跨站轮询 `/v2/plugin/auth/token` 对未知 state 恒返回 `{"code":11217}`，不报错、只会静默等到超时——所以「打开登录页」与「轮询」必须用同一个区域。
 - 签到 `/v2/daily-checkin` 幂等；成长中心在 `/v2/activity/growth/*` 下；**仅国内版有**，国际版（workbuddy.ai）没有签到制度。
+- 成长任务的「自动完成」（`ACTION_COMPLETE_TASKS`）靠客户端埋点：`POST /v2/report`，body 是**裸数组**（不是 `{code,msg,data}` 信封），逐条上报事件后服务端记进度——官方客户端的「去完成」就是这个请求。三条铁律：
+  - **先 accept 再做事**：没接单的一律不计进度（前置 `first_buddy` 不满足时其余任务连 accept 都会被拒）；
+  - 设备指纹（`machineId`/`sessionId`/`qimei36`）必须**按 uid 稳定派生**：随机值会被当成新设备，多账号共用同一组又会被当成同一台机器；
+  - 领奖判据用 `progress.current >= progress.target`，不用可能延迟或回滚的 `accept_status`。
+  事件配方集中在 `CodeBuddyTaskComplete`（照抄 L0NE-6/WorkBuddy-Daily，见 THIRD-PARTY-NOTICES.md），覆盖云端成长任务；对话类任务（`chat_5` 等）还要真发一次对话，夜猫子只在 CST 23:00-08:00 计数。小程序链式任务、需真人操作的任务（关注公众号/绑定微信）与已下线的活动均不在内。
 
 ### 字节 Trae（SOLO）
 - ⚠️ **agent host 分区域且与 OAuth host 不同**：国内 agent `trae-api-cn.mchost.guru`、额度 `api.trae.cn`、鉴权 `api.trae.com.cn`；国际 agent `trae-api-sg.mchost.guru`、额度 `ug-normal.trae.ai`、鉴权 `api.trae.ai`。国际版把 agent host 写成 `api.trae.ai` 会让对话与模型目录全部 **404**（该域上 `/api/agent/v3/llm_utils_chat`、`/api/ide/v1/get_detail_param` 都不存在）。额度接口版本段也不同：国内 v2、国际 v1。
