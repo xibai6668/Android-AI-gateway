@@ -47,10 +47,13 @@ class CodeBuddyTaskCompleteTest {
     )
 
     /** 假上游：记录写请求，任务列表按 [tasksBody] 回。 */
-    private class FakeUpstream {        val reports = ArrayList<JsonArray>()
+    private class FakeUpstream {
+        val reports = ArrayList<JsonArray>()
         val accepts = ArrayList<JsonArray>()
         val claims = ArrayList<String>()
-        var chats = 0
+
+        /** 每次真实对话请求头里声明的会话 id（埋点必须与之对齐，自造 UUID 上游不认）。 */
+        val chatConversationIds = ArrayList<String>()
         var tasksBody = """{"code":0,"data":{"tasks":[]}}"""
 
         private lateinit var server: HttpServer
@@ -63,9 +66,10 @@ class CodeBuddyTaskCompleteTest {
             }
             server.createContext("/v2/activity/growth") { exchange -> growth(exchange) }
             server.createContext("/v2/chat/completions") { exchange ->
-                chats++
+                chatConversationIds.add(exchange.requestHeaders.getFirst("X-Conversation-ID").orEmpty())
                 read(exchange)
-                respond(exchange, """{"code":0,"choices":[]}""")
+                // 上游把服务端消息 id 放在聚合结果的 id 上
+                respond(exchange, """{"code":0,"id":"cmb-server-1","model":"glm-5.2","choices":[]}""")
             }
             server.start()
             return "http://127.0.0.1:${server.address.port}"
@@ -115,6 +119,15 @@ class CodeBuddyTaskCompleteTest {
 
     private fun tasksBody(vararg tasks: String) =
         """{"code":0,"data":{"tasks":[${tasks.joinToString(",")}]}}"""
+
+    /** 把多次上报里的事件按顺序展开。 */
+    private fun FakeUpstream.events(): List<JsonObject> =
+        reports.flatMap { array -> array.map { it.asJsonObject } }
+
+    private fun FakeUpstream.codes(): List<String> = events().map { it.get("eventCode").asString }
+
+    private fun FakeUpstream.eventsOf(code: String): List<JsonObject> =
+        events().filter { it.get("eventCode").asString == code }
 
     // ---------------------------------------------------------------- 用例
 
@@ -189,12 +202,16 @@ class CodeBuddyTaskCompleteTest {
     }
 
     @Test
-    fun `对话类任务先真发对话再上报`() = withUpstream(tasksBody(task("chat_5", "和AI聊天5次", 2, 5))) { base, upstream ->
+    fun `对话类任务先真发对话再上报，且埋点会话与真实会话一致`() = withUpstream(tasksBody(task("chat_5", "和AI聊天5次", 2, 5))) { base, upstream ->
         provider(base).performAction(account(), ACTION_COMPLETE_TASKS, JsonObject())
-        assertEquals(3, upstream.chats, "缺口 3 次就该真发 3 次对话")
-        val codes = upstream.reports.flatMap { array -> array.map { it.asJsonObject.get("eventCode").asString } }
-        assertEquals(3, codes.count { it == "chat_request_send" }, codes.toString())
-        assertEquals(3, codes.count { it == "chat_request_response" }, codes.toString())
+        assertEquals(3, upstream.chatConversationIds.size, "缺口 3 次就该真发 3 次对话")
+        assertEquals(3, upstream.codes().count { it == "chat_request_send" }, upstream.codes().toString())
+        assertEquals(3, upstream.codes().count { it == "chat_request_response" }, upstream.codes().toString())
+
+        // 关键：埋点里的 conversationId 必须指向刚发出的那次对话（自造 UUID 上游不计进度）
+        val reported = upstream.eventsOf("chat_request_send").map { it.get("conversationId").asString }
+        assertEquals(upstream.chatConversationIds, reported)
+        assertTrue(reported.all { it.isNotEmpty() && it != "00000000-0000-0000-0000-000000000000" })
     }
 
     @Test
@@ -205,8 +222,43 @@ class CodeBuddyTaskCompleteTest {
         val result = provider(base, now = 1_700_028_000_000L)
             .performAction(account(), ACTION_COMPLETE_TASKS, JsonObject())
         assertTrue(upstream.reports.isEmpty(), "窗口外不该上报：${upstream.reports}")
-        assertEquals(0, upstream.chats)
+        assertTrue(upstream.chatConversationIds.isEmpty())
         assertTrue(result.message.contains("23:00-08:00"), result.message)
+    }
+
+    @Test
+    fun `夜猫子在一天内的窗口内推进且 mode 为 night`() = withUpstream(
+        tasksBody(task("black_cat", "夜猫子活动", 0, 1)),
+    ) { base, upstream ->
+        val result = provider(base).performAction(account(), ACTION_COMPLETE_TASKS, JsonObject())
+        val send = upstream.eventsOf("chat_request_send").single()
+        assertEquals("night", send.get("mode").asString, "mode 不能被信封的 CLOUD 吃掉")
+        assertEquals(upstream.chatConversationIds.single(), send.get("conversationId").asString)
+        assertTrue(result.ok, result.message)
+    }
+
+    @Test
+    fun `召唤专家的事件声明专家模型口径`() = withUpstream(
+        tasksBody(task("expert_5", "召唤5次专家", 0, 5)),
+    ) { base, upstream ->
+        provider(base).performAction(account(), ACTION_COMPLETE_TASKS, JsonObject())
+        val uses = upstream.eventsOf("expert_actual_use")
+        assertEquals(5, uses.size, upstream.codes().toString())
+        assertEquals("deepseek-v4-flash", uses.first().get("requestModelId").asString)
+        assertEquals("DeepSeek V4 Flash", uses.first().get("requestModelName").asString)
+    }
+
+    @Test
+    fun `技能类任务用真实会话 id 而非自造值`() = withUpstream(
+        tasksBody(task("skill_1", "尝鲜热门技能", 0, 1)),
+    ) { base, upstream ->
+        provider(base).performAction(account(), ACTION_COMPLETE_TASKS, JsonObject())
+        val conversationId = upstream.chatConversationIds.single()
+        val skill = upstream.eventsOf("skill_info").single()
+        assertEquals(conversationId, skill.get("conversationId").asString)
+        assertEquals("cmb-server-1", skill.get("messageId").asString, "服务端消息 id 要真实回传")
+        val created = upstream.eventsOf("agent_task_created").single()
+        assertEquals(conversationId, created.get("conversationId").asString)
     }
 
     @Test
@@ -225,10 +277,11 @@ class CodeBuddyTaskCompleteTest {
     }
 
     @Test
-    fun `未解锁的任务跳过`() = withUpstream(
+    fun `未解锁的任务不接单也不推进`() = withUpstream(
         tasksBody(task("template_5", "使用5个模板", 0, 5, locked = true)),
     ) { base, upstream ->
         provider(base).performAction(account(), ACTION_COMPLETE_TASKS, JsonObject())
+        assertTrue(upstream.accepts.isEmpty(), "未解锁的任务连 accept 都别打：${upstream.accepts}")
         assertTrue(upstream.reports.isEmpty(), upstream.reports.toString())
         assertTrue(upstream.claims.isEmpty(), upstream.claims.toString())
     }

@@ -31,19 +31,29 @@ internal class GrowthContext(
 )
 
 /**
+ * 一次真实对话的会话标识。
+ *
+ * 埋点里的 `conversationId` 必须指向**真实发出的那次对话**，自造 UUID 上游不认
+ * （参照实现用真实会话实测过），所以推进任务时先真发对话、再把它的 id 交给事件构造。
+ * [messageId] 是服务端回传的消息 id，官方口径要求它也是真实值；拿不到时退回合成的 id。
+ */
+internal data class GrowthSession(val conversationId: String, val messageId: String)
+
+/**
  * 一个成长任务的完成配方。
  *
  * [events] 每调用一次生成**一轮**全新事件（id 与时间戳都不同），[round] 从 0 递增；
  * 进度缺口比 [maxRounds] 大时按缺口来，不会为了凑数白打上游。
+ * [session] 是这一轮真实对话的会话标识，null 表示没发成对话或该任务不需要发对话。
  */
 internal data class GrowthRecipe(
     val label: String,
     val maxRounds: Int = 1,
-    /** 对话类任务必须先真发一次对话，埋点才会被计入。 */
-    val needsChat: Boolean = false,
+    /** 该轮要真发的对话内容；null 表示这个任务不需要真发对话。 */
+    val chatFor: ((Int) -> String)? = null,
     /** 只在 CST 23:00-次日 08:00 计数（夜猫子活动）。 */
     val nightOnly: Boolean = false,
-    val events: (GrowthContext, Int) -> List<JsonObject>,
+    val events: (GrowthContext, Int, GrowthSession?) -> List<JsonObject>,
 )
 
 /**
@@ -57,7 +67,11 @@ internal data class GrowthRecipe(
  * [L0NE-6/WorkBuddy-Daily](https://github.com/L0NE-6/WorkBuddy-Daily)（MIT）的
  * `workbuddy_daily.py`：`desktop_fingerprint` / `desktop_chat_sequence` /
  * `desktop_buddy5_sequence` / `t_chat_n` / `t_template_5` / `t_expert_5` /
- * `t_canvas_automation` / `t_buddy_apps` / `_run_local_expert_task`。
+ * `t_canvas_automation` / `t_buddy_apps` / `_desktop_fingerprint_fallback` /
+ * `_run_local_expert_task`。
+ *
+ * 每条配方都同时给出「有真实会话」与「拿不到真实会话」两种口径：前者与官方客户端一致，
+ * 后者是参照实现的降级路径（保住旧口径，不让整个任务因为一次对话失败就放弃）。
  */
 internal object CodeBuddyTaskComplete {
 
@@ -72,6 +86,10 @@ internal object CodeBuddyTaskComplete {
 
     /** 桌面任务的会话 id 用固定模型名，与参照实现一致。 */
     private const val DESKTOP_MODEL = "fast-model"
+
+    /** 召唤专家（`expert_5`）事件声明的模型口径与桌面任务不同，别混用。 */
+    private const val EXPERT_MODEL_ID = "deepseek-v4-flash"
+    private const val EXPERT_MODEL_NAME = "DeepSeek V4 Flash"
 
     private const val CPU_MODEL = "11th Gen Intel(R) Core(TM) i5-11320H @ 3.20GHz"
 
@@ -92,7 +110,13 @@ internal object CodeBuddyTaskComplete {
         "20" to "日常开发",
     )
 
-    private val PLAYBOOK = Triple("01-ProductDesign", "产品设计", "document")
+    /** 灵感案例（参照实现的默认案例）。 */
+    private const val PLAYBOOK_ID = "01-ProductDesign"
+    private const val PLAYBOOK_NAME = "产品设计"
+
+    private const val SKILL_PROMPT = "你好，帮我写一份简短的日报，回答OK即可"
+    private const val CANVAS_PROMPT = "帮我在设计创意画布里做一张活动海报"
+    private const val PLAYBOOK_PROMPT = "用这个案例帮我做一个同款"
 
     /** LOCAL 专家任务（固定专家 id，参照实现实测值）。 */
     private val LOCAL_EXPERTS = mapOf(
@@ -110,7 +134,9 @@ internal object CodeBuddyTaskComplete {
         val name: String,
         val version: String,
         val profession: String,
-    )
+    ) {
+        val prompt: String get() = "你好，请简单介绍一下$profession，回答OK即可"
+    }
 
     // ------------------------------------------------------------------ 标识
 
@@ -174,80 +200,85 @@ internal object CodeBuddyTaskComplete {
 
     /** 该 task_code 的完成配方；没有就是「暂不支持自动完成」。 */
     fun recipeFor(code: String): GrowthRecipe? = when (code) {
-        // 对话类：必须先真发一次对话，埋点才会被计入
-        "chat_5" -> GrowthRecipe(
-            label = "和AI聊天5次",
-            maxRounds = 5,
-            needsChat = true,
-            events = { ctx, round -> chatEvents(ctx, round) },
-        )
+        // 对话类：先真发一次对话，再用它的会话 id 上报，否则不计进度
+        "chat_5" -> {
+            val prompt = { round: Int -> CHAT_PROMPTS[round % CHAT_PROMPTS.size] }
+            GrowthRecipe(
+                label = "和AI聊天5次",
+                maxRounds = CHAT_PROMPTS.size,
+                chatFor = { round -> prompt(round) },
+                events = { ctx, round, session -> chatEvents(ctx, prompt(round), session) },
+            )
+        }
 
-        "Model_chat_GLM5.2" -> GrowthRecipe(
-            label = "GLM-5.2模型对话",
-            needsChat = true,
-            events = { ctx, _ -> chatEvents(ctx, 0) },
-        )
+        "Model_chat_GLM5.2" -> {
+            val prompt = "你好，请介绍一下你自己"
+            GrowthRecipe(
+                label = "GLM-5.2模型对话",
+                chatFor = { prompt },
+                events = { ctx, _, session -> chatEvents(ctx, prompt, session) },
+            )
+        }
 
         // 「夜猫子」只在 CST 23:00-08:00 计数，窗口外报多少都不算
-        "black_cat" -> GrowthRecipe(
-            label = "夜猫子活动",
-            needsChat = true,
-            nightOnly = true,
-            events = { ctx, _ -> chatEvents(ctx, 0, mode = "night") },
+        "black_cat" -> {
+            val prompt = "聊天"
+            GrowthRecipe(
+                label = "夜猫子活动",
+                nightOnly = true,
+                chatFor = { prompt },
+                events = { ctx, _, session -> chatEvents(ctx, prompt, session, mode = "night") },
+            )
+        }
+
+        // 桌面端对话：官方换血流程走不通时的 6 连事件口径
+        "RichMeow_Chat" -> GrowthRecipe(label = "桌面端对话") { ctx, _, _ ->
+            desktopChatSequence(ctx, newConversationId(), newMessageId(ctx.nowMillis), newMessageId(ctx.nowMillis))
+        }
+
+        "skill_1" -> GrowthRecipe(
+            label = "尝鲜热门技能",
+            chatFor = { SKILL_PROMPT },
+            events = { ctx, _, session -> skillEvents(ctx, session) },
         )
 
-        // 桌面端任务：桌面 6 连事件即可（官方客户端换血对话的降级口径）
-        "RichMeow_Chat" -> GrowthRecipe(label = "桌面端对话") { ctx, _ ->
-            desktopChatSequence(ctx.uid, ctx.nickname, ctx.nowMillis)
-        }
-
-        "skill_1" -> GrowthRecipe(label = "尝鲜热门技能") { ctx, _ ->
-            val convId = newConversationId()
-            val requestId = newMessageId(ctx.nowMillis)
-            desktopChatSequence(ctx.uid, ctx.nickname, ctx.nowMillis, convId, requestId, finishReason = "tool_calls") +
-                envelope(
-                    ctx,
-                    GrowthEvent("skill_info")
-                        .str("id", SKILL_FALLBACK_NAME)
-                        .str("skillId", SKILL_FALLBACK_ID)
-                        .str("skillVersion", "1.0.0")
-                        .str("toolStatus", "success")
-                        .num("fileCount", 56)
-                        .str("source", "workbuddy-desktop")
-                        .str("conversationId", convId)
-                        .str("requestId", requestId)
-                        .str("messageId", requestId)
-                        .str("traceId", requestId)
-                        .str("requestModelId", DESKTOP_MODEL)
-                        .str("requestModelName", DESKTOP_MODEL),
-                )
-        }
-
-        "template_5" -> GrowthRecipe(label = "使用5个模板", maxRounds = TEMPLATE_SCENES.size) { ctx, round ->
+        "template_5" -> GrowthRecipe(label = "使用5个模板", maxRounds = TEMPLATE_SCENES.size) { ctx, round, _ ->
             val (id, name) = TEMPLATE_SCENES[round % TEMPLATE_SCENES.size]
             templateEvents(ctx, id, name)
         }
 
-        "expert_5" -> GrowthRecipe(label = "召唤5次专家", maxRounds = 5) { ctx, round ->
+        "expert_5" -> GrowthRecipe(label = "召唤5次专家", maxRounds = 5) { ctx, round, _ ->
             expertEvents(ctx, round)
         }
 
-        "automation_1" -> GrowthRecipe(label = "设置自动化任务") { ctx, _ -> automationEvents(ctx) }
+        "automation_1" -> GrowthRecipe(label = "设置自动化任务") { ctx, _, _ -> automationEvents(ctx) }
 
-        "create_canvas" -> GrowthRecipe(label = "设计创意模式") { ctx, _ -> canvasEvents(ctx) }
+        "create_canvas" -> GrowthRecipe(
+            label = "设计创意模式",
+            chatFor = { CANVAS_PROMPT },
+            events = { ctx, _, session -> canvasEvents(ctx, session) },
+        )
 
-        "playbook_prompt" -> GrowthRecipe(label = "探索优秀灵感") { ctx, _ -> playbookEvents(ctx) }
+        "playbook_prompt" -> GrowthRecipe(
+            label = "探索优秀灵感",
+            chatFor = { PLAYBOOK_PROMPT },
+            events = { ctx, _, session -> playbookEvents(ctx, session) },
+        )
 
-        "Buddy_App" -> GrowthRecipe(label = "发现应用") { ctx, _ ->
+        "Buddy_App" -> GrowthRecipe(label = "发现应用") { ctx, _, _ ->
             buddyAppSequence(ctx, DEFAULT_BUDDY_ID, "发现应用")
         }
 
-        "Buddy_App_QQ" -> GrowthRecipe(label = "企鹅教师助手") { ctx, _ ->
+        "Buddy_App_QQ" -> GrowthRecipe(label = "企鹅教师助手") { ctx, _, _ ->
             buddyAppSequence(ctx, QQ_BUDDY_ID, "企鹅教师助手")
         }
 
         else -> LOCAL_EXPERTS[code]?.let { expert ->
-            GrowthRecipe(label = expert.profession) { ctx, _ -> localExpertEvents(ctx, expert) }
+            GrowthRecipe(
+                label = expert.profession,
+                chatFor = { expert.prompt },
+                events = { ctx, _, session -> localExpertEvents(ctx, expert, session) },
+            )
         }
     }
 
@@ -258,11 +289,17 @@ internal object CodeBuddyTaskComplete {
      *
      * 这三条自带 `ideName=web-Agents`：参照实现里它们覆盖掉信封的同名键，
      * 表示「这次对话来自网页 Agents 入口」，照抄以免上游按桌面入口归错进度。
+     * `mode` 必须写在 `ideName` 之后：参照实现是 `**common` 之后才覆盖 `mode`，
+     * 反过来会被信封的 `CLOUD` 吃掉，夜猫子的 `night` 就丢了。
      */
-    private fun chatEvents(ctx: GrowthContext, round: Int, mode: String = "craft"): List<JsonObject> {
-        val prompt = CHAT_PROMPTS[round % CHAT_PROMPTS.size]
+    private fun chatEvents(
+        ctx: GrowthContext,
+        prompt: String,
+        session: GrowthSession?,
+        mode: String = "craft",
+    ): List<JsonObject> {
         val reply = "好的，已经为你处理完成。"
-        val convId = newConversationId()
+        val convId = session?.conversationId ?: newConversationId()
         val requestId = "cmb-" + UUID.randomUUID()
         val now = ctx.nowMillis
         fun common(event: GrowthEvent): GrowthEvent = event
@@ -271,7 +308,8 @@ internal object CodeBuddyTaskComplete {
             .str("ideName", "web-Agents")
             .str("ideType", "web-Agents")
             .str("machineId", derive(ctx.uid, "machine"))
-            .str("mode", "CLOUD")
+            .num("timestamp", now)
+            .num("reportDelay", 0)
             .str("userAgent", DESKTOP_UA)
             .str("os", "Win32")
             .str("timezone", "Asia/Shanghai")
@@ -281,23 +319,18 @@ internal object CodeBuddyTaskComplete {
                 ctx,
                 common(
                     GrowthEvent("chat_request_send")
-                        .num("timestamp", now)
-                        .num("reportDelay", 0)
-                        .str("mode", mode)
                         .str("conversationId", convId)
                         .str("requestId", requestId)
                         .str("requestModelId", GROWTH_CHAT_MODEL)
                         .str("requestModelName", "GLM-5.2")
                         .num("inputLength", prompt.length)
                         .str("customAgentName", ""),
-                ),
+                ).str("mode", mode),
             ),
             envelope(
                 ctx,
                 common(
                     GrowthEvent("chat_request_response")
-                        .num("timestamp", now + 100)
-                        .num("reportDelay", 0)
                         .str("conversationId", convId)
                         .str("requestId", requestId)
                         .str("requestModelId", GROWTH_CHAT_MODEL)
@@ -312,8 +345,6 @@ internal object CodeBuddyTaskComplete {
                 ctx,
                 common(
                     GrowthEvent("chat_message_send")
-                        .num("timestamp", now + 50)
-                        .num("reportDelay", 0)
                         .str("conversationId", convId)
                         .str("requestId", requestId)
                         .str("messageId", "cmb-" + UUID.randomUUID())
@@ -332,9 +363,6 @@ internal object CodeBuddyTaskComplete {
         )
     }
 
-    /** 对话类任务发的真实内容：每次换一条短问，与参照实现同款。 */
-    fun chatPrompt(round: Int): String = CHAT_PROMPTS[round % CHAT_PROMPTS.size]
-
     private val CHAT_PROMPTS = listOf(
         "你好",
         "今天天气怎么样？",
@@ -344,21 +372,15 @@ internal object CodeBuddyTaskComplete {
     )
 
     /**
-     * 桌面端成功对话的 6 连事件（点亮「桌面端对话」，也是技能类任务的底座）。
-     *
-     * 会话/请求/消息 id 都取自真实对话的**服务端 id**；官方换血流程走不通时参照实现
-     * 用现生成的 id 兜底，这里沿用兜底口径。
+     * 桌面端成功对话的 6 连事件（点亮「桌面端对话」，也是技能 / 画布 / 专家任务的事件底座）。
      */
     private fun desktopChatSequence(
-        uid: String,
-        nickname: String,
-        nowMillis: Long,
-        conversationId: String = newConversationId(),
-        requestId: String = newMessageId(nowMillis),
-        messageId: String = newMessageId(nowMillis),
+        ctx: GrowthContext,
+        conversationId: String,
+        requestId: String,
+        messageId: String,
         finishReason: String = "stop",
     ): List<JsonObject> {
-        val ctx = GrowthContext(uid, nickname, nowMillis)
         val assistantId = "$messageId-assistant"
         return listOf(
             GrowthEvent("agent_task_created")
@@ -435,7 +457,7 @@ internal object CodeBuddyTaskComplete {
                 .bool("isSuccessful", true)
                 .str("messageErrorCode", "")
                 .str("finishReason", finishReason)
-                .num("firstTokenAt", nowMillis)
+                .num("firstTokenAt", ctx.nowMillis)
                 .str("traceId", requestId)
                 .str("conversationId", conversationId)
                 .str("rootRequestId", requestId)
@@ -467,6 +489,35 @@ internal object CodeBuddyTaskComplete {
                 .str("agentName", "cli")
                 .str("agentType", "main"),
         ).map { envelope(ctx, it) }
+    }
+
+    /** 尝鲜热门技能：桌面 6 连（finishReason=tool_calls）+ 技能加载事件，共用同一组会话 id。 */
+    private fun skillEvents(ctx: GrowthContext, session: GrowthSession?): List<JsonObject> {
+        val conversationId = session?.conversationId ?: newConversationId()
+        val messageId = session?.messageId ?: newMessageId(ctx.nowMillis)
+        val chain = desktopChatSequence(
+            ctx = ctx,
+            conversationId = conversationId,
+            requestId = messageId,
+            messageId = messageId,
+            finishReason = "tool_calls",
+        )
+        return chain + envelope(
+            ctx,
+            GrowthEvent("skill_info")
+                .str("id", SKILL_FALLBACK_NAME)
+                .str("skillId", SKILL_FALLBACK_ID)
+                .str("skillVersion", "1.0.0")
+                .str("toolStatus", "success")
+                .num("fileCount", 56)
+                .str("source", "workbuddy-desktop")
+                .str("conversationId", conversationId)
+                .str("requestId", messageId)
+                .str("messageId", messageId)
+                .str("traceId", messageId)
+                .str("requestModelId", DESKTOP_MODEL)
+                .str("requestModelName", DESKTOP_MODEL),
+        )
     }
 
     /** 使用模板：一组 4 条事件算 1/5 进度。 */
@@ -515,8 +566,7 @@ internal object CodeBuddyTaskComplete {
     /**
      * 召唤专家：`expert_summoned` + `expert_actual_use` 两条算一次。
      *
-     * 专家 id 用按账号稳定派生的合成值——参照实现取不到专家市场时同样兜底合成，
-     * 上游对这两条事件不校验专家真实性。
+     * 专家 id 用按账号稳定派生的合成值——参照实现取不到专家市场时同样兜底合成。
      */
     private fun expertEvents(ctx: GrowthContext, round: Int): List<JsonObject> {
         val id = "expert-" + derive(ctx.uid, "expert$round").take(8)
@@ -541,8 +591,8 @@ internal object CodeBuddyTaskComplete {
                 .str("conversationId", newConversationId())
                 .str("requestId", requestId)
                 .str("messageId", "msg-" + requestId.takeLast(8))
-                .str("requestModelId", DESKTOP_MODEL)
-                .str("requestModelName", DESKTOP_MODEL),
+                .str("requestModelId", EXPERT_MODEL_ID)
+                .str("requestModelName", EXPERT_MODEL_NAME),
         ).map { envelope(ctx, it) }
     }
 
@@ -581,44 +631,103 @@ internal object CodeBuddyTaskComplete {
         ).map { envelope(ctx, it) }
     }
 
-    /** 设计创意模式：走不通真实画布时的降级口径（创建任务 + 建画布两条）。 */
-    private fun canvasEvents(ctx: GrowthContext): List<JsonObject> {
+    /**
+     * 设计创意模式。
+     *
+     * 有真实会话：桌面 6 连 + 建画布 / 打开画布（与官方 task-auto 的形状一致）；
+     * 没有则退回参照实现的降级口径（创建任务 + 建画布两条裸事件）。
+     */
+    private fun canvasEvents(ctx: GrowthContext, session: GrowthSession?): List<JsonObject> {
         val canvasId = "wbx-canvas-${ctx.nowMillis}"
-        return listOf(
-            GrowthEvent("agent_task_created")
-                .str("source", "CLOUD")
-                .str("name", "")
-                .str("mode", "craft")
-                .str("requestModelId", "default")
-                .str("task_mode", "design"),
-            GrowthEvent("wbx_design_canvas_task_create")
-                .str("id", canvasId)
-                .str("source", "summon_keyword")
-                .bool("isCustomModel", false)
-                .str("name", "")
-                .num("inputLength", 12)
-                .num("cost", 0)
-                .bool("isSuccessful", true),
-        ).map { envelope(ctx, it) }
+        if (session == null) {
+            return listOf(
+                GrowthEvent("agent_task_created")
+                    .str("source", "CLOUD")
+                    .str("name", "")
+                    .str("mode", "craft")
+                    .str("requestModelId", "default")
+                    .str("task_mode", "design"),
+                GrowthEvent("wbx_design_canvas_task_create"),
+            ).map { envelope(ctx, it) }
+        }
+        return desktopChatSequence(ctx, session.conversationId, session.messageId, session.messageId) +
+            listOf(
+                GrowthEvent("wbx_design_canvas_task_create")
+                    .str("conversationId", session.conversationId)
+                    .str("requestId", session.messageId)
+                    .str("source", "summon_keyword")
+                    .bool("isCustomModel", false)
+                    .str("name", "")
+                    .num("inputLength", CANVAS_PROMPT.length)
+                    .str("id", canvasId)
+                    .num("cost", 0)
+                    .bool("isSuccessful", true),
+                GrowthEvent("wbx_design_canvas_open")
+                    .str("conversationId", session.conversationId)
+                    .str("requestId", session.messageId)
+                    .str("id", "ardot-file-" + session.messageId.takeLast(8))
+                    .str("source", "summon_keyword")
+                    .str("type", "page")
+                    .num("cost", 13000)
+                    .bool("isSuccessful", true),
+            ).map { envelope(ctx, it) }
     }
 
-    /** 探索优秀灵感：官方灵感案例的「做同款」。 */
-    private fun playbookEvents(ctx: GrowthContext): List<JsonObject> {
-        val (id, name, type) = PLAYBOOK
-        return listOf(
-            envelope(
-                ctx,
+    /**
+     * 探索优秀灵感。
+     *
+     * 有真实会话：桌面 6 连 + 点击/发起三条事件；没有则退回单条 `playbook_prompt_send`。
+     */
+    private fun playbookEvents(ctx: GrowthContext, session: GrowthSession?): List<JsonObject> {
+        if (session == null) {
+            return listOf(
+                envelope(
+                    ctx,
+                    GrowthEvent("playbook_prompt_send")
+                        .str("ext1", UUID.randomUUID().toString())
+                        .str("requestId", UUID.randomUUID().toString())
+                        .str("id", PLAYBOOK_ID)
+                        .str("name", PLAYBOOK_NAME)
+                        .str("type", "other")
+                        .num("promptLength", 30)
+                        .num("isOfficial", 1)
+                        .str("source", "growth-center"),
+                ),
+            )
+        }
+        return desktopChatSequence(ctx, session.conversationId, session.messageId, session.messageId) +
+            listOf(
+                GrowthEvent("web_element_click")
+                    .str("pageName", "playbook_detail")
+                    .str("elementId", "playbook_ctaClick")
+                    .str("elementName", PLAYBOOK_NAME)
+                    .str("source", "discover"),
+                GrowthEvent("playbook_cta_click")
+                    .str("id", PLAYBOOK_ID)
+                    .str("name", PLAYBOOK_NAME)
+                    .str("type", "document")
+                    .str("categoryId", "")
+                    .str("categoryName", "")
+                    .str("source", "discover")
+                    .num("position", 0),
                 GrowthEvent("playbook_prompt_send")
-                    .str("ext1", UUID.randomUUID().toString())
-                    .str("requestId", UUID.randomUUID().toString())
-                    .str("id", id)
-                    .str("name", name)
-                    .str("type", type)
-                    .num("promptLength", 30)
+                    .str("id", PLAYBOOK_ID)
+                    .str("name", PLAYBOOK_NAME)
+                    .str("type", "document")
+                    .str("categoryId", "")
+                    .str("categoryName", "")
+                    .str("conversationId", session.conversationId)
+                    .str("requestId", session.messageId)
+                    .num("promptLength", PLAYBOOK_PROMPT.length)
                     .num("isOfficial", 1)
-                    .str("source", "growth-center"),
-            ),
-        )
+                    .str("skills", "")
+                    .str("skillNames", "")
+                    .str("expertId", "")
+                    .str("expertName", "")
+                    .str("query", "")
+                    .str("source", "discover")
+                    .str("ext1", "discover"),
+            ).map { envelope(ctx, it) }
     }
 
     /** 进入 Buddy 应用的 5 连事件（发现应用 / 企鹅教师助手）。 */
@@ -643,38 +752,92 @@ internal object CodeBuddyTaskComplete {
     }
 
     /**
-     * LOCAL 专家任务（轻量云专家 / 无畏契约 / 四个 expert_use_*）的降级口径：
-     * 召唤 + 实际使用两条事件，会话 id 现生成（官方换血对话走不通时参照实现也这么做）。
+     * LOCAL 专家任务（轻量云专家 / 无畏契约 / 四个 expert_use_*）。
+     *
+     * 有真实会话：召唤两条 + 桌面 6 连（标注 `has_expert`）+ 实际使用，与官方一致；
+     * 没有则退回参照实现的两条事件降级口径（会话 id 现生成）。
      */
-    private fun localExpertEvents(ctx: GrowthContext, expert: Expert): List<JsonObject> {
-        val conversationId = newConversationId()
-        val requestId = newMessageId(ctx.nowMillis)
-        return listOf(
+    private fun localExpertEvents(
+        ctx: GrowthContext,
+        expert: Expert,
+        session: GrowthSession?,
+    ): List<JsonObject> {
+        if (session == null) {
+            val requestId = newMessageId(ctx.nowMillis)
+            return listOf(
+                GrowthEvent("expert_summoned")
+                    .str("id", expert.id)
+                    .str("name", expert.name)
+                    .str("type", "agent")
+                    .str("expertTitle", expert.profession)
+                    .str("expertType", "agent")
+                    .str("source", "builtin")
+                    .num("timestamp", ctx.nowMillis),
+                GrowthEvent("expert_actual_use")
+                    .str("id", expert.id)
+                    .str("name", expert.name)
+                    .str("expertTitle", expert.profession)
+                    .str("type", "")
+                    .str("expertType", "agent")
+                    .str("source", "builtin")
+                    .str("version", expert.version)
+                    .num("cost", 0)
+                    .num("characterCount", expert.prompt.length)
+                    .str("mode", "LOCAL")
+                    .str("conversationId", newConversationId())
+                    .str("requestId", requestId)
+                    .str("messageId", requestId)
+                    .str("requestModelId", DESKTOP_MODEL)
+                    .str("requestModelName", DESKTOP_MODEL)
+                    .str("userId", ctx.uid),
+            ).map { envelope(ctx, it) }
+        }
+
+        val summon = listOf(
+            GrowthEvent("expert_summon_click")
+                .str("id", expert.id)
+                .str("name", expert.name)
+                .str("expertTitle", expert.profession)
+                .str("type", "agent")
+                .str("expertType", "agent")
+                .str("source", "builtin")
+                .str("mode", "LOCAL"),
             GrowthEvent("expert_summoned")
                 .str("id", expert.id)
                 .str("name", expert.name)
+                .str("expertTitle", expert.profession)
                 .str("type", "agent")
-                .str("expertTitle", expert.profession)
-                .str("expertType", "agent")
-                .str("source", "builtin")
-                .num("timestamp", ctx.nowMillis),
-            GrowthEvent("expert_actual_use")
-                .str("id", expert.id)
-                .str("name", expert.name)
-                .str("expertTitle", expert.profession)
-                .str("type", "")
                 .str("expertType", "agent")
                 .str("source", "builtin")
                 .str("version", expert.version)
-                .num("cost", 0)
-                .num("characterCount", 12)
-                .str("mode", "LOCAL")
-                .str("conversationId", conversationId)
-                .str("requestId", requestId)
-                .str("messageId", requestId)
-                .str("requestModelId", DESKTOP_MODEL)
-                .str("requestModelName", DESKTOP_MODEL)
-                .str("userId", ctx.uid),
-        ).map { envelope(ctx, it) }
+                .str("mode", "LOCAL"),
+        )
+        // 桌面 6 连里的 agent_task_created 要标注「这次对话带专家」，否则上游按普通对话归因
+        val chain = desktopChatSequence(ctx, session.conversationId, session.messageId, session.messageId)
+            .onEach { event ->
+                if (event.get("eventCode")?.asString == "agent_task_created") {
+                    event.addProperty("has_expert", true)
+                    event.addProperty("expert_id", expert.id)
+                    event.addProperty("expert_name", expert.name)
+                    event.addProperty("expert_industry_id", "")
+                }
+            }
+        val use = GrowthEvent("expert_actual_use")
+            .str("id", expert.id)
+            .str("name", expert.name)
+            .str("expertTitle", expert.profession)
+            .str("type", "")
+            .str("expertType", "agent")
+            .str("source", "builtin")
+            .str("version", expert.version)
+            .num("cost", 0)
+            .num("characterCount", expert.prompt.length)
+            .str("mode", "LOCAL")
+            .str("conversationId", session.conversationId)
+            .str("requestId", session.messageId)
+            .str("messageId", session.messageId)
+            .str("requestModelId", DESKTOP_MODEL)
+            .str("requestModelName", DESKTOP_MODEL)
+        return summon.map { envelope(ctx, it) } + chain + envelope(ctx, use)
     }
 }

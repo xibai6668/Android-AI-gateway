@@ -566,11 +566,12 @@ class CodeBuddyProvider internal constructor(
         }
     }
 
-    /** 拉任务列表原始报文；上游非 2xx 时返回 null（调用方各自处理）。 */
-    private fun fetchTasksBody(credential: Credential, base: String, headers: Map<String, String>): String? {
-        val (status, body) = getJson("$base/tasks", headers)
-        return body.takeIf { status in 200..299 }
-    }
+    /** 拉任务列表原始报文；上游非 2xx 或网络异常时返回 null（调用方各自处理）。 */
+    private fun fetchTasksBody(credential: Credential, base: String, headers: Map<String, String>): String? =
+        runCatching {
+            val (status, body) = getJson("$base/tasks", headers)
+            body.takeIf { status in 200..299 }
+        }.getOrNull()
 
     /**
      * 批量接单：上游按批接收 `task_codes`（参照实现一次最多 20 个）。
@@ -663,7 +664,8 @@ class CodeBuddyProvider internal constructor(
             credential,
             base,
             headers,
-            before.filter { scoped(it) && needsTaskAccept(it) }.map { it.code },
+            // 未解锁的先不接：接了也只会拿到「task locked until …」
+            before.filter { scoped(it) && !it.locked && needsTaskAccept(it) }.map { it.code },
             notes,
         )
 
@@ -676,13 +678,19 @@ class CodeBuddyProvider internal constructor(
             val gap = if (task.target > 0) (task.target - task.current).toInt().coerceAtLeast(1) else 1
             var rounds = 0
             repeat(minOf(gap, recipe.maxRounds)) { round ->
-                val ctx = GrowthContext(
-                    uid = credential.uid.ifEmpty { account.uid },
-                    nickname = account.nickname,
-                    nowMillis = nowMillis(),
+                // 先真发对话、再拿它的会话 id 上报：埋点里的会话必须真实存在，否则不计进度
+                val prompt = recipe.chatFor?.invoke(round)
+                val session = prompt?.let { runCatching { growthChat(account, it) }.getOrNull() }
+                val events = recipe.events(
+                    GrowthContext(
+                        uid = credential.uid.ifEmpty { account.uid },
+                        nickname = account.nickname,
+                        nowMillis = nowMillis(),
+                    ),
+                    round,
+                    session,
                 )
-                if (recipe.needsChat) runCatching { growthChat(account, round) }
-                val (status, _) = reportEvents(credential, recipe.events(ctx, round))
+                val (status, _) = reportEvents(credential, events)
                 if (status !in 200..299) return@repeat
                 rounds++
                 pause(WRITE_GAP_MS)
@@ -692,7 +700,9 @@ class CodeBuddyProvider internal constructor(
 
         // 回读一次再领奖：上游记进度有延迟，判据用进度本身而不是 accept_status
         val after = fetchTasksBody(credential, base, headers)?.let { parseGrowthTasks(it).tasks }.orEmpty()
-        for (task in after.filter { scoped(it) && it.claimable }) claimTaskReward(credential, task, claimed)
+        for (task in after.filter { scoped(it) && !it.locked && it.claimable }) {
+            claimTaskReward(credential, task, claimed)
+        }
 
         val summary = ArrayList<String>()
         summary.addAll(adopted)
@@ -728,16 +738,23 @@ class CodeBuddyProvider internal constructor(
             put("User-Agent", CodeBuddyTaskComplete.DESKTOP_UA)
             if (credential.uid.isNotEmpty()) put("X-User-Id", credential.uid)
         }
-        return postJson("${chatBase(credential)}$PATH_REPORT", credential, body, headers)
+        return runCatching {
+            postJson("${chatBase(credential)}$PATH_REPORT", credential, body, headers)
+        }.getOrElse { e ->
+            // 网络异常不该中断整个账号：单条上报失败按「没生效」处理，后面的任务照常走
+            0 to (e.message ?: "上报失败")
+        }
     }
 
     /**
-     * 任务推进用的一次真实对话。
+     * 任务推进用的一次真实对话，返回这次对话的会话标识。
      *
-     * 对话类任务（和 AI 聊天 5 次等）服务端只认真实发出的对话，所以埋点之外还要走一次对话通道；
-     * 这里复用 [openChat]，保证请求体形状（首条 system、渠道特征文本替换）与正常对话一致。
+     * 埋点里的 conversationId 必须指向**真实发出的那次对话**（自造 UUID 上游不认），
+     * 所以这里把请求头里声明的会话 id（`X-Conversation-ID`，与 [stableConversationId] 同值）
+     * 与响应回传的服务端消息 id 一并返回，交给 [CodeBuddyTaskComplete] 组装事件。
+     * 对话没发成（或响应不可解析）时返回 null，配方退回合成的 id 兜底。
      */
-    private fun growthChat(account: ProviderAccount, round: Int) {
+    private fun growthChat(account: ProviderAccount, prompt: String): GrowthSession? {
         val body = JsonObject().apply {
             addProperty("model", CodeBuddyTaskComplete.GROWTH_CHAT_MODEL)
             addProperty("stream", false)
@@ -750,12 +767,26 @@ class CodeBuddyProvider internal constructor(
                     })
                     add(JsonObject().apply {
                         addProperty("role", "user")
-                        addProperty("content", CodeBuddyTaskComplete.chatPrompt(round))
+                        addProperty("content", prompt)
                     })
                 },
             )
         }.toString()
-        openChat(account, body).close()
+        val call = openChat(account, body)
+        val aggregated = try {
+            (call as? AggregatedChatCall)?.aggregated
+        } finally {
+            call.close()
+        }
+        if (call.status !in 200..299 || aggregated == null) return null
+        val conversationId = stableConversationId(body).ifEmpty { FALLBACK_CONVERSATION_ID }
+        val serverId = runCatching {
+            JsonParser.parseString(aggregated).asJsonObject.get("id")?.asString
+        }.getOrNull().orEmpty()
+        val messageId = serverId
+            .takeIf { it.isNotEmpty() && it != OpenAiSseAggregator.FALLBACK_ID }
+            ?: CodeBuddyTaskComplete.newMessageId(nowMillis())
+        return GrowthSession(conversationId, messageId)
     }
 
     /** 夜猫子活动只在 CST 23:00-08:00 计数（UTC+8 小时）。 */
@@ -819,7 +850,8 @@ class CodeBuddyProvider internal constructor(
                 target = target,
                 status = acceptStatus,
                 locked = task.get("locked")?.asBoolean ?: false,
-                claimed = acceptStatus == "claimed",
+                // 上游同时下发 accept_status 与 claimed 布尔；两个都要认（领奖前靠它避免重复领）
+                claimed = acceptStatus == "claimed" || task.get("claimed")?.asBoolean == true,
                 rewardCredit = task.firstLong("reward_credit"),
             )
         }

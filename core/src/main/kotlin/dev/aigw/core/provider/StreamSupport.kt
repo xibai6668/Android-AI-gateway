@@ -82,6 +82,9 @@ class LineTransformStream(
  */
 object OpenAiSseAggregator {
 
+    /** 上游没给消息 id 时用的占位值（调用方据此判断「拿不到真实 id」）。 */
+    const val FALLBACK_ID = "chatcmpl-aggregated"
+
     fun aggregate(stream: InputStream, fallbackModel: String): String {
         var id = ""
         var model = fallbackModel
@@ -131,7 +134,7 @@ object OpenAiSseAggregator {
             addProperty("finish_reason", finishReason)
         }
         return JsonObject().apply {
-            addProperty("id", id.ifEmpty { "chatcmpl-aggregated" })
+            addProperty("id", id.ifEmpty { FALLBACK_ID })
             addProperty("object", "chat.completion")
             addProperty("created", if (created > 0) created else System.currentTimeMillis() / 1000)
             addProperty("model", model)
