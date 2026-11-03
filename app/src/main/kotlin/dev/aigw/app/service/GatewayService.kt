@@ -88,6 +88,8 @@ class GatewayService : Service() {
         startForeground(NOTIFICATION_ID, buildNotification(engine.settings().port))
         val started = engine.isRunning() || runCatching { engine.start() }.isSuccess
         if (started) {
+            // 服务活着就代表「希望运行」：这条意图是 force-stop 之后打开应用自动恢复的依据
+            dev.aigw.app.data.KeepAlivePrefs.setWantRunning(engine.store(), true)
             engine.requestLog.info(
                 if (intent == null) "前台服务被系统重建，网关已恢复"
                 else "前台服务已拉起，通知已发布",
@@ -191,6 +193,8 @@ class GatewayService : Service() {
      */
     private fun onEngineUnrecoverable() {
         val engine = runCatching { applicationContext.gatewayEngine }.getOrNull()
+        // 已经明确放弃：清掉「希望运行」意图，避免下次打开应用又自动把它拉起来
+        engine?.let { dev.aigw.app.data.KeepAlivePrefs.setWantRunning(it.store(), false) }
         engine?.requestLog?.warn(
             "看门狗：连续 $WATCHDOG_MAX_FAILURES 次无法恢复端口监听，已停止前台服务",
         )
