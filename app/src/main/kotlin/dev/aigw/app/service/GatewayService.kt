@@ -11,6 +11,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -65,9 +66,23 @@ class GatewayService : Service() {
 
     private lateinit var watchdog: EngineWatchdog
 
+    /** 上一轮看门狗实际开跑的时刻（elapsedRealtime）；用来识别「设备挂起过」。 */
+    private var lastTickAt = 0L
+
     private val watchdogTick = object : Runnable {
         override fun run() {
             if (!active) return
+            val now = SystemClock.elapsedRealtime()
+            val gap = if (lastTickAt == 0L) WATCHDOG_INTERVAL_MS else now - lastTickAt
+            lastTickAt = now
+            // 灭屏 doze / ROM 冻结期间主线程定时器不走，这一轮读数不代表引擎坏了：
+            // 真坏了下一轮（按时到达）会抓到，这里跳过判定，避免把挂起误判成端口死亡
+            // ——那是「锁屏后自动关掉网关」的真实成因。
+            if (gap > WATCHDOG_INTERVAL_MS * 3) {
+                Log.i(TAG, "看门狗：本轮迟到 ${gap}ms，判定设备刚被挂起，跳过本轮判定")
+                scheduleNextTick()
+                return
+            }
             if (probing) {
                 scheduleNextTick()
                 return
@@ -219,9 +234,12 @@ class GatewayService : Service() {
      */
     private fun engineHealthy(): Boolean {
         val engine = applicationContext.gatewayEngine
-        if (!engine.isRunning()) return false
+        if (!engine.isRunning()) {
+            Log.w(TAG, "看门狗：引擎对象为空（isRunning=false），端口 ${engine.settings().port} 无从探活")
+            return false
+        }
         val port = engine.settings().port
-        return runCatching {
+        val result = runCatching {
             Socket().use { socket ->
                 socket.connect(
                     InetSocketAddress(InetAddress.getLoopbackAddress(), port),
@@ -236,7 +254,11 @@ class GatewayService : Service() {
                 ).readLine()
                 statusLine != null && statusLine.contains(" 200")
             }
-        }.getOrDefault(false)
+        }
+        if (result.getOrDefault(false)) return true
+        val why = result.exceptionOrNull()
+        Log.w(TAG, "看门狗：探活失败 port=$port ${why?.javaClass?.simpleName}: ${why?.message}")
+        return false
     }
 
     /** 探活失败后的重启：先清掉僵尸 server 对象再重新 bind。 */
