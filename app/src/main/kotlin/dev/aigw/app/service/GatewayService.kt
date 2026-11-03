@@ -22,7 +22,6 @@ import dev.aigw.app.gatewayEngine
 import dev.aigw.core.gateway.EngineWatchdog
 import java.io.BufferedReader
 import java.io.InputStreamReader
-import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
 
@@ -242,7 +241,10 @@ class GatewayService : Service() {
         val result = runCatching {
             Socket().use { socket ->
                 socket.connect(
-                    InetSocketAddress(InetAddress.getLoopbackAddress(), port),
+                    // 必须写死 IPv4：getLoopbackAddress() 在真机解析成 ::1，而网关只绑
+                    // 127.0.0.1（exposeLan=false 时），探活会永久 ECONNREFUSED ——
+                    // 看门狗因此每 30 秒判死一次、三次后把好端端的网关关掉（真机实测）。
+                    InetSocketAddress(PROBE_HOST, port),
                     PROBE_CONNECT_TIMEOUT_MS,
                 )
                 socket.soTimeout = PROBE_READ_TIMEOUT_MS
@@ -385,6 +387,8 @@ class GatewayService : Service() {
 
         /** 连续多少次探活失败后判定引擎不可恢复。3 次 ≈ 90 秒。 */
         private const val WATCHDOG_MAX_FAILURES = 3
+
+        private const val PROBE_HOST = "127.0.0.1"
 
         private const val PROBE_CONNECT_TIMEOUT_MS = 1_000
         private const val PROBE_READ_TIMEOUT_MS = 2_000
