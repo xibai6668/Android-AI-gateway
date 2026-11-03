@@ -6,6 +6,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.service.quicksettings.TileService
+import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.runtime.Immutable
 import androidx.compose.ui.graphics.Color
 import androidx.core.content.ContextCompat
@@ -934,7 +935,7 @@ class AppViewModel(
             _state.value = _state.value.copy(busy = "")
             result.fold(
                 onSuccess = { ticket ->
-                    if (!openBrowser(ticket.loginUrl)) {
+                    if (!openLoginPage(ticket.loginUrl)) {
                         _state.value = _state.value.copy(notice = "没有可用的浏览器，无法打开登录页")
                         return@fold
                     }
@@ -948,6 +949,29 @@ class AppViewModel(
                 onFailure = { _state.value = _state.value.copy(notice = it.message ?: "打开登录页失败") },
             )
         }
+    }
+
+    /**
+     * 用 Custom Tab 打开登录页，而不是裸 [Intent.ACTION_VIEW]。
+     *
+     * 这不是外观偏好，是回调能不能收到的问题：裸 intent 会把本应用彻底推到后台，
+     * MIUI 等系统几秒内就把进程判为 idle 并冻结（实测 adj 200 → 700 只用 3 秒），
+     * 而本地回调服务器跑在本进程里，冻结后它不再 accept，回调请求停在 listen backlog 里
+     * 没人处理 —— 浏览器表现就是授权页点完确认后一直转圈。
+     * Custom Tab 与宿主共用返回栈，宿主停留在 paused 而不是 stopped，不会被判 idle。
+     *
+     * 设备上没有 Custom Tab 提供方时退回系统浏览器（回调仍可能失败，但总比打不开好）。
+     */
+    private fun openLoginPage(url: String): Boolean {
+        val opened = runCatching {
+            val customTabs = CustomTabsIntent.Builder()
+                .setShowTitle(true)
+                .build()
+            customTabs.intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            customTabs.launchUrl(app, Uri.parse(url))
+            true
+        }.getOrDefault(false)
+        return opened || openBrowser(url)
     }
 
     private fun openBrowser(url: String): Boolean = runCatching {

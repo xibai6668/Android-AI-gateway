@@ -48,8 +48,8 @@ android {
         applicationId = "dev.aigw.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 199
-        versionName = "2.25.0"
+        versionCode = 200
+        versionName = "2.25.1"
     }
 
     buildFeatures {
@@ -133,6 +133,8 @@ dependencies {
 
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
     implementation("androidx.core:core-ktx:1.15.0")
+    // 登录走 Custom Tab：裸 ACTION_VIEW 会让进程被系统判 idle 冻结，本地回调端口随之失聪
+    implementation("androidx.browser:browser:1.8.0")
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
