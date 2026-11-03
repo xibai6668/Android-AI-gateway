@@ -294,6 +294,8 @@ data class AppUiState(
     val security: dev.aigw.core.security.SecuritySettings = dev.aigw.core.security.SecuritySettings(),
     /** 可选的悬浮窗保活是否开启（需「显示在其他应用上层」权限）。 */
     val overlayKeepAlive: Boolean = false,
+    /** 开机 / 应用更新后自动恢复网关（默认关）。 */
+    val startOnBoot: Boolean = false,
     /** 实时状态通知（仅网关有请求在途时显示）是否开启，默认开。 */
     val liveNotification: Boolean = true,
     /** 模型开放名单：只对外暴露勾选的模型。 */
@@ -348,6 +350,7 @@ private class Snapshot(
     val failover: dev.aigw.core.failover.ModelFailoverSettings,
     val overlayKeepAlive: Boolean,
     val liveNotification: Boolean,
+    val startOnBoot: Boolean,
 )
 
 class AppViewModel(
@@ -476,6 +479,7 @@ class AppViewModel(
                     failover = engine.failoverSettings(),
                     overlayKeepAlive = dev.aigw.app.data.KeepAlivePrefs.overlayEnabled(engine.store()),
                     liveNotification = dev.aigw.app.data.KeepAlivePrefs.liveNotificationEnabled(engine.store()),
+                    startOnBoot = dev.aigw.app.data.KeepAlivePrefs.startOnBoot(engine.store()),
                 )
             }
             _state.value = _state.value.copy(
@@ -501,6 +505,7 @@ class AppViewModel(
                 failover = snapshot.failover,
                 overlayKeepAlive = snapshot.overlayKeepAlive,
                 liveNotification = snapshot.liveNotification,
+                startOnBoot = snapshot.startOnBoot,
             )
         }
     }
@@ -775,6 +780,22 @@ class AppViewModel(
                 dev.aigw.app.service.FloatingKeepAlive.hide(app)
                 notice("悬浮窗保活已关闭")
             }
+            refresh()
+        }
+    }
+
+    /**
+     * 开关「开机自动恢复」：落盘后由 [dev.aigw.app.service.GatewayBootReceiver] 在
+     * BOOT_COMPLETED / MY_PACKAGE_REPLACED 时读取并拉起前台服务。
+     *
+     * 只影响「下次开机」；当前这次运行不受影响，所以这里不碰服务。
+     */
+    fun setStartOnBoot(enabled: Boolean) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                dev.aigw.app.data.KeepAlivePrefs.setStartOnBoot(engine.store(), enabled)
+            }
+            notice(if (enabled) "已开启：手机重启或应用更新后自动恢复网关" else "已关闭：重启后不会自动恢复网关")
             refresh()
         }
     }
