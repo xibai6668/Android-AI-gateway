@@ -24,6 +24,7 @@ import dev.aigw.app.ui.theme.formatHex
 import dev.aigw.app.ui.theme.parseHexColor
 import dev.aigw.app.service.GatewayService
 import dev.aigw.app.service.GatewayTileService
+import dev.aigw.app.service.LoginWaitService
 import dev.aigw.core.gateway.BatchActionResult
 import dev.aigw.core.gateway.BatchProgress
 import dev.aigw.core.gateway.BatchTarget
@@ -935,7 +936,11 @@ class AppViewModel(
             _state.value = _state.value.copy(busy = "")
             result.fold(
                 onSuccess = { ticket ->
+                    // 先拉起前台服务再开浏览器：回调端口在本进程里，进程若被判 idle 冻结，
+                    // 授权结果就只能挂在 listen backlog 里没人应答（浏览器一直转圈）
+                    LoginWaitService.start(app)
                     if (!openLoginPage(ticket.loginUrl)) {
+                        LoginWaitService.stop(app)
                         _state.value = _state.value.copy(notice = "没有可用的浏览器，无法打开登录页")
                         return@fold
                     }
@@ -946,7 +951,10 @@ class AppViewModel(
                         _state.value = _state.value.copy(notice = "已在浏览器打开登录页，完成后会自动添加账号")
                     }
                 },
-                onFailure = { _state.value = _state.value.copy(notice = it.message ?: "打开登录页失败") },
+                onFailure = {
+                    LoginWaitService.stop(app)
+                    _state.value = _state.value.copy(notice = it.message ?: "打开登录页失败")
+                },
             )
         }
     }
@@ -954,13 +962,12 @@ class AppViewModel(
     /**
      * 用 Custom Tab 打开登录页，而不是裸 [Intent.ACTION_VIEW]。
      *
-     * 这不是外观偏好，是回调能不能收到的问题：裸 intent 会把本应用彻底推到后台，
-     * MIUI 等系统几秒内就把进程判为 idle 并冻结（实测 adj 200 → 700 只用 3 秒），
-     * 而本地回调服务器跑在本进程里，冻结后它不再 accept，回调请求停在 listen backlog 里
-     * 没人处理 —— 浏览器表现就是授权页点完确认后一直转圈。
-     * Custom Tab 与宿主共用返回栈，宿主停留在 paused 而不是 stopped，不会被判 idle。
+     * 裸 intent 会把登录页甩给外部浏览器，本应用随即被推到后台；Custom Tab 至少与宿主
+     * 保持返回栈关系，观感和返回行为都更接近应用内（rikkahub 也是这么做的）。
+     * 但真正保住回调端口的是 [LoginWaitService] 提供的前台服务级别 —— 只有它能让本进程
+     * 在后台期间不被判 idle 冻结，单靠 Custom Tab 挡不住。
      *
-     * 设备上没有 Custom Tab 提供方时退回系统浏览器（回调仍可能失败，但总比打不开好）。
+     * 设备上没有 Custom Tab 提供方时退回系统浏览器。
      */
     private fun openLoginPage(url: String): Boolean {
         val opened = runCatching {
@@ -993,6 +1000,7 @@ class AppViewModel(
                 when (poll) {
                     is DeviceAuthPoll.Pending -> delay(3_000)
                     is DeviceAuthPoll.Success -> {
+                        LoginWaitService.stop(app)
                         _state.value = _state.value.copy(busy = "", notice = "登录成功：${poll.account.nickname.ifEmpty { poll.account.uid }}")
                         refresh()
                         return@launch
@@ -1003,6 +1011,7 @@ class AppViewModel(
                     }
                 }
             }
+            LoginWaitService.stop(app)
             _state.value = _state.value.copy(busy = "", notice = message)
             refresh()
         }

@@ -3,4 +3,6 @@
     <string name="app_name">AI 聚合网关</string>
     <string name="channel_name">本地网关</string>
     <string name="channel_desc">保持本地模型网关运行</string>
+    <string name="login_wait_title">等待浏览器登录</string>
+    <string name="login_wait_text">请在浏览器中完成授权，完成后会自动添加账号</string>
 </resources>
