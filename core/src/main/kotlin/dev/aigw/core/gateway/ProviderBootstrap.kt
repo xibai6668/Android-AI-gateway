@@ -2,6 +2,7 @@ package dev.aigw.core.gateway
 
 import dev.aigw.core.provider.ProviderRegistry
 import dev.aigw.core.provider.antigravity.AntigravityProvider
+import dev.aigw.core.provider.chatgpt.ChatGPTProvider
 import dev.aigw.core.provider.codebuddy.CodeBuddyProvider
 import dev.aigw.core.provider.loomy.LoomyProvider
 import dev.aigw.core.provider.raccoon.RaccoonProvider
@@ -46,6 +47,13 @@ internal fun registerBuiltinProviders(engine: GatewayEngine) {
 
     registry.register(
         AntigravityProvider(
+            hooks = engine.hooks,
+            nowMillis = { engine.now() },
+        ),
+    )
+
+    registry.register(
+        ChatGPTProvider(
             hooks = engine.hooks,
             nowMillis = { engine.now() },
         ),

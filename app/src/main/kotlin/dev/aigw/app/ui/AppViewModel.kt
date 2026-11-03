@@ -74,7 +74,7 @@ private const val SMS_RESEND_INTERVAL_MS = 60_000L
 private const val GOLD_PERSIST_DEBOUNCE_MS = 300L
 
 /** 项目仓库地址（GitHub）。 */
-private const val PROJECT_URL = "https://github.com/xibai6668/Android-AI-gateway"
+private const val PROJECT_URL = "https://github.com/alarmedvine/Android-AI-gateway"
 
 /** 外观偏好：动态取色、明暗模式、页面底色与金色渐变两端。 */
 class AppearanceStore(private val store: KeyValueStore) {

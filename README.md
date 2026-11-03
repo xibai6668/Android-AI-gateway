@@ -29,7 +29,7 @@ Android 上运行的本地 AI 模型聚合网关：把多家私有 AI 服务账�
 ## 特性
 
 - **OpenAI 兼容网关**：`/v1/chat/completions` + `/v1/models`，流式 SSE / 非流式 / 多模态识图。
-- **五家内置供应商**：Trae、WorkBuddy、Antigravity、Loomy、小浣熊（商汤），以及任意自定义 OpenAI 兼容中转站。
+- **六家内置供应商**：Trae、WorkBuddy、Antigravity、ChatGPT、Loomy、小浣熊（商汤），以及任意自定义 OpenAI 兼容中转站。
 - **同款模型 Failover**：首选供应商失败或无可用账号时，自动切换到拥有同款模型的其他供应商。
 - **智能路由**：`供应商/模型` 前缀路由（含 `trae-cn/`、`codebuddy-global/` 这类区域前缀与 `google/`、`agy/` 等别名），兼支持无前缀的模型名自动推导。
 - **账号管理**：同一供应商多账号按余额选号、失败自动换号、额度查询与额度包明细、跨供应商容灾、批量签到与任务中心。
@@ -45,7 +45,7 @@ Android 上运行的本地 AI 模型聚合网关：把多家私有 AI 服务账�
 
 1. 到 [Releases](https://github.com/xibai6668/Android-AI-gateway/releases) 下载最新的 `ai-gateway-<版本>-release.apk` 安装。
 2. 打开 App，首页点「启动网关服务」；首页显示「运行中」即表示端口已在监听。
-3. 到「供应商」页登录要用的账号（Trae / WorkBuddy / Antigravity / Loomy / 小浣熊），或添加自定义 OpenAI 兼容中转站。
+3. 到「供应商」页登录要用的账号（Trae / WorkBuddy / Antigravity / ChatGPT / Loomy / 小浣熊），或添加自定义 OpenAI 兼容中转站。
 4. 客户端里填接入信息：
    - Base URL：手机本机填 `http://127.0.0.1:8790/v1`；局域网内其它设备填首页复制的局域网地址（需先在「接入设置」里打开「同时监听局域网」）。
    - 模型：可填 `供应商/模型`（如 `antigravity/gemini-3.8-flash-high`），也可直接填模型名由网关推导。
@@ -84,7 +84,7 @@ Provider 实现       上游私有协议 ⇄ OpenAI 协议（双向转换封死�
 | `:cli` | 纯 JVM 命令行 | 在本机直接起网关做端到端联调，或不打开 App 也能导入账号 / 签到 / 查用量与日志；可执行名 `aigw` |
 | `:app` | Android 应用 | Compose UI、前台服务与保活、加密存储实现、控制中心磁贴 |
 
-供应商协议实现位于 `core/src/main/kotlin/dev/aigw/core/provider/`，每家的私有协议细节都封装在各自子包内（`trae/`、`codebuddy/`、`antigravity/`、`loomy/`、`raccoon/`、`custom/`），互不干扰。
+供应商协议实现位于 `core/src/main/kotlin/dev/aigw/core/provider/`，每家的私有协议细节都封装在各自子包内（`trae/`、`codebuddy/`、`antigravity/`、`chatgpt/`、`loomy/`、`raccoon/`、`custom/`），互不干扰。
 
 ---
 
@@ -164,6 +164,7 @@ curl http://127.0.0.1:8790/v1/chat/completions \
 | `antigravity` | Antigravity（Google） | `cloudcode-pa.googleapis.com` | Gemini 风格协议；凭证策略有铁律，见 ARCHITECTURE.md 第 5 节 |
 | `loomy` | Loomy（讯飞） | `xfinfr.com` | 鉴权失败为 HTTP 200 + 业务码，而非 4xx |
 | `raccoon` | 小浣熊（商汤） | `xiaohuanxiong.com` | OpenAI 结构被包在 `data` 里；字段用标准名（v2 LiteLLM 层不认 `max_new_tokens`） |
+| `chatgpt` | ChatGPT（OpenAI） | `chatgpt.com/backend-api/codex` | Codex 订阅额度（5 小时/周窗口）；OAuth 登录回调端口 1455 |
 | `custom:<key>` | 自定义 | 用户填写的 baseUrl | 任意 OpenAI 兼容中转站，一个 key = 一个账号 |
 
 ---
@@ -180,7 +181,7 @@ curl http://127.0.0.1:8790/v1/chat/completions \
 
 ### 仅供学习与交流
 
-本项目是一个用于学习 HTTP 反向代理、SSE 流式透传、多上游协议适配与 Android 应用（Jetpack Compose）打包等技术主题的实践项目，**仅供个人学习与研究使用**。它不是官方产品，与腾讯公司及 WorkBuddy、商汤及小浣熊、字节跳动及 Trae、科大讯飞及 Loomy、Google 及 Antigravity 均无任何关联，未获得其授权、认可或赞助。
+本项目是一个用于学习 HTTP 反向代理、SSE 流式透传、多上游协议适配与 Android 应用（Jetpack Compose）打包等技术主题的实践项目，**仅供个人学习与研究使用**。它不是官方产品，与腾讯公司及 WorkBuddy、商汤及小浣熊、字节跳动及 Trae、科大讯飞及 Loomy、Google 及 Antigravity、OpenAI 及 ChatGPT 均无任何关联，未获得其授权、认可或赞助。
 
 ### 关于反向代理行为
 
