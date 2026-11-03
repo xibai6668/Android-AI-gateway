@@ -32,6 +32,7 @@ data class KeepAliveStatus(
 object KeepAlivePrefs {
     private const val KEY_OVERLAY = "keepalive/overlay"
     private const val KEY_LIVE_NOTIFICATION = "keepalive/live_notification"
+    private const val KEY_START_ON_BOOT = "keepalive/start_on_boot"
 
     fun overlayEnabled(store: dev.aigw.core.store.KeyValueStore): Boolean =
         store.read(KEY_OVERLAY) == "1"
@@ -51,6 +52,20 @@ object KeepAlivePrefs {
 
     fun setLiveNotificationEnabled(store: dev.aigw.core.store.KeyValueStore, enabled: Boolean) {
         store.write(KEY_LIVE_NOTIFICATION, if (enabled) "1" else "0")
+    }
+
+    /**
+     * 「开机自动恢复」开关：默认**关闭**。
+     *
+     * 打开后 [dev.aigw.app.service.GatewayBootReceiver] 会在 BOOT_COMPLETED /
+     * MY_PACKAGE_REPLACED 时直接拉起前台服务；关闭时不注册任何后台唤醒路径。
+     * 与悬浮窗开关不同，它不依赖任何运行时权限。
+     */
+    fun startOnBoot(store: dev.aigw.core.store.KeyValueStore): Boolean =
+        store.read(KEY_START_ON_BOOT) == "1"
+
+    fun setStartOnBoot(store: dev.aigw.core.store.KeyValueStore, enabled: Boolean) {
+        store.write(KEY_START_ON_BOOT, if (enabled) "1" else "0")
     }
 }
 
