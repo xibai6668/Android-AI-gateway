@@ -143,6 +143,20 @@ class GatewayService : Service() {
         return START_NOT_STICKY
     }
 
+    /**
+     * 用户从最近任务划掉时，MIUI 会在几秒内清掉进程。先把自愈闹钟布好：
+     * 进程死后由 [GatewayRestartReceiver] 在闹钟窗口里把前台服务重新拉起来。
+     * 用户主动停止（wantRunning=false）时不布钟，避免变成关不掉的服务。
+     */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        val engine = runCatching { applicationContext.gatewayEngine }.getOrNull() ?: return
+        if (dev.aigw.app.data.KeepAlivePrefs.wantRunning(engine.store())) {
+            GatewayRestartReceiver.schedule(applicationContext)
+            Log.i(TAG, "任务被移除：已布置 2 秒后自愈闹钟")
+        }
+    }
+
     override fun onDestroy() {
         active = false
         foreground = false

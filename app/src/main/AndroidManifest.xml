@@ -58,6 +58,11 @@
                 android:value="浏览器登录期间保持进程活跃，使本地回环回调端口能接住授权结果" />
         </service>
 
+        <!-- 任务被移除后自愈：闹钟窗口内重新拉起前台服务（see GatewayRestartReceiver） -->
+        <receiver
+            android:name=".service.GatewayRestartReceiver"
+            android:exported="false" />
+
         <receiver
             android:name=".service.GatewayBootReceiver"
             android:exported="true">
