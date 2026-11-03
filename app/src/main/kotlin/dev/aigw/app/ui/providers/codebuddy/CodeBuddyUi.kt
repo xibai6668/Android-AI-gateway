@@ -212,7 +212,7 @@ object CodeBuddyUi : ProviderUi {
      * 对照参考实现（WorkBuddy 反代）：`GET /v2/activity/growth/tasks` 的 `data.tasks[]`，
      * 每条含 title / progress.current / progress.target / accept_status / reward_credit。
      * 顶部「成长中心」按钮跑全流程：接单 → 把未完成的推进 → 领奖；
-     * 单条任务上的「领取」只动这一条。
+     * 单条任务不再有「领取」按钮——读取列表时供应商会自动补齐已达标奖励。
      */
     @Composable
     private fun TaskListSection(status: AccountStatus, actions: ProviderUiActions) {
@@ -266,14 +266,14 @@ object CodeBuddyUi : ProviderUi {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 for (task in view.tasks) {
-                    TaskRow(task, status.uid, actions)
+                    TaskRow(task)
                 }
             }
         }
     }
 
     @Composable
-    private fun TaskRow(task: ProviderTask, uid: String, actions: ProviderUiActions) {
+    private fun TaskRow(task: ProviderTask) {
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(
@@ -305,17 +305,6 @@ object CodeBuddyUi : ProviderUi {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-            }
-            if (task.claimable) {
-                // 只领这一个任务：payload 带上 task_code，供应商只对这条发领奖请求
-                ChoiceChip("领取", false) {
-                    actions.onAction(
-                        id,
-                        uid,
-                        ACTION_TASKS,
-                        JsonObject().apply { addProperty("task_code", task.code) },
-                    )
-                }
             }
         }
     }

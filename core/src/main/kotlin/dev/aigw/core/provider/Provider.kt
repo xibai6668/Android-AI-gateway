@@ -131,8 +131,9 @@ interface Provider {
     /**
      * 成长任务明细（可选）；不支持任务中心的 provider 返回 null。
      *
-     * 与 [performAction] 的 `ACTION_TASKS` 不同：这里只**读取**任务列表与完成度，
-     * 不发任何写操作，供 UI 展示「有哪些任务、哪些做了、哪些没做」。
+     * 与 [performAction] 的 `ACTION_TASKS` 不同：这里以读取任务列表与完成度为主，
+     * 但实现可以在读取时补齐已达标奖励（如 WorkBuddy 自动领取），因此**可能包含写操作**，
+     * 供 UI 展示「有哪些任务、哪些做了、哪些没做」。
      */
     fun taskList(account: ProviderAccount): ProviderTaskListView? = null
 

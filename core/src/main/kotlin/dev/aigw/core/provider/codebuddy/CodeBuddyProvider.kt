@@ -807,12 +807,6 @@ class CodeBuddyProvider internal constructor(
     }
 
     /**
-     * 成长任务明细：读 `/v2/activity/growth/tasks`，把 `data.tasks[]` 映射成 [ProviderTask]。
-     *
-     * 只读，不触发任何领取动作，供任务中心展示「哪些做了、哪些没做」。
-     * 国际版（workbuddy.ai）没有成长中心，直接返回空列表。
-     */
-    /**
      * 签到/成长中心只对国内个人账号存在：国际版没有这套体系，企业账号走企业额度口径。
      * 批量选目标时就会把这两种排掉，不会跑完再报错。
      */
@@ -823,20 +817,46 @@ class CodeBuddyProvider internal constructor(
         return credential.enterpriseId.isEmpty()
     }
 
+    /**
+     * 该任务是否要在读取任务列表时顺手领奖：未解锁且已达标未领。
+     *
+     * 单独提出来供单测锁定口径——它决定 taskList 会额外发哪些写请求。
+     */
+    internal fun autoClaimTargets(tasks: List<ProviderTask>): List<ProviderTask> =
+        tasks.filter { !it.locked && it.claimable }
+
+    /**
+     * 成长任务明细：读 `/v2/activity/growth/tasks`，把 `data.tasks[]` 映射成 [ProviderTask]。
+     *
+     * 读取时顺手补齐已达标奖励：对未解锁且已达标的任务逐条领奖，成功后再回读一次拿最新快照，
+     * 让界面直接显示「已领取」（任务中心不再有单条「领取」按钮）。
+     * 国际版（workbuddy.ai）没有成长中心，直接返回空列表。
+     */
     override fun taskList(account: ProviderAccount): ProviderTaskListView? {
         val credential = parse(account) ?: return ProviderTaskListView(emptyList(), error = "凭证无法解析")
         if (regionOf(credential) == REGION_GLOBAL) return ProviderTaskListView(emptyList())
         // 企业账号没有个人成长体系，不发请求（上游会回 403/10001）
         if (credential.enterpriseId.isNotEmpty()) return ProviderTaskListView(emptyList())
+        val url = "${chatBase(credential)}$PATH_GROWTH/tasks"
+        val headers = billingHeaders(credential)
         return try {
-            val (status, body) = getJson("${chatBase(credential)}$PATH_GROWTH/tasks", billingHeaders(credential))
+            val (status, body) = getJson(url, headers)
             if (status !in 200..299) {
                 return ProviderTaskListView(
                     emptyList(),
-                    error = failure("成长中心", endpoint(credential), "${chatBase(credential)}$PATH_GROWTH/tasks", status, body),
+                    error = failure("成长中心", endpoint(credential), url, status, body),
                 )
             }
-            parseGrowthTasks(body)
+            val first = parseGrowthTasks(body)
+            val targets = autoClaimTargets(first.tasks)
+            if (targets.isEmpty()) return first
+            for (task in targets) claimTaskReward(credential, task, ArrayList())
+            // 领完再回读一次拿最新快照；回读失败（非 2xx / 异常）就退回首次结果
+            val refreshed = runCatching {
+                val (rs, rb) = getJson(url, headers)
+                if (rs in 200..299) parseGrowthTasks(rb) else null
+            }.getOrNull()
+            refreshed ?: first
         } catch (e: Exception) {
             ProviderTaskListView(emptyList(), error = e.message ?: "拉取任务列表失败")
         }

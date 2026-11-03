@@ -139,6 +139,25 @@ class CodeBuddyGrowthTasksTest {
         assertTrue(provider.needsTaskAccept(task))
     }
 
+    // ------------------------------------------------------- 读取时自动领取
+
+    @Test
+    fun `自动领取只挑未解锁且已达标未领的任务`() {
+        val done = task(code = "done", status = "in_progress", current = 5, target = 5)
+        val claimed = task(code = "claimed", status = "claimed", current = 5, target = 5)
+        val notDone = task(code = "not_done", status = "in_progress", current = 2, target = 5)
+        val locked = ProviderTask(
+            code = "locked",
+            title = "locked",
+            current = 5,
+            target = 5,
+            locked = true,
+        )
+
+        val targets = provider.autoClaimTargets(listOf(done, claimed, notDone, locked))
+        assertEquals(listOf("done"), targets.map { it.code })
+    }
+
     private fun task(code: String, status: String, current: Long, target: Long) = ProviderTask(
         code = code,
         title = code,
