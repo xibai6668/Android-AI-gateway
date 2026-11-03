@@ -11,6 +11,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import dev.aigw.app.AiGatewayApp
@@ -49,6 +50,19 @@ class GatewayService : Service() {
     @Volatile
     private var probing = false
 
+    /**
+     * 当前是否已进入前台服务状态。
+     *
+     * 系统按 START_STICKY 重建服务时，应用处在后台：Android 12+ 可能拒绝这次
+     * 「后台升前台」，startForeground 抛异常。此时不能直接放弃——先把引擎跑起来
+     * （端口可用优先于通知），再让看门狗每轮顺带重试晋升，等应用回到前台自然成功。
+     */
+    @Volatile
+    private var foreground = false
+
+    @Volatile
+    private var promotionWarned = false
+
     private lateinit var watchdog: EngineWatchdog
 
     private val watchdogTick = object : Runnable {
@@ -61,6 +75,9 @@ class GatewayService : Service() {
             probing = true
             Thread({
                 runCatching { watchdog.tick() }
+                if (!foreground && active) {
+                    promoteForeground(applicationContext.gatewayEngine.settings().port)
+                }
                 probing = false
                 watchdogHandler.post {
                     if (active && !watchdog.gaveUp) scheduleNextTick()
@@ -85,8 +102,21 @@ class GatewayService : Service() {
         // 而且「服务已启动」本身就是用户要的反馈，不应等引擎验证完才弹。
         // NanoHTTPD.start(timeout=0) 会同步等 bind 完成/抛出，engine.start() 返回
         // 即端口已就绪，所以这里不需要任何先导耗时操作。
-        startForeground(NOTIFICATION_ID, buildNotification(engine.settings().port))
-        val started = engine.isRunning() || runCatching { engine.start() }.isSuccess
+        // 系统重建（intent == null）时若升不了前台，仍以普通服务把网关跑起来：
+        // 「端口能用」比「有通知」重要，且看门狗会持续重试晋升。
+        val rebuiltBySystem = intent == null
+        val promoted = promoteForeground(engine.settings().port)
+        if (!promoted && !rebuiltBySystem) {
+            // 这次是 startForegroundService() 拉起的，升不了前台会在时限内被系统判
+            // ForegroundServiceDidNotStartInTime 直接崩，先自己收摊更干净
+            Log.w(TAG, "升前台失败且本次由 startForegroundService 发起，停止服务")
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        val startFailure = runCatching { engine.start() }.exceptionOrNull()
+        if (startFailure != null) Log.w(TAG, "engine.start() 失败：${startFailure.message}")
+        val started = engine.isRunning()
+        Log.i(TAG, "onStartCommand: rebuiltBySystem=$rebuiltBySystem promoted=$promoted started=$started")
         if (started) {
             // 服务活着就代表「希望运行」：这条意图是 force-stop 之后打开应用自动恢复的依据
             dev.aigw.app.data.KeepAlivePrefs.setWantRunning(engine.store(), true)
@@ -115,6 +145,7 @@ class GatewayService : Service() {
 
     override fun onDestroy() {
         active = false
+        foreground = false
         if (::watchdog.isInitialized) watchdog.cancel()
         watchdogHandler.removeCallbacks(watchdogTick)
         // 网关没跑就不该有「实时状态」通知
@@ -131,6 +162,26 @@ class GatewayService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     // ------------------------------------------------------------------ 看门狗
+
+    /**
+     * 尝试进入前台服务状态。失败不抛、只记一次日志，由调用方决定是否继续。
+     * Android 12+ 在「后台启动前台服务」受限时会抛 ForegroundServiceStartNotAllowedException。
+     */
+    private fun promoteForeground(port: Int): Boolean {
+        val failure = runCatching { startForeground(NOTIFICATION_ID, buildNotification(port)) }.exceptionOrNull()
+        if (failure == null) {
+            if (!foreground) Log.i(TAG, "前台通知已建立（端口 $port）")
+            foreground = true
+            promotionWarned = false
+            return true
+        }
+        foreground = false
+        if (!promotionWarned) {
+            promotionWarned = true
+            Log.w(TAG, "升前台失败（后台启动限制）：${failure.javaClass.simpleName}: ${failure.message}")
+        }
+        return false
+    }
 
     private fun startWatchdog() {
         if (active) return
@@ -178,6 +229,7 @@ class GatewayService : Service() {
     private fun restartEngine(): Boolean {
         val engine = applicationContext.gatewayEngine
         return runCatching {
+            Log.w(TAG, "看门狗：端口无响应，正在重启引擎")
             engine.requestLog.warn("看门狗：端口无响应，正在重启引擎")
             engine.stop()
             engine.start()
@@ -195,6 +247,7 @@ class GatewayService : Service() {
         val engine = runCatching { applicationContext.gatewayEngine }.getOrNull()
         // 已经明确放弃：清掉「希望运行」意图，避免下次打开应用又自动把它拉起来
         engine?.let { dev.aigw.app.data.KeepAlivePrefs.setWantRunning(it.store(), false) }
+        Log.w(TAG, "看门狗：连续 $WATCHDOG_MAX_FAILURES 次无法恢复，停止服务")
         engine?.requestLog?.warn(
             "看门狗：连续 $WATCHDOG_MAX_FAILURES 次无法恢复端口监听，已停止前台服务",
         )
@@ -303,6 +356,8 @@ class GatewayService : Service() {
         /** 走网关自带的 /healthz：固定 200、不鉴权、不进调用记录。 */
         private const val PROBE_REQUEST =
             "GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+
+        private const val TAG = "AiGateway"
 
         private const val WAKE_LOCK_TAG = "aigw:gateway"
         private const val WIFI_LOCK_TAG = "aigw:gateway-wifi"
