@@ -707,6 +707,11 @@ class AppViewModel(
                 // 引擎没起来就撤掉前台通知，避免「通知说运行中、端口没人听」
                 app.stopService(Intent(app, GatewayService::class.java))
                 _state.value = _state.value.copy(notice = "启动失败：$error")
+            } else {
+                // 兜底：若服务在启动竞态里先退了（onStartCommand 时引擎还没就绪会
+                // stopSelf），这里把服务再拉回来——引擎在跑就必须有服务看管，
+                // 否则又回到「端口开着、无人看管」的孤儿态。onStartCommand 幂等。
+                ContextCompat.startForegroundService(app, Intent(app, GatewayService::class.java))
             }
             refresh()
             requestTileUpdate()
