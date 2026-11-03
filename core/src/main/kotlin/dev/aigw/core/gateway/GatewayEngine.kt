@@ -1057,7 +1057,9 @@ class GatewayEngine(
             }
 
             provider is LoopbackOAuthSupport -> {
-                startCallbackServer(AntigravityProvider.CALLBACK_PORT, AntigravityProvider.CALLBACK_PATH) { url ->
+                // 回调端口/路径由 provider 自己声明：redirect_uri 是上游注册值，写死会让第二家
+                // loopback 供应商（如 ChatGPT 的 1455）永远收不到回调。
+                startCallbackServer(provider.callbackPort, provider.callbackPath) { url ->
                     val outcome = completeOAuth(providerId, url)
                     resultPage(outcome.ok, outcome.nickname.ifEmpty { outcome.uid }, outcome.error)
                 }
@@ -1178,10 +1180,10 @@ class GatewayEngine(
     fun completeOAuth(providerId: String, callbackUrl: String): LoginOutcome {
         val support = registry.get(providerId) as? LoopbackOAuthSupport
             ?: return LoginOutcome(LoginState.FAILED, error = "该供应商不支持 OAuth 登录")
-        val code = dev.aigw.core.provider.queryParam(callbackUrl, "code")
-            ?: return LoginOutcome(LoginState.FAILED, error = "回调里没有 code 参数")
         return try {
-            adopt(providerId, support.exchangeCode(code), "登录")
+            // 走 completeCallback 让供应商拿到完整 URL：需要校验 state / 一次性消费 code 的
+            // 供应商（如 ChatGPT）在那一层做防重放；默认实现等价于只取 code。
+            adopt(providerId, support.completeCallback(callbackUrl), "登录")
         } catch (e: Exception) {
             logWarn("OAuth 登录失败（$providerId）：${e.message}")
             LoginOutcome(LoginState.FAILED, error = e.message ?: "登录失败")
