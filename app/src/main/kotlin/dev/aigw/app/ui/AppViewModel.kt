@@ -6,6 +6,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.service.quicksettings.TileService
+import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.runtime.Immutable
 import androidx.compose.ui.graphics.Color
 import androidx.core.content.ContextCompat
@@ -23,6 +24,7 @@ import dev.aigw.app.ui.theme.formatHex
 import dev.aigw.app.ui.theme.parseHexColor
 import dev.aigw.app.service.GatewayService
 import dev.aigw.app.service.GatewayTileService
+import dev.aigw.app.service.LoginWaitService
 import dev.aigw.core.gateway.BatchActionResult
 import dev.aigw.core.gateway.BatchProgress
 import dev.aigw.core.gateway.BatchTarget
@@ -74,7 +76,7 @@ private const val SMS_RESEND_INTERVAL_MS = 60_000L
 private const val GOLD_PERSIST_DEBOUNCE_MS = 300L
 
 /** 项目仓库地址（GitHub）。 */
-private const val PROJECT_URL = "https://github.com/xibai6668/Android-AI-gateway"
+private const val PROJECT_URL = "https://github.com/alarmedvine/Android-AI-gateway"
 
 /** 外观偏好：动态取色、明暗模式、页面底色与金色渐变两端。 */
 class AppearanceStore(private val store: KeyValueStore) {
@@ -934,7 +936,11 @@ class AppViewModel(
             _state.value = _state.value.copy(busy = "")
             result.fold(
                 onSuccess = { ticket ->
-                    if (!openBrowser(ticket.loginUrl)) {
+                    // 先拉起前台服务再开浏览器：回调端口在本进程里，进程若被判 idle 冻结，
+                    // 授权结果就只能挂在 listen backlog 里没人应答（浏览器一直转圈）
+                    LoginWaitService.start(app)
+                    if (!openLoginPage(ticket.loginUrl)) {
+                        LoginWaitService.stop(app)
                         _state.value = _state.value.copy(notice = "没有可用的浏览器，无法打开登录页")
                         return@fold
                     }
@@ -945,9 +951,34 @@ class AppViewModel(
                         _state.value = _state.value.copy(notice = "已在浏览器打开登录页，完成后会自动添加账号")
                     }
                 },
-                onFailure = { _state.value = _state.value.copy(notice = it.message ?: "打开登录页失败") },
+                onFailure = {
+                    LoginWaitService.stop(app)
+                    _state.value = _state.value.copy(notice = it.message ?: "打开登录页失败")
+                },
             )
         }
+    }
+
+    /**
+     * 用 Custom Tab 打开登录页，而不是裸 [Intent.ACTION_VIEW]。
+     *
+     * 裸 intent 会把登录页甩给外部浏览器，本应用随即被推到后台；Custom Tab 至少与宿主
+     * 保持返回栈关系，观感和返回行为都更接近应用内（rikkahub 也是这么做的）。
+     * 但真正保住回调端口的是 [LoginWaitService] 提供的前台服务级别 —— 只有它能让本进程
+     * 在后台期间不被判 idle 冻结，单靠 Custom Tab 挡不住。
+     *
+     * 设备上没有 Custom Tab 提供方时退回系统浏览器。
+     */
+    private fun openLoginPage(url: String): Boolean {
+        val opened = runCatching {
+            val customTabs = CustomTabsIntent.Builder()
+                .setShowTitle(true)
+                .build()
+            customTabs.intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            customTabs.launchUrl(app, Uri.parse(url))
+            true
+        }.getOrDefault(false)
+        return opened || openBrowser(url)
     }
 
     private fun openBrowser(url: String): Boolean = runCatching {
@@ -969,6 +1000,7 @@ class AppViewModel(
                 when (poll) {
                     is DeviceAuthPoll.Pending -> delay(3_000)
                     is DeviceAuthPoll.Success -> {
+                        LoginWaitService.stop(app)
                         _state.value = _state.value.copy(busy = "", notice = "登录成功：${poll.account.nickname.ifEmpty { poll.account.uid }}")
                         refresh()
                         return@launch
@@ -979,6 +1011,7 @@ class AppViewModel(
                     }
                 }
             }
+            LoginWaitService.stop(app)
             _state.value = _state.value.copy(busy = "", notice = message)
             refresh()
         }
