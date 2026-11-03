@@ -438,6 +438,9 @@ class AppViewModel(
         // 调用记录与统计改在引擎后台预载（冷启动不阻塞主线程），就绪后补一次刷新
         engine.setStartupDataReadyListener { refresh() }
         refresh()
+        // 被系统强停过（force-stop 会清掉粘性服务与所有定时唤醒）时，打开应用就地恢复，
+        // 不再要求用户多点一次「启动网关服务」。
+        maybeAutoResume()
         // 自动检查更新：默认开启，每天最多一次，失败静默
         maybeAutoCheckUpdate()
     }
@@ -712,15 +715,28 @@ class AppViewModel(
                 // stopSelf），这里把服务再拉回来——引擎在跑就必须有服务看管，
                 // 否则又回到「端口开着、无人看管」的孤儿态。onStartCommand 幂等。
                 ContextCompat.startForegroundService(app, Intent(app, GatewayService::class.java))
+                dev.aigw.app.data.KeepAlivePrefs.setWantRunning(engine.store(), true)
             }
             refresh()
             requestTileUpdate()
         }
     }
 
+    /**
+     * 应用打开时恢复上次状态（见 [dev.aigw.app.data.KeepAlivePrefs.wantRunning]）。
+     * 只在意图为真、且引擎确实没在跑时动作一次，不会与用户手动操作打架。
+     */
+    private fun maybeAutoResume() {
+        if (engine.isRunning()) return
+        if (!dev.aigw.app.data.KeepAlivePrefs.wantRunning(engine.store())) return
+        startGateway()
+        _state.value = _state.value.copy(notice = "已自动恢复上次的运行状态")
+    }
+
     fun stopGateway() {
         viewModelScope.launch {
             withContext(Dispatchers.IO) { engine.stop() }
+            dev.aigw.app.data.KeepAlivePrefs.setWantRunning(engine.store(), false)
             app.stopService(Intent(app, GatewayService::class.java))
             _state.value = _state.value.copy(notice = "服务已停止")
             refresh()
