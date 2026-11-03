@@ -132,6 +132,12 @@ class TraeUgParseTest {
     }
 
     @Test
+    fun `上游没给 enable 字段时活动状态未知而非未开启`() {
+        // 默认 false 会把「上游没说」误判成「活动未开启」，从而白跳过签到
+        assertNull(TraeUgParse.parseStatus("""{"checked_in":false,"credits":0}""")?.enabled)
+    }
+
+    @Test
     fun `业务成功判定覆盖常见信封`() {
         assertTrue(TraeUgParse.succeeded("""{"code":0}"""))
         assertTrue(TraeUgParse.succeeded("""{"code":200}"""))
