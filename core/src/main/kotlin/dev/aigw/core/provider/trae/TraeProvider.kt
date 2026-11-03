@@ -479,7 +479,11 @@ internal fun ensureDeviceIds(account: TraeAccount): TraeAccount {
 internal fun traeErrorMessage(e: TraeHttpException): String = when (e.upstreamCode) {
     9074L -> "签到被拒：设备指纹未通过校验，去账号详情点「重新生成」后重试"
     4001L -> "模型或客户端版本不被上游接受（可在供应商设置里上调版本号）"
-    else -> e.message ?: "上游错误"
+    else -> {
+        // 上游 message 往往很含糊（如「活动暂不可用」），把它对应的业务码一并给出才能定性
+        val base = e.message ?: "上游错误"
+        if (e.upstreamCode != 0L) "$base（code=${e.upstreamCode}）" else base
+    }
 }
 
 internal fun TraeErrorKind.toErrorKind(): ErrorKind = when (this) {
