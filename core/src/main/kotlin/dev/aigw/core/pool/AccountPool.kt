@@ -287,13 +287,14 @@ class AccountPool(
     // ---------------------------------------------------------------- 选号
 
     /** 取该 provider 可用账号中优先级最高者，同级取余额最高者；[exclude] 用于同一请求内的换号重试。 */
-    fun pick(providerId: String, exclude: Set<String> = emptySet()): ProviderAccount? = lock.read {
+    fun pick(providerId: String, exclude: Set<String> = emptySet(), accountFilter: (String) -> Boolean = { true }): ProviderAccount? = lock.read {
         val group = byProvider[providerId] ?: return@read null
         var best: Entry? = null
         for (entry in group) {
             if (entry.account.uid in exclude) continue
             if (!entry.healthy()) continue
             if (isCooling(providerId, entry.account.uid)) continue
+            if (!accountFilter(entry.account.uid)) continue
             // 先比优先级（用户手动排序，最高优先），同级再比余额：
             // 用户把某个号拖到最上面，就是希望它先被用，不该被余额更高的号盖掉。
             val better = best == null || entry.priority > best.priority ||

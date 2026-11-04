@@ -1496,16 +1496,41 @@ class GatewayEngine(
 
     /**
      * 在指定供应商中选号；[region] 非空时只选属于该区域且处于可用状态的账号中余额最高者。
+     *
+     * 有并发闸门时优先选还有在途余量的账号（[ConcurrencyGate.hasCapacity]）：闸门按账号串行，
+     * 若选号不感知在途，多个请求会全挤在优先级最高的那一个账号上排队，其它账号完全闲着。
+     * 全部账号都满载时仍返回首选账号，由调用方决定是排队还是快速拒绝。
      */
     fun pickAccount(providerId: String, exclude: Set<String> = emptySet(), region: String? = null): ProviderAccount? {
-        if (region == null) return pool.pick(providerId, exclude)
-        val regionAware = registry.get(providerId) as? dev.aigw.core.provider.RegionAwareSupport ?: return pool.pick(providerId, exclude)
+        val candidate = pickAccountIgnoringLoad(providerId, exclude, region) ?: return null
+        if (hasLoadCapacity(providerId, candidate.uid)) return candidate
+        return pickAccountIgnoringLoad(providerId, exclude, region, requireIdle = true) ?: candidate
+    }
+
+    private fun hasLoadCapacity(providerId: String, uid: String): Boolean =
+        concurrencyGate.hasCapacity("$providerId/$uid")
+
+    /** [requireIdle] 为 true 时只在还有并发余量的账号中选号（用于满载时兜底找空闲账号）。 */
+    private fun pickAccountIgnoringLoad(
+        providerId: String,
+        exclude: Set<String>,
+        region: String?,
+        requireIdle: Boolean = false,
+    ): ProviderAccount? {
+        val idleFilter: (String) -> Boolean = { uid -> !requireIdle || hasLoadCapacity(providerId, uid) }
+        if (region == null) {
+            if (!requireIdle) return pool.pick(providerId, exclude)
+            return pool.pick(providerId, exclude, accountFilter = idleFilter)
+        }
+        val regionAware = registry.get(providerId) as? dev.aigw.core.provider.RegionAwareSupport
+            ?: return pickAccountIgnoringLoad(providerId, exclude, null, requireIdle)
         // 一次取状态快照（单次加锁），避免对每个账号各加一次读锁
         val statusByUid = pool.statuses(providerId).associateBy { it.uid }
         return pool.accounts(providerId)
             .filter { account -> account.uid !in exclude }
             .filter { account -> statusByUid[account.uid]?.usable == true }
             .filter { account -> regionAware.regionOf(account) == region }
+            .filter { account -> idleFilter(account.uid) }
             .maxByOrNull { account -> statusByUid[account.uid]?.credits ?: 0L }
     }
 

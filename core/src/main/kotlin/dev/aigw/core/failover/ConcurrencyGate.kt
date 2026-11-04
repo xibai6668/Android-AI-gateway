@@ -18,8 +18,8 @@ data class ConcurrencyConfig(
     val maxPerAccount: Int = 1,
     /** 全网关同时在途的请求数上限；0 = 不限。 */
     val maxGlobal: Int = 0,
-    /** 所有许可被占满时，排队等待的超时毫秒数；超时按并发拒绝处理。 */
-    val queueTimeoutMs: Long = 120_000L,
+    /** 所有许可被占满时最多排队等待的毫秒数；超时按并发上限拒绝（429）。 */
+    val queueTimeoutMs: Long = 30_000L,
 ) {
     fun toJson(): JsonObject = JsonObject().apply {
         addProperty("maxPerAccount", maxPerAccount)
@@ -44,7 +44,7 @@ data class ConcurrencyConfig(
             return ConcurrencyConfig(
                 maxPerAccount = clampMaxPerAccount(obj.get("maxPerAccount")?.asInt ?: 1),
                 maxGlobal = clampMaxGlobal(obj.get("maxGlobal")?.asInt ?: 0),
-                queueTimeoutMs = clampQueueTimeoutMs(obj.get("queueTimeoutMs")?.asLong ?: 120_000L),
+                queueTimeoutMs = clampQueueTimeoutMs(obj.get("queueTimeoutMs")?.asLong ?: 30_000L),
             )
         }
     }
@@ -65,43 +65,69 @@ class ConcurrencyGate(
 
     /**
      * 尝试取得许可；[accountKey] 为 `providerId/uid`。
-     * 拿不到时在 [ConcurrencyConfig.queueTimeoutMs] 内轮询等待，超时返回 null（全局计数自回滚）。
+     * 拿不到时在 [ConcurrencyConfig.queueTimeoutMs] 内轮询等待，超时返回 null。
+     *
+     * 它会阻塞调用线程，所以只适合两种情况：HTTP 层在「该供应商已无余量」时的最后一次有界排队，
+     * 以及本来就跑在后台线程的调用方。不能对每个候选账号都无脑排队——那会让工作线程被占满，
+     * 所有请求一起超时。
      */
     fun tryAcquire(accountKey: String): Handle? {
         val cfg = config()
+        if (cfg.maxGlobal <= 0 && cfg.maxPerAccount <= 0) return Handle.DISABLED
+        return tryAcquire(accountKey, cfg.queueTimeoutMs)
+    }
+
+    /**
+     * 在 [timeoutMs] 内等待许可。HTTP 层用它代替「直接拒绝」：单账号用户并发两条请求时，
+     * 后一条稍等片刻就能接上前一条，比直接报 429 更符合 agent 客户端的预期。
+     */
+    fun tryAcquire(accountKey: String, timeoutMs: Long): Handle? {
+        val cfg = config()
+        if (cfg.maxGlobal <= 0 && cfg.maxPerAccount <= 0) return Handle.DISABLED
+
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs.coerceAtLeast(0L))
+        while (true) {
+            tryOnce(accountKey, cfg)?.let { return it }
+            if (System.nanoTime() >= deadline) return null
+            Thread.sleep(POLL_INTERVAL_MS)
+        }
+    }
+    /**
+     * 非阻塞取许可：没有余量时立刻返回 null。
+     * 选号阶段用它，避免「选中一个满载账号 → 在 HTTP 线程上苦等」把线程耗光。
+     */
+    fun tryAcquireNow(accountKey: String): Handle? = tryOnce(accountKey, config())
+
+    /**
+     * 该账号现在是否还有在途余量（只读探测，不占许可）。
+     * 选号时据此避开已满载的账号，否则多账号也会全挤在优先级最高的那一个上排队。
+     */
+    fun hasCapacity(accountKey: String): Boolean {
+        val cfg = config()
+        if (cfg.maxGlobal > 0 && inFlightGlobal() >= cfg.maxGlobal) return false
+        if (cfg.maxPerAccount > 0 && inFlightOf(accountKey) >= cfg.maxPerAccount) return false
+        return true
+    }
+
+    /** 单次不等待的取许可；拿不到时把本轮的全局计数回滚，不留漂移。 */
+    private fun tryOnce(accountKey: String, cfg: ConcurrencyConfig): Handle? {
         val globalLimit = cfg.maxGlobal
         val accountLimit = cfg.maxPerAccount
         if (globalLimit <= 0 && accountLimit <= 0) return Handle.DISABLED
 
-        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(cfg.queueTimeoutMs)
         // 全局先入队：账号级许可一定被全局覆盖，顺序保证不会出现「账号拿到了、全局拿不到」的倒挂。
-        // 等待途中被中断会把已取得的全局许可泄漏掉，这里 catch 后回滚再抛；
-        // 只有「本轮真的已取得全局许可」才回滚，否则会多减（计数漂移为负）。
-        var globalAcquired = false
-        try {
-            while (true) {
-                if (globalLimit <= 0 || tryIncrement(globalInFlight, globalLimit)) {
-                    globalAcquired = globalLimit > 0
-                    // 句柄要记住「本轮到底有没有真的加过全局计数」：maxGlobal<=0（全局不限）时
-                    // 不能减，否则把从没加过的计数减成负数。
-                    if (accountLimit <= 0) return Handle(this, accountKey, false, globalAcquired)
-                    val counter = accountInFlight.computeIfAbsent(accountKey) { AtomicInteger(0) }
-                    while (true) {
-                        if (tryIncrement(counter, accountLimit)) return Handle(this, accountKey, true, globalAcquired)
-                        if (System.nanoTime() >= deadline) {
-                            if (globalAcquired) globalInFlight.decrementAndGet()
-                            return null
-                        }
-                        Thread.sleep(POLL_INTERVAL_MS)
-                    }
-                }
-                if (System.nanoTime() >= deadline) return null
-                Thread.sleep(POLL_INTERVAL_MS)
-            }
-        } catch (e: InterruptedException) {
+        // 句柄要记住「本轮到底有没有真的加过全局计数」：maxGlobal<=0（全局不限）时不能减，
+        // 否则把从没加过的计数减成负数。
+        val globalAcquired = globalLimit > 0
+        if (globalAcquired && !tryIncrement(globalInFlight, globalLimit)) return null
+        if (accountLimit <= 0) return Handle(this, accountKey, false, globalAcquired)
+
+        val counter = accountInFlight.computeIfAbsent(accountKey) { AtomicInteger(0) }
+        if (!tryIncrement(counter, accountLimit)) {
             if (globalAcquired) globalInFlight.decrementAndGet()
-            throw e
+            return null
         }
+        return Handle(this, accountKey, true, globalAcquired)
     }
 
     private fun tryIncrement(counter: AtomicInteger, limit: Int): Boolean {

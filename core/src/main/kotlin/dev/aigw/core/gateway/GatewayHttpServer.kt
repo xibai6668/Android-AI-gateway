@@ -88,6 +88,10 @@ class GatewayHttpServer(
         addHeader("Access-Control-Allow-Origin", "*")
         addHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         addHeader("Access-Control-Allow-Headers", "*")
+        // 非流式响应一律不复用连接：NanoHTTPD 的 keep-alive 是「处理完再阻塞读下一个请求」，
+        // 空闲连接会一直占着工作线程直到 socket 读超时（60s），并发一多线程就被这些空转连接吃光，
+        // 真正要转发的请求只能排队。OpenAI 客户端每次请求都新建连接，放弃复用代价极小。
+        if (this !is SseResponse) closeConnection(true)
     }
 
     // ------------------------------------------------------------------ 端点
@@ -215,6 +219,8 @@ class GatewayHttpServer(
         var lastHttpStatus = 0
         // 是否真正向某个上游发起过请求（用于决定 503 要不要记一条调用记录）
         var attemptedUpstream = false
+        // 是否有账号因为在途已满被拒：它既不是「没有账号」也不是上游限流，对客要如实报并发上限
+        var concurrencyRejected = false
         // 本次请求所有失败尝试的分类：最终按主因决定给客户端的状态码与错误码
         // （从前一律 503 no_healthy_account，额度耗尽/凭证失效也报「没有可用账号」）
         val failureKinds = ArrayList<dev.aigw.core.provider.ErrorKind>()
@@ -263,7 +269,7 @@ class GatewayHttpServer(
 
                 // 寻找下一个候选供应商
                 val next = candidateRoutes()
-                    .firstOrNull { it.providerId !in triedProviders && engine.pool.pick(it.providerId) != null }
+                    .firstOrNull { it.providerId !in triedProviders && engine.pickAccount(it.providerId, region = it.region) != null }
                 if (next != null) {
                     log("自动故障转移至下一候选供应商 [${next.providerId}]...")
                     currentRoute = next
@@ -283,7 +289,7 @@ class GatewayHttpServer(
                 log("模型 [$resolvedModel] 在 [$providerId] 处于模型级熔断，跳过此候选...")
                 routeErrors.add(skipReason)
                 val next = candidateRoutes()
-                    .firstOrNull { it.providerId !in triedProviders && engine.pool.pick(it.providerId) != null }
+                    .firstOrNull { it.providerId !in triedProviders && engine.pickAccount(it.providerId, region = it.region) != null }
                 if (next != null) {
                     currentRoute = next
                     continue
@@ -298,7 +304,7 @@ class GatewayHttpServer(
                 log("模型 [$resolvedModel] 在 [$providerId] 处于模型级冷却中，跳过此候选...")
                 routeErrors.add(skipReason)
                 val next = candidateRoutes()
-                    .firstOrNull { it.providerId !in triedProviders && engine.pool.pick(it.providerId) != null }
+                    .firstOrNull { it.providerId !in triedProviders && engine.pickAccount(it.providerId, region = it.region) != null }
                 if (next != null) {
                     currentRoute = next
                     continue
@@ -320,26 +326,48 @@ class GatewayHttpServer(
                 attempt++
                 // 兜底：上一笔上游尝试若在 continue 路径未显式收尾，这里先结束掉
                 finishActiveRequest()
-                var picked = engine.pickAccount(currentRoute.providerId, tried, currentRoute.region)
-                if (picked == null) {
-                    // 若池中有可用账号（如单账号或全部账号已轮过一轮），清空已试列表允许继续完成剩余重试配额
-                    if (engine.pickAccount(currentRoute.providerId, emptySet(), currentRoute.region) != null) {
-                        tried.clear()
-                        picked = engine.pickAccount(currentRoute.providerId, tried, currentRoute.region)
+                // 选号与取许可必须在一起做：先选号再取许可的话，两个并发请求会同时选中同一个
+                // 空闲账号，后一个只好排队，看起来就是「多账号却在串行」。
+                // 这里先占一个空闲账号的许可，占完发现它已被别人抢先占满就重新选，
+                // 直到该供应商确实没有余量为止；那时只对最后一个候选做一次有界排队。
+                var picked: dev.aigw.core.provider.ProviderAccount? = null
+                var gateHandle: dev.aigw.core.failover.ConcurrencyGate.Handle? = null
+                while (true) {
+                    val candidate = engine.pickAccount(currentRoute.providerId, tried, currentRoute.region) ?: break
+                    val handle = engine.concurrencyGate.tryAcquireNow("${currentRoute.providerId}/${candidate.uid}")
+                    if (handle != null) {
+                        picked = candidate
+                        gateHandle = handle
+                        break
                     }
+                    // 该账号已满载：记入已试，换个空闲账号再试；全部满载时下面的排队入口兜底
+                    tried += candidate.uid
+                    if (engine.pickAccount(currentRoute.providerId, tried, currentRoute.region) == null) break
                 }
-                if (picked == null) break
+                if (picked == null) {
+                    // 供应商内所有账号都满载：短暂排队等一个许可（默认 30s），等不到才算并发上限。
+                    // 不能像原来那样排 120s —— 那会让工作线程被占满，所有请求一起超时。
+                    val fallback = engine.pickAccount(currentRoute.providerId, emptySet(), currentRoute.region) ?: break
+                    if (fallback.uid in tried && tried.size < maxAttempts) tried.clear()
+                    val handle = engine.concurrencyGate.tryAcquire(
+                        "${currentRoute.providerId}/${fallback.uid}",
+                        failoverCfg.concurrency.queueTimeoutMs,
+                    )
+                    if (handle == null) {
+                        concurrencyRejected = true
+                        val waitedSecs = failoverCfg.concurrency.queueTimeoutMs / 1000.0
+                        providerLastError = "并发已达上限（单账号=${failoverCfg.concurrency.maxPerAccount}，全局=${failoverCfg.concurrency.maxGlobal}，等待 ${waitedSecs}s 超时）"
+                        log("并发闸门拒入场（${currentRoute.providerId}/${fallback.nickname.ifEmpty { fallback.uid }}）：$providerLastError")
+                        // 不记进 failureKinds：本地闸门满不是上游限流，混进去会让对客错误码变成
+                        // rate_limit_exceeded「上游限流」，属于归因造假
+                        break
+                    }
+                    picked = fallback
+                    gateHandle = handle
+                }
+                if (picked == null || gateHandle == null) break
                 tried += picked.uid
-
-                // 上游并发闸门：在发起上游调用前取许可，会话结束后释放；取不到时本次换号重试不再尝试该账号
-                val gateHandle = engine.concurrencyGate.tryAcquire("${currentRoute.providerId}/${picked.uid}")
-                if (gateHandle != null) pendingGate = gateHandle
-                if (gateHandle == null) {
-                    val waitedSecs = failoverCfg.concurrency.queueTimeoutMs / 1000.0
-                    providerLastError = "并发已达上限（单账号=${failoverCfg.concurrency.maxPerAccount}，全局=${failoverCfg.concurrency.maxGlobal}，等待 ${waitedSecs}s 超时）"
-                    log("并发闸门拒入场（${currentRoute.providerId}/${picked.nickname.ifEmpty { picked.uid }}）：$providerLastError")
-                    continue
-                }
+                pendingGate = gateHandle
 
                 // 单供应商内重试退避：非首次尝试时计算指数退避 + Jitter 抖动休眠，避免冲击上游
                 if (attempt > 1 && failoverCfg.enabled) {
@@ -659,7 +687,7 @@ class GatewayHttpServer(
 
             // 同款模型跨供应商 Failover：按优先级选下一个尚未尝试且有可用账号的供应商
             val next = candidateRoutes()
-                .firstOrNull { it.providerId !in triedProviders && engine.pool.pick(it.providerId) != null }
+                .firstOrNull { it.providerId !in triedProviders && engine.pickAccount(it.providerId, region = it.region) != null }
             if (next != null) {
                 log("[故障转移] 供应商 [${currentRoute.providerId}] 调用未成功（$errDetail），自动切换至备选供应商 [${next.providerId}]（对应模型: ${next.model}）...")
                 currentRoute = next
@@ -674,6 +702,17 @@ class GatewayHttpServer(
         }
 
         val allErrors = routeErrors.joinToString("；")
+        // 有账号被本地并发闸门挡回：如实告诉客户端是并发满了（429），而不是误报 503「没有可用账号」
+        // 或 429「上游限流」——两种都会让 agent 端误判根因。
+        if (concurrencyRejected && (!attemptedUpstream || failureKinds.isEmpty())) {
+            val message = if (allErrors.isEmpty()) {
+                "网关并发已满（单账号=${failoverCfg.concurrency.maxPerAccount}，全局=${failoverCfg.concurrency.maxGlobal}），请降低并发或稍后重试"
+            } else {
+                "网关并发已满（单账号=${failoverCfg.concurrency.maxPerAccount}，全局=${failoverCfg.concurrency.maxGlobal}）；$allErrors"
+            }
+            log("返回 429 concurrency_limit：$message")
+            return errorResponse(429, "concurrency_limit", message)
+        }
         val mappedFailure = GatewayErrorMapping.map(
             kinds = failureKinds,
             attemptedUpstream = attemptedUpstream,
@@ -1197,6 +1236,8 @@ class GatewayHttpServer(
         json(status, OpenAiApi.errorBody(code, message)).apply {
             // 错误响应一律关闭连接：请求体的消费状态未知时，残留字节会污染 keep-alive 连接
             addHeader("Connection", "close")
+            // 并发满 / 限流是「稍后重试会好」，告诉客户端退避多久；否则 OpenAI 系客户端不会自动重试
+            if (status == 429) addHeader("Retry-After", "2")
         }
 
     private fun statusText(status: Int): String = when (status) {
@@ -1205,6 +1246,7 @@ class GatewayHttpServer(
         401 -> "Unauthorized"
         404 -> "Not Found"
         413 -> "Payload Too Large"
+        429 -> "Too Many Requests"
         500 -> "Internal Server Error"
         503 -> "Service Unavailable"
         else -> "Status"

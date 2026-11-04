@@ -127,7 +127,7 @@ private fun ConcurrencyComponent(config: ConcurrencyConfig, onOpenEdit: () -> Un
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         ParamRow("全局在途上限", if (config.maxGlobal == 0) "不限" else "${config.maxGlobal} 条")
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-        ParamRow("排队超时", "${config.queueTimeoutMs} 毫秒")
+        ParamRow("满载排队上限", "${config.queueTimeoutMs} 毫秒")
         Spacer(Modifier.height(4.dp))
         OutlineActionButton("修改并发参数") { onOpenEdit() }
     }
