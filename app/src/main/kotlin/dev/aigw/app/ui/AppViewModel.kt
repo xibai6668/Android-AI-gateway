@@ -6,6 +6,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.service.quicksettings.TileService
+import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.runtime.Immutable
 import androidx.compose.ui.graphics.Color
 import androidx.core.content.ContextCompat
@@ -23,6 +24,7 @@ import dev.aigw.app.ui.theme.formatHex
 import dev.aigw.app.ui.theme.parseHexColor
 import dev.aigw.app.service.GatewayService
 import dev.aigw.app.service.GatewayTileService
+import dev.aigw.app.service.LoginWaitService
 import dev.aigw.core.gateway.BatchActionResult
 import dev.aigw.core.gateway.BatchProgress
 import dev.aigw.core.gateway.BatchTarget
@@ -74,7 +76,7 @@ private const val SMS_RESEND_INTERVAL_MS = 60_000L
 private const val GOLD_PERSIST_DEBOUNCE_MS = 300L
 
 /** 项目仓库地址（GitHub）。 */
-private const val PROJECT_URL = "https://github.com/xibai6668/Android-AI-gateway"
+private const val PROJECT_URL = "https://github.com/alarmedvine/Android-AI-gateway"
 
 /** 外观偏好：动态取色、明暗模式、页面底色与金色渐变两端。 */
 class AppearanceStore(private val store: KeyValueStore) {
@@ -292,6 +294,8 @@ data class AppUiState(
     val security: dev.aigw.core.security.SecuritySettings = dev.aigw.core.security.SecuritySettings(),
     /** 可选的悬浮窗保活是否开启（需「显示在其他应用上层」权限）。 */
     val overlayKeepAlive: Boolean = false,
+    /** 开机 / 应用更新后自动恢复网关（默认关）。 */
+    val startOnBoot: Boolean = false,
     /** 实时状态通知（仅网关有请求在途时显示）是否开启，默认开。 */
     val liveNotification: Boolean = true,
     /** 模型开放名单：只对外暴露勾选的模型。 */
@@ -346,6 +350,7 @@ private class Snapshot(
     val failover: dev.aigw.core.failover.ModelFailoverSettings,
     val overlayKeepAlive: Boolean,
     val liveNotification: Boolean,
+    val startOnBoot: Boolean,
 )
 
 class AppViewModel(
@@ -433,6 +438,9 @@ class AppViewModel(
         // 调用记录与统计改在引擎后台预载（冷启动不阻塞主线程），就绪后补一次刷新
         engine.setStartupDataReadyListener { refresh() }
         refresh()
+        // 被系统强停过（force-stop 会清掉粘性服务与所有定时唤醒）时，打开应用就地恢复，
+        // 不再要求用户多点一次「启动网关服务」。
+        maybeAutoResume()
         // 自动检查更新：默认开启，每天最多一次，失败静默
         maybeAutoCheckUpdate()
     }
@@ -474,6 +482,7 @@ class AppViewModel(
                     failover = engine.failoverSettings(),
                     overlayKeepAlive = dev.aigw.app.data.KeepAlivePrefs.overlayEnabled(engine.store()),
                     liveNotification = dev.aigw.app.data.KeepAlivePrefs.liveNotificationEnabled(engine.store()),
+                    startOnBoot = dev.aigw.app.data.KeepAlivePrefs.startOnBoot(engine.store()),
                 )
             }
             _state.value = _state.value.copy(
@@ -499,6 +508,7 @@ class AppViewModel(
                 failover = snapshot.failover,
                 overlayKeepAlive = snapshot.overlayKeepAlive,
                 liveNotification = snapshot.liveNotification,
+                startOnBoot = snapshot.startOnBoot,
             )
         }
     }
@@ -700,15 +710,33 @@ class AppViewModel(
                 // 引擎没起来就撤掉前台通知，避免「通知说运行中、端口没人听」
                 app.stopService(Intent(app, GatewayService::class.java))
                 _state.value = _state.value.copy(notice = "启动失败：$error")
+            } else {
+                // 兜底：若服务在启动竞态里先退了（onStartCommand 时引擎还没就绪会
+                // stopSelf），这里把服务再拉回来——引擎在跑就必须有服务看管，
+                // 否则又回到「端口开着、无人看管」的孤儿态。onStartCommand 幂等。
+                ContextCompat.startForegroundService(app, Intent(app, GatewayService::class.java))
+                dev.aigw.app.data.KeepAlivePrefs.setWantRunning(engine.store(), true)
             }
             refresh()
             requestTileUpdate()
         }
     }
 
+    /**
+     * 应用打开时恢复上次状态（见 [dev.aigw.app.data.KeepAlivePrefs.wantRunning]）。
+     * 只在意图为真、且引擎确实没在跑时动作一次，不会与用户手动操作打架。
+     */
+    private fun maybeAutoResume() {
+        if (engine.isRunning()) return
+        if (!dev.aigw.app.data.KeepAlivePrefs.wantRunning(engine.store())) return
+        startGateway()
+        _state.value = _state.value.copy(notice = "已自动恢复上次的运行状态")
+    }
+
     fun stopGateway() {
         viewModelScope.launch {
             withContext(Dispatchers.IO) { engine.stop() }
+            dev.aigw.app.data.KeepAlivePrefs.setWantRunning(engine.store(), false)
             app.stopService(Intent(app, GatewayService::class.java))
             _state.value = _state.value.copy(notice = "服务已停止")
             refresh()
@@ -773,6 +801,22 @@ class AppViewModel(
                 dev.aigw.app.service.FloatingKeepAlive.hide(app)
                 notice("悬浮窗保活已关闭")
             }
+            refresh()
+        }
+    }
+
+    /**
+     * 开关「开机自动恢复」：落盘后由 [dev.aigw.app.service.GatewayBootReceiver] 在
+     * BOOT_COMPLETED / MY_PACKAGE_REPLACED 时读取并拉起前台服务。
+     *
+     * 只影响「下次开机」；当前这次运行不受影响，所以这里不碰服务。
+     */
+    fun setStartOnBoot(enabled: Boolean) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                dev.aigw.app.data.KeepAlivePrefs.setStartOnBoot(engine.store(), enabled)
+            }
+            notice(if (enabled) "已开启：手机重启或应用更新后自动恢复网关" else "已关闭：重启后不会自动恢复网关")
             refresh()
         }
     }
@@ -934,7 +978,11 @@ class AppViewModel(
             _state.value = _state.value.copy(busy = "")
             result.fold(
                 onSuccess = { ticket ->
-                    if (!openBrowser(ticket.loginUrl)) {
+                    // 先拉起前台服务再开浏览器：回调端口在本进程里，进程若被判 idle 冻结，
+                    // 授权结果就只能挂在 listen backlog 里没人应答（浏览器一直转圈）
+                    LoginWaitService.start(app)
+                    if (!openLoginPage(ticket.loginUrl)) {
+                        LoginWaitService.stop(app)
                         _state.value = _state.value.copy(notice = "没有可用的浏览器，无法打开登录页")
                         return@fold
                     }
@@ -945,9 +993,34 @@ class AppViewModel(
                         _state.value = _state.value.copy(notice = "已在浏览器打开登录页，完成后会自动添加账号")
                     }
                 },
-                onFailure = { _state.value = _state.value.copy(notice = it.message ?: "打开登录页失败") },
+                onFailure = {
+                    LoginWaitService.stop(app)
+                    _state.value = _state.value.copy(notice = it.message ?: "打开登录页失败")
+                },
             )
         }
+    }
+
+    /**
+     * 用 Custom Tab 打开登录页，而不是裸 [Intent.ACTION_VIEW]。
+     *
+     * 裸 intent 会把登录页甩给外部浏览器，本应用随即被推到后台；Custom Tab 至少与宿主
+     * 保持返回栈关系，观感和返回行为都更接近应用内（rikkahub 也是这么做的）。
+     * 但真正保住回调端口的是 [LoginWaitService] 提供的前台服务级别 —— 只有它能让本进程
+     * 在后台期间不被判 idle 冻结，单靠 Custom Tab 挡不住。
+     *
+     * 设备上没有 Custom Tab 提供方时退回系统浏览器。
+     */
+    private fun openLoginPage(url: String): Boolean {
+        val opened = runCatching {
+            val customTabs = CustomTabsIntent.Builder()
+                .setShowTitle(true)
+                .build()
+            customTabs.intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            customTabs.launchUrl(app, Uri.parse(url))
+            true
+        }.getOrDefault(false)
+        return opened || openBrowser(url)
     }
 
     private fun openBrowser(url: String): Boolean = runCatching {
@@ -969,6 +1042,7 @@ class AppViewModel(
                 when (poll) {
                     is DeviceAuthPoll.Pending -> delay(3_000)
                     is DeviceAuthPoll.Success -> {
+                        LoginWaitService.stop(app)
                         _state.value = _state.value.copy(busy = "", notice = "登录成功：${poll.account.nickname.ifEmpty { poll.account.uid }}")
                         refresh()
                         return@launch
@@ -979,6 +1053,7 @@ class AppViewModel(
                     }
                 }
             }
+            LoginWaitService.stop(app)
             _state.value = _state.value.copy(busy = "", notice = message)
             refresh()
         }

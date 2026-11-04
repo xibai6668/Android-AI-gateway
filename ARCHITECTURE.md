@@ -77,7 +77,7 @@
 | `gateway/GatewaySettings.kt` | 全局设置（端口、apiKey、allowNoKey、maxRotate=换号上限、refreshSkewSeconds、defaultProvider） | `maxRotate` 默认 3：单请求最多试 3 个账号 |
 | `gateway/ProxySettings.kt` | 代理开关 + `DOMESTIC_SUFFIXES` 国内域名强制直连白名单 | 白名单优先级 > 一切代理设置 |
 | `gateway/ProviderBootstrap.kt` | 内置 Provider 登记处 | 新增供应商在此加一行 |
-| `gateway/LoopbackCallbackServer.kt` | OAuth 登录回调监听（Trae 51120 / Antigravity 51121） | 临时端口，用完即释放 |
+| `gateway/LoopbackCallbackServer.kt` | OAuth 登录回调监听（端口/路径由各 provider 声明：Trae 51120 / Antigravity 51121 / ChatGPT 1455） | 临时端口，用完即释放；redirect_uri 是上游注册值，provider 不得随意改 |
 | `gateway/OpenAiApi.kt` | OpenAI 报文拼装（error/modelList） | |
 | `failover/` | 容灾调度：`FailoverConfig`（候选/重试/熔断/并发/账号冷却参数）、`weightedOrder`（**priority 先决、同 priority 内按 weight 加权随机**）、`FailoverDecision`（错误→重试/换家/终止）、`ProviderCircuitBreaker`（供应商级 + `供应商|模型` 级两套独立熔断器）、`ConcurrencyGate`（全局/单账号在途上限，`concurrency` 配置热生效；**默认单账号串行 `maxPerAccount=1`、满载最多排队 30s 后 429**——上游按账号限并发流，同账号并发会被挂住只回一个空首 chunk，官方客户端本身也是一次一个请求；**选号会优先挑还有在途余量的账号**，否则多账号也会全挤在优先级最高的那个上排队）、`ProviderMetricsTracker`（健康指标，仅观测）、`ModelCooldownTracker`（按 `供应商|模型` 记模型级冷却，仅内存） | 熔断只计上游侧错误，客户端 400 不计；**模型级错误（CodeBuddy `6004`、Trae `1005`）不计熔断、不换号**，只冷却该模型；并发许可覆盖含流式转发的全过程，`Handle.release` 幂等 |
 | `usage/ModelHealthWindow.kt` | 供应商 × 模型的近期健康窗口（最近 50 次）：成功率、耗时/TTFB 的 p50/p95（**nearest-rank，不做插值**）、失败原因 Top-5；仅内存 | 由 `recordCall` 统一写入，**不受「调用记录开关」影响**（它是排障视图，不占存储） |
@@ -86,6 +86,7 @@
 | `provider/Provider.kt` | Provider 接口 + AuthKind 枚举 | 抽象边界，勿随意扩接口 |
 | `provider/ChatCall.kt` | 上游响应封装（stream/aggregated/failure 三态） | |
 | `provider/StreamSupport.kt` | `LineTransformStream`（逐行翻译）、`OpenAiSseAggregator`（SSE聚合/completionAsSse/isEmptyCompletion） | SSE 帧必须以 `\n\n` 结尾 |
+| `provider/chatgpt/` | ChatGPT 订阅（Codex 后端，OpenAI Responses 协议）| 请求转换封死在 `OpenAiResponses.kt`：system→developer、store:false、include encrypted_content、tools `strict:false`；**上游只支持流式**；凭证含 refresh_token 轮换 |
 | `provider/antigravity/` | Google Antigravity（Gemini 协议）| **凭证策略见下文第 5 节，严禁回退**；额度查询完全对接 CLIProxyAPI |
 | `provider/codebuddy/` | 腾讯 WorkBuddy（国内 copilot.tencent.com / 国际 workbuddy.ai）| 上游拒绝非流式，必须 stream:true |
 | `provider/trae/` | 字节 Trae SOLO 通道（最重的协议转换）| |
@@ -185,9 +186,24 @@ Google 对同一个 refresh_token 的高频 token 换新有风控。0.1.53~0.1.5
 ### 铁律
 > 任何「让 Antigravity 更不容易掉线」的改动，如果最终效果是**增加了对 `oauth2.googleapis.com/token` 的调用频率**，那它一定是错的，无论它看起来多有道理。
 
+### ChatGPT（Codex 订阅，同类风险）
+同一套刷新纪律，差异点只有两个：
+- **登录回调有 state**：`completeCallback` 校验 state 并一次性消费 verifier（内存，不落盘）；
+  `state` 不匹配 = 直接拒绝，不做「容错重试」。
+- **refresh 是 JSON，code 交换是 form**：写反只会拿到 `invalid_request`，没有更具体的提示。
+
 ---
 
 ## 6. 协议陷阱清单（上游实测）
+
+### ChatGPT（Responses 协议）
+- **上游只支持流式**：非流式请求在网关侧用 `OpenAiSseAggregator` 聚合，不要给上游发 `stream:false`。
+- `store` 必须 `false`；`include` 必须含 `reasoning.encrypted_content`，否则 Codex 直接拒绝。
+- **不能带** `temperature` / `top_p` / `max_output_tokens`；system 提示必须转成 `developer` 角色放进 `input`。
+- 工具必须显式 `strict: false`，省略会被当成 `strict: true`，schema 里可选参数变必填。
+- SSE 事件以 `data:` JSON 里的 `type` 为准；`event:` 行仅作 fallback（部分代理只透传一种）。
+- `function_call` 的 `call_id` 才是客户端 `tool_call_id` 的回传键（不是 `id`）。
+- 用量是**滚动窗口百分比**（5 小时 / 周），不是剩余次数：`used_percent` 投影成 `limit=100` 的额度包。
 
 ### Google Antigravity（Gemini 风格）
 - `contents` 角色必须严格 user→model→user 交替；连续同 role 直接 400。OpenAI 的 tool 消息需按回合聚合成单个 user content。

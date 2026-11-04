@@ -16,6 +16,8 @@
          系统「安装未知应用」列表也不会出现本应用，点安装会静默失败 -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.BIND_QUICK_SETTINGS_TILE" />
+    <!-- 开机 / 应用更新后按用户开关恢复网关（GatewayBootReceiver） -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- 可选的悬浮窗保活：在屏幕上留一个小窗，降低后台被系统回收的概率 -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
@@ -46,6 +48,29 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="本地网关需在后台持续监听端口，锁屏后客户端仍能调用" />
         </service>
+
+        <service
+            android:name=".service.LoginWaitService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="浏览器登录期间保持进程活跃，使本地回环回调端口能接住授权结果" />
+        </service>
+
+        <!-- 任务被移除后自愈：闹钟窗口内重新拉起前台服务（see GatewayRestartReceiver） -->
+        <receiver
+            android:name=".service.GatewayRestartReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".service.GatewayBootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
         <service
             android:name=".service.GatewayTileService"

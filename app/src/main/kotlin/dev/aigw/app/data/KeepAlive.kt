@@ -32,6 +32,8 @@ data class KeepAliveStatus(
 object KeepAlivePrefs {
     private const val KEY_OVERLAY = "keepalive/overlay"
     private const val KEY_LIVE_NOTIFICATION = "keepalive/live_notification"
+    private const val KEY_START_ON_BOOT = "keepalive/start_on_boot"
+    private const val KEY_WANT_RUNNING = "keepalive/want_running"
 
     fun overlayEnabled(store: dev.aigw.core.store.KeyValueStore): Boolean =
         store.read(KEY_OVERLAY) == "1"
@@ -51,6 +53,35 @@ object KeepAlivePrefs {
 
     fun setLiveNotificationEnabled(store: dev.aigw.core.store.KeyValueStore, enabled: Boolean) {
         store.write(KEY_LIVE_NOTIFICATION, if (enabled) "1" else "0")
+    }
+
+    /**
+     * 「开机自动恢复」开关：默认**关闭**。
+     *
+     * 打开后 [dev.aigw.app.service.GatewayBootReceiver] 会在 BOOT_COMPLETED /
+     * MY_PACKAGE_REPLACED 时直接拉起前台服务；关闭时不注册任何后台唤醒路径。
+     * 与悬浮窗开关不同，它不依赖任何运行时权限。
+     */
+    fun startOnBoot(store: dev.aigw.core.store.KeyValueStore): Boolean =
+        store.read(KEY_START_ON_BOOT) == "1"
+
+    fun setStartOnBoot(store: dev.aigw.core.store.KeyValueStore, enabled: Boolean) {
+        store.write(KEY_START_ON_BOOT, if (enabled) "1" else "0")
+    }
+
+    /**
+     * 用户的「希望网关运行」意图（不是「此刻是否在跑」）。
+     *
+     * 用来支撑「打开应用即恢复」：系统强行停止（force-stop）会清掉粘性服务与所有
+     * 定时唤醒，应用没有任何自救手段——这是 Android 的语义。但只要意图还记着，
+     * 下次打开应用就能自动回到上次的状态，不用用户再点一次「启动网关服务」。
+     * 用户主动点“停止”时同步清零，避免自动恢复变成“我不想跑它却自己起来”。
+     */
+    fun wantRunning(store: dev.aigw.core.store.KeyValueStore): Boolean =
+        store.read(KEY_WANT_RUNNING) == "1"
+
+    fun setWantRunning(store: dev.aigw.core.store.KeyValueStore, running: Boolean) {
+        store.write(KEY_WANT_RUNNING, if (running) "1" else "0")
     }
 }
 
