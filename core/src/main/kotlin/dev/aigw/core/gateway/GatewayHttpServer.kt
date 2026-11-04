@@ -332,7 +332,7 @@ class GatewayHttpServer(
                 // 直到该供应商确实没有余量为止；那时只对最后一个候选做一次有界排队。
                 var picked: dev.aigw.core.provider.ProviderAccount? = null
                 var gateHandle: dev.aigw.core.failover.ConcurrencyGate.Handle? = null
-                while (true) {
+                while (gateHandle == null) {
                     val candidate = engine.pickAccount(currentRoute.providerId, tried, currentRoute.region) ?: break
                     val handle = engine.concurrencyGate.tryAcquireNow("${currentRoute.providerId}/${candidate.uid}")
                     if (handle != null) {
@@ -342,13 +342,11 @@ class GatewayHttpServer(
                     }
                     // 该账号已满载：记入已试，换个空闲账号再试；全部满载时下面的排队入口兜底
                     tried += candidate.uid
-                    if (engine.pickAccount(currentRoute.providerId, tried, currentRoute.region) == null) break
                 }
-                if (picked == null) {
+                if (gateHandle == null) {
                     // 供应商内所有账号都满载：短暂排队等一个许可（默认 30s），等不到才算并发上限。
                     // 不能像原来那样排 120s —— 那会让工作线程被占满，所有请求一起超时。
                     val fallback = engine.pickAccount(currentRoute.providerId, emptySet(), currentRoute.region) ?: break
-                    if (fallback.uid in tried && tried.size < maxAttempts) tried.clear()
                     val handle = engine.concurrencyGate.tryAcquire(
                         "${currentRoute.providerId}/${fallback.uid}",
                         failoverCfg.concurrency.queueTimeoutMs,
@@ -365,8 +363,8 @@ class GatewayHttpServer(
                     picked = fallback
                     gateHandle = handle
                 }
-                if (picked == null || gateHandle == null) break
-                tried += picked.uid
+                val accountCandidate = picked ?: break
+                tried += accountCandidate.uid
                 pendingGate = gateHandle
 
                 // 单供应商内重试退避：非首次尝试时计算指数退避 + Jitter 抖动休眠，避免冲击上游
