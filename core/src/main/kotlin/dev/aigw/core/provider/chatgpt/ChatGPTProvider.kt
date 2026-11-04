@@ -135,7 +135,8 @@ class ChatGPTProvider(
     // ---------- 模型目录 ----------
 
     override fun listModels(account: ProviderAccount?): ProviderModelCatalogView {
-        if (account == null) return ProviderModelCatalogView(emptyList(), false, "未登录 ChatGPT 账号")
+        // 没有账号不算「失败」——登录前本就不该有模型，不能报红吓人（与其它供应商一致）。
+        if (account == null) return ProviderModelCatalogView(emptyList(), fromFallback = false, error = "")
         val cached = modelCache.get()
         val now = nowMillis()
         if (cached != null && now - cached.at < ChatGPTConstants.MODEL_CACHE_TTL_MS) {

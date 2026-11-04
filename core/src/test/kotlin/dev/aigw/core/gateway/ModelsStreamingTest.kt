@@ -109,12 +109,45 @@ class ModelsStreamingTest {
     }
 
     @Test
+    fun `无账号时供应商不该自报目录错误`() {
+        // 回归：ChatGPT 的 listModels(null) 曾返回「未登录 ChatGPT 账号」，模型页因此出现红字
+        // 「拉取模型目录时有报错：chatgpt: 未登录 ChatGPT 账号」。没有账号只是尚未登录，不是失败。
+        val engine = GatewayEngine(InMemoryKeyValueStore())
+        var nullAccountError = ""
+        engine.registry.register(
+            object : StubProvider("noaccount") {
+                override fun listModels(account: ProviderAccount?): ProviderModelCatalogView {
+                    if (account == null) nullAccountError = "未登录测试账号"
+                    return ProviderModelCatalogView(emptyList(), false, if (account == null) "未登录测试账号" else "")
+                }
+            },
+        )
+        val catalog = engine.modelsStreaming {}
+        assertEquals(null, catalog.failures["noaccount"], "无账号不应被当成拉取失败：${catalog.failures}")
+        assertEquals("未登录测试账号", nullAccountError, "测试前提：确实是以 null 账号调用")
+    }
+
+    @Test
+    fun `内置供应商在无账号时都不报目录错误`() {
+        // 所有内置供应商共同遵守的约定：未登录只是没有模型，不能报红（用户看到的错误条就来自这里）。
+        val engine = GatewayEngine(InMemoryKeyValueStore())
+        val offenders = engine.registry.all()
+            .filter { it.listModels(null).error.isNotEmpty() }
+            .map { "${it.id}：${it.listModels(null).error}" }
+        assertTrue(offenders.isEmpty(), "这些供应商把「没有账号」报成了错误：$offenders")
+    }
+
+    @Test
     fun `异常与供应商自报错误都进 failures`() {
         val engine = engineWith(
             ThrowingProvider("bad", "boom"),
             FixedProvider("errv", ProviderModelCatalogView(emptyList(), false, "上游开小差")),
             FixedProvider("ok", ProviderModelCatalogView(listOf(ProviderModel("m1", "m1")), false, "")),
         )
+        // 有账号的供应商报错才算真失败；没有账号时引擎会把错误吞掉（见上一个用例）
+        for (id in listOf("bad", "errv", "ok")) {
+            engine.pool.upsert(ProviderAccount(id, "u1", "账号1", "{}"))
+        }
 
         val chunks = CopyOnWriteArrayList<ProviderModelsChunk>()
         val catalog = engine.modelsStreaming { chunks.add(it) }

@@ -1287,6 +1287,9 @@ class GatewayEngine(
                 continue
             }
             aggregated.addAll(chunk.models)
+            // 「没有账号」不是失败：登录前本就不该有模型，供应商自报的 error 也不该报红。
+            // 这条约定原本只靠各 Provider 自觉（历史上 ChatGPT 就违反了），在这里统一兜住。
+            if (chunk.error != null && pool.accounts(providerId).isEmpty()) continue
             chunk.error?.let { failures[chunk.providerId] = it }
         }
         return ModelsCatalog(aggregated, failures)
