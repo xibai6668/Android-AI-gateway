@@ -49,6 +49,7 @@ class AntigravityProvider(
     private val nowMillis: () -> Long = System::currentTimeMillis,
     private val apiBase: String = API_BASE,
     private val quotaBase: String = QUOTA_BASE,
+    private val chatBase: String = CHAT_BASE,
     private val tokenEndpoint: String = TOKEN_ENDPOINT,
     /** 运行时 UA 里的客户端版本；默认取官方清单的最新版（见 [AntigravityVersion]）。 */
     private val clientVersion: () -> String = { AntigravityVersion.current() },
@@ -119,7 +120,7 @@ class AntigravityProvider(
             "{}"
         }
         val endpoints = listOf(
-            "$quotaBase/$API_VERSION:fetchAvailableModels",
+            "$chatBase/$API_VERSION:fetchAvailableModels",
             "$apiBase/$API_VERSION:fetchAvailableModels",
         )
         var lastStatus = 0
@@ -202,11 +203,12 @@ class AntigravityProvider(
         }
         val body = OpenAiGemini.envelope(credential.projectId, model, request, OpenAiGemini.newRequestId())
         // 对话走 daily 端点（与 CLIProxyAPI v7 默认一致）：prod 端点对消费级账号（含 Gemini Pro 会员）
-        // 会直接回 429 RESOURCE_EXHAUSTED，与额度无关
-        hooks.onVerbose?.invoke("Antigravity 发送内容", "$quotaBase/$API_VERSION:streamGenerateContent?alt=sse\n$body")
+        // 会直接回 429 RESOURCE_EXHAUSTED，与额度无关。因此对话域名必须独立于配额域名——
+        // 配额查询反过来只有 prod 给完整数据，两者不能共用一个 base。
+        hooks.onVerbose?.invoke("Antigravity 发送内容", "$chatBase/$API_VERSION:streamGenerateContent?alt=sse\n$body")
 
         val conn = try {
-            open("$quotaBase/$API_VERSION:streamGenerateContent?alt=sse", credential.accessToken, body)
+            open("$chatBase/$API_VERSION:streamGenerateContent?alt=sse", credential.accessToken, body)
         } catch (e: Exception) {
             return FailedChatCall(0, e.message ?: "连接失败")
         }
@@ -1032,10 +1034,17 @@ class AntigravityProvider(
         const val API_VERSION = "v1internal"
 
         /**
+         * 对话域名：daily。
+         *
+         * prod（[API_BASE]）对消费级账号的对话请求会回 429 RESOURCE_EXHAUSTED（与额度无关），
+         * 所以对话与模型列表不能跟配额查询共用 base。
+         */
+        const val CHAT_BASE = "https://daily-cloudcode-pa.googleapis.com"
+
+        /**
          * 配额查询首选域名：production。
          *
-         * 对话仍走 daily（`daily-cloudcode-pa`）——prod 对消费级账号的对话请求会回
-         * 429 RESOURCE_EXHAUSTED（与额度无关）；但配额查询相反，只有 prod 给完整数据。
+         * 与 [CHAT_BASE] 相反：配额查询只有 prod 给完整数据。
          */
         const val QUOTA_BASE = "https://cloudcode-pa.googleapis.com"
 

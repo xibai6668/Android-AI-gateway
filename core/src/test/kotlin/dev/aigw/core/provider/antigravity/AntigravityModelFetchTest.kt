@@ -71,6 +71,7 @@ class AntigravityModelFetchTest {
             val provider = AntigravityProvider(
                 apiBase = baseUrl,
                 quotaBase = baseUrl,
+                chatBase = baseUrl,
             )
             val account = ProviderAccount("antigravity", "test@gmail.com", "test", accountJson)
             val catalog = provider.listModels(account)
@@ -99,7 +100,7 @@ class AntigravityModelFetchTest {
     @Test
     fun `列表里存在的模型不被别名规则改写`() {
         withMockServer(sampleModels) { baseUrl ->
-            val provider = AntigravityProvider(apiBase = baseUrl, quotaBase = baseUrl)
+            val provider = AntigravityProvider(apiBase = baseUrl, quotaBase = baseUrl, chatBase = baseUrl)
             val account = ProviderAccount("antigravity", "test@gmail.com", "test", accountJson)
             provider.listModels(account)
             // gemini-4-argon 含 "pro" 子串，若按 contains 判断会被悄悄改成 gemini-pro-agent

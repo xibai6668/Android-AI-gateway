@@ -235,6 +235,43 @@ class AntigravityProviderTest {
         assertTrue(received.paths.none { it == "/token" }, "窗口应被夹到 5 分钟：${received.paths}")
     }
 
+    // ------------------------------------------------------- 域名分工
+
+    @Test
+    fun `对话与模型列表走 daily 域名而不是配额域名`() = withUpstream(
+        mapOf(
+            "/${AntigravityProvider.API_VERSION}:streamGenerateContent" to (429 to "exhausted"),
+            "/${AntigravityProvider.API_VERSION}:fetchAvailableModels" to
+                (200 to """{"models":{"gemini-3.8-flash-high":{"displayName":"Gemini 3.8 Flash"}}}"""),
+        ),
+    ) { base, received ->
+        // 配额域名指向不可达端口：对话一旦走它就会连接失败，而不是走到假上游
+        val provider = AntigravityProvider(
+            apiBase = "http://127.0.0.1:1",
+            quotaBase = "http://127.0.0.1:1",
+            chatBase = base,
+        )
+        val call = provider.openChat(
+            account(),
+            """{"model":"gemini-3.8-flash-high","stream":false,"messages":[{"role":"user","content":"ping"}]}""",
+        )
+        assertEquals(429, call.status, "对话必须打到 chatBase 上的假上游")
+        assertEquals(
+            listOf("gemini-3.8-flash-high"),
+            provider.listModels(account()).models.map { it.id },
+            "模型列表也必须走 chatBase",
+        )
+        assertTrue(received.paths.any { it.endsWith(":streamGenerateContent") }, "${received.paths}")
+    }
+
+    @Test
+    fun `对话域名是 daily 而配额域名是 production`() {
+        // 两者不能共用：prod 对消费级账号的对话请求必回 429 RESOURCE_EXHAUSTED，
+        // 而配额查询反过来只有 prod 给完整数据。
+        assertTrue(AntigravityProvider.CHAT_BASE.contains("daily-"), AntigravityProvider.CHAT_BASE)
+        assertTrue(!AntigravityProvider.QUOTA_BASE.contains("daily-"), AntigravityProvider.QUOTA_BASE)
+    }
+
     // ------------------------------------------------------- Google One 积分
 
     @Test

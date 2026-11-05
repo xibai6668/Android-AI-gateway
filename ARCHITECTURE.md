@@ -220,12 +220,13 @@ Google 对同一个 refresh_token 的高频 token 换新有风控。0.1.53~0.1.5
   - ⚠️ 未解：用户反馈「周额度有余量时也看不到 5h」，且日志里只有两条周窗口。可能上游对当前客户端形态压根不下发 5h 桶（或 displayName 与周桶相同），与上面「两组各含 5h/weekly」的旧结论不符——需真实 `groups` 报文定案，勿再凭假设改解析。
   - 账号级余额 = 共享池最紧窗口；模型专属池单独以 `QuotaPack.scope`（「仅 gemini-4-argon」）展示，并写进 `creditInfo.detail` 的「独立配额」段。
   - **额度/订阅查询完全对接 CLIProxyAPI**（`antigravity_executor_credits.go` / `antigravity_executor_request.go`，MIT）：
-    - `loadCodeAssist` 与 `retrieveUserQuotaSummary` 一律用裸 hub UA `antigravity/hub/<ver> darwin/arm64`，base 固定 `daily-cloudcode-pa`；
+    - `loadCodeAssist` 与 `retrieveUserQuotaSummary` 一律用裸 hub UA `antigravity/hub/<ver> darwin/arm64`，base 固定 `QUOTA_BASE`（prod）；
     - `loadCodeAssist` 的 metadata **只带 `ideType=ANTIGRAVITY`**（不带 platform/pluginType）；
     - 只发 `Authorization` / `Content-Type` / `User-Agent` 三个头，不发 `X-Goog-Api-Client` / `Client-Metadata`；
     - 失败回退：剥 `project` 重试 → sandbox → prod；只有 401 才报登录失效，403 报真实状态码。
     > 历史弯路（不要再重复）：曾试过 `antigravity/cli/<ver>`、带 `(aidev_client; cl=..)` 段的完整 hub 形态、`ideType` 在 `ANTIGRAVITY`/`IDE_UNSPECIFIED` 间探测、给 metadata 补齐 `platform`/`pluginType`——这些都没能解决 #3501，且客户端形态已被官方论坛证伪（同一账号官方 IDE 正常、直连 API 仍 403）。
   - `resolveModel` 先查「模型目录里真有的 id」再做子串路由：`gemini-4-argon` 含 `pro`，否则会被改写成 `gemini-pro-agent`。
+  - **对话/模型列表与额度查询的域名必须分开**（`CHAT_BASE` vs `QUOTA_BASE`）：对话走 `daily-cloudcode-pa`，prod 对消费级账号的对话请求会直接回 `429 RESOURCE_EXHAUSTED`（与额度无关，模型页「测试」会原样弹出）；配额查询反过来只有 prod 给完整数据。两者绝不能共用一个 base——曾因把 `QUOTA_BASE` 改成 prod 顺带把对话也换掉，导致全站对话 429。
   - **额度查询路径的 403 不等于登录失效**：403 常见于权限/订阅分流（free-tier 访问部分 RPC 返回 `SUBSCRIPTION_REQUIRED`），此时应降级继续查配额并把真实状态码写进 detail；只有 401 才是重新登录。对话路径的 `classify` 仍保持 401/403 → `SESSION_DEAD`（见第 5 节铁律，勿改）。
 
 ### 腾讯 WorkBuddy
