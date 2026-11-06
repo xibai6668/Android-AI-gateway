@@ -43,6 +43,7 @@ import dev.aigw.app.ui.theme.LocalAppColors
 import dev.aigw.app.ui.theme.formatHex
 import dev.aigw.core.usage.StorageAudit
 import dev.aigw.core.usage.UsageStats
+import dev.aigw.core.usage.formatMicroUsd
 import java.util.Locale
 
 @Composable
@@ -153,7 +154,32 @@ fun MeScreen(state: AppUiState, viewModel: AppViewModel, open: (SubPage) -> Unit
                 "账号导入导出 · ACCOUNTS BACKUP",
                 "按供应商与账号备份、迁移凭证",
                 "${state.pool.total} 个账号",
-            ) { open(SubPage.AccountTransfer) }        }
+            ) { open(SubPage.AccountTransfer) }
+            EditorialRow(
+                "02.10",
+                "客户端密钥 · CLIENT KEYS",
+                "谁能调用网关，可限制模型与用量",
+                if (state.clientKeys.isEmpty()) "未创建" else "${state.clientKeys.size} 把",
+            ) { open(SubPage.ClientKeys) }
+            EditorialRow(
+                "02.11",
+                "路由组 · ROUTING GROUPS",
+                "多个模型合成一个对外模型名",
+                if (state.routingGroups.groups.isEmpty()) "未创建" else "${state.routingGroups.groups.size} 组",
+            ) { open(SubPage.RoutingGroups) }
+            EditorialRow(
+                "02.12",
+                "模型价格 · PRICING",
+                "按 token 计算调用费用",
+                if (state.pricing.prices.isEmpty()) "未配置" else "${state.pricing.prices.size} 个模型",
+            ) { open(SubPage.ModelPricing) }
+            EditorialRow(
+                "02.13",
+                "请求改写 · REWRITE",
+                "模型别名、system 追加与思考标签",
+                rewriteSummary(state.middleware),
+            ) { open(SubPage.RequestRewrite) }
+        }
 
         EditorialGroupHeader("03", "架构关于 · ABOUT THE ENGINE")
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -371,6 +397,7 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
                 StatCell(formatCount(state.today.failed), "失败")
                 StatCell(formatCount(state.today.aborted), "中断")
             }
+            CostLine(state.today)
         }
 
         SectionCard(enterIndex = 4) {
@@ -382,6 +409,7 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
                 StatCell(formatCount(state.total.failed), "失败")
                 StatCell(formatCount(state.total.aborted), "中断")
             }
+            CostLine(state.total)
         }
 
         SectionCard(enterIndex = 5) {
@@ -391,6 +419,27 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+    }
+}
+
+/**
+ * 费用与重试两行。
+ *
+ * 未定价的调用不能算进金额，也不能默默省略——并排告知「另有 N 次未定价」，
+ * 否则总额看起来偏低而用户不知道原因。
+ */
+@Composable
+private fun CostLine(stats: UsageStats) {
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        StatCell(formatCount(stats.retried), "换号救回")
+        StatCell(formatMicroUsd(stats.costMicros), "费用（美元）")
+        if (stats.unpriced > 0) {
+            StatCell(formatCount(stats.unpriced), "未定价调用")
         }
     }
 }
@@ -518,4 +567,14 @@ private fun concurrencySummary(failover: dev.aigw.core.failover.ModelFailoverSet
         concurrency.maxPerAccount == 0 && concurrency.maxGlobal == 0 -> "并发不限"
         else -> "单账号${concurrency.maxPerAccount}/全局${concurrency.maxGlobal}"
     }
+}
+
+/** 请求改写入口行的右侧摘要：一眼看出开了哪几项。 */
+private fun rewriteSummary(settings: dev.aigw.core.gateway.MiddlewareSettings): String {
+    val parts = buildList {
+        if (settings.aliases.isNotEmpty()) add("别名 ${settings.aliases.size}")
+        if (settings.systemPromptAppend.isNotBlank()) add("追加提示词")
+        if (settings.stripThinkTags) add("清理思考标签")
+    }
+    return if (parts.isEmpty()) "未启用" else parts.joinToString("、")
 }

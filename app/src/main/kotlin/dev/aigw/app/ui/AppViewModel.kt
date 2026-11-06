@@ -248,7 +248,7 @@ data class AppUiState(
     val port: Int = GatewaySettings.DEFAULT_PORT,
     val localUrl: String = "",
     val lanUrls: List<String> = emptyList(),
-    val pool: PoolSummary = PoolSummary(0, 0, 0, 0, 0, 0),
+    val pool: PoolSummary = PoolSummary(0, 0, 0, 0, 0, 0, 0),
     val today: UsageStats = UsageStats(),
     /** 最近 30 天的每日聚合（下标 0 最早、末尾今天）。 */
     val daily: List<UsageStats> = emptyList(),
@@ -320,6 +320,18 @@ data class AppUiState(
     val autoCheckUpdate: Boolean = true,
     /** 当前网关在途请求列表（轻量快照）。 */
     val activeRequests: List<dev.aigw.core.gateway.ActiveRequest> = emptyList(),
+    /** 客户端密钥（谁能调用网关）。 */
+    val clientKeys: List<dev.aigw.core.gateway.ClientKey> = emptyList(),
+    /** 各密钥的累计用量，键为密钥 id。 */
+    val clientKeyUsages: Map<String, dev.aigw.core.gateway.KeyUsage> = emptyMap(),
+    /** 路由组与规则。 */
+    val routingGroups: dev.aigw.core.gateway.RoutingGroupSettings = dev.aigw.core.gateway.RoutingGroupSettings(),
+    /** 模型价格表。 */
+    val pricing: dev.aigw.core.usage.PricingTable = dev.aigw.core.usage.PricingTable(),
+    /** 请求改写设置。 */
+    val middleware: dev.aigw.core.gateway.MiddlewareSettings = dev.aigw.core.gateway.MiddlewareSettings(),
+    /** 各改写中间件最近一次失败原因，键为中间件 id。 */
+    val middlewareFailures: Map<String, String> = emptyMap(),
 ) {
     /** 某个供应商的账号。 */
     fun accountsOf(providerId: String): List<AccountStatus> = accounts.filter { it.providerId == providerId }
@@ -351,6 +363,12 @@ private class Snapshot(
     val overlayKeepAlive: Boolean,
     val liveNotification: Boolean,
     val startOnBoot: Boolean,
+    val clientKeys: List<dev.aigw.core.gateway.ClientKey>,
+    val clientKeyUsages: Map<String, dev.aigw.core.gateway.KeyUsage>,
+    val routingGroups: dev.aigw.core.gateway.RoutingGroupSettings,
+    val pricing: dev.aigw.core.usage.PricingTable,
+    val middleware: dev.aigw.core.gateway.MiddlewareSettings,
+    val middlewareFailures: Map<String, String>,
 )
 
 class AppViewModel(
@@ -483,6 +501,12 @@ class AppViewModel(
                     overlayKeepAlive = dev.aigw.app.data.KeepAlivePrefs.overlayEnabled(engine.store()),
                     liveNotification = dev.aigw.app.data.KeepAlivePrefs.liveNotificationEnabled(engine.store()),
                     startOnBoot = dev.aigw.app.data.KeepAlivePrefs.startOnBoot(engine.store()),
+                    clientKeys = engine.clientKeyStore.list(),
+                    clientKeyUsages = engine.clientKeyStore.list().associate { it.id to engine.clientKeyUsage.usageOf(it.id) },
+                    routingGroups = engine.routingGroupSettings(),
+                    pricing = engine.pricingTable(),
+                    middleware = engine.middlewareSettings(),
+                    middlewareFailures = engine.middleware().failures(),
                 )
             }
             _state.value = _state.value.copy(
@@ -509,6 +533,12 @@ class AppViewModel(
                 overlayKeepAlive = snapshot.overlayKeepAlive,
                 liveNotification = snapshot.liveNotification,
                 startOnBoot = snapshot.startOnBoot,
+                clientKeys = snapshot.clientKeys,
+                clientKeyUsages = snapshot.clientKeyUsages,
+                routingGroups = snapshot.routingGroups,
+                pricing = snapshot.pricing,
+                middleware = snapshot.middleware,
+                middlewareFailures = snapshot.middlewareFailures,
             )
         }
     }
@@ -773,6 +803,85 @@ class AppViewModel(
     fun updateFailoverSettings(updated: dev.aigw.core.failover.ModelFailoverSettings) {
         viewModelScope.launch {
             withContext(Dispatchers.IO) { engine.updateFailoverSettings(updated) }
+            refresh()
+        }
+    }
+
+    // ------------------------------------------------------------ 客户端密钥
+
+    /** 新建密钥；[onCreated] 在创建后回调（用于把完整密钥展示一次给用户复制）。 */
+    fun addClientKey(
+        name: String,
+        secret: String?,
+        allowedModels: List<String>,
+        limits: List<dev.aigw.core.gateway.KeyLimit>,
+        onCreated: (dev.aigw.core.gateway.ClientKey) -> Unit = {},
+    ) {
+        viewModelScope.launch {
+            val created = withContext(Dispatchers.IO) {
+                runCatching { engine.clientKeyStore.add(name, secret, allowedModels, limits) }.getOrNull()
+            }
+            if (created == null) {
+                _state.value = _state.value.copy(notice = "密钥不合法：长度需 8~256 个可打印字符且不能重复")
+            } else {
+                onCreated(created)
+            }
+            refresh()
+        }
+    }
+
+    fun updateClientKey(key: dev.aigw.core.gateway.ClientKey) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { engine.clientKeyStore.update(key) }
+            refresh()
+        }
+    }
+
+    fun removeClientKey(id: String) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                engine.clientKeyStore.remove(id)
+                engine.clientKeyUsage.clear(id)
+            }
+            refresh()
+        }
+    }
+
+    /** 轮换密钥：[onRotated] 拿到新密钥后必须立刻展示给用户，之后只能看到末四位。 */
+    fun rotateClientKey(id: String, onRotated: (String) -> Unit) {
+        viewModelScope.launch {
+            val secret = withContext(Dispatchers.IO) { engine.clientKeyStore.rotate(id) }
+            if (secret != null) onRotated(secret)
+            refresh()
+        }
+    }
+
+    fun resetClientKeyUsage(id: String) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { engine.clientKeyUsage.reset(id) }
+            refresh()
+        }
+    }
+
+    // ------------------------------------------------------------ 路由组 / 价格 / 改写
+
+    fun updateRoutingGroups(updated: dev.aigw.core.gateway.RoutingGroupSettings) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { engine.updateRoutingGroups(updated) }
+            refresh()
+        }
+    }
+
+    fun updatePricing(updated: dev.aigw.core.usage.PricingTable) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { engine.updatePricingTable(updated) }
+            refresh()
+        }
+    }
+
+    fun updateMiddleware(updated: dev.aigw.core.gateway.MiddlewareSettings) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { engine.updateMiddlewareSettings(updated) }
             refresh()
         }
     }

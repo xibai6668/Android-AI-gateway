@@ -69,6 +69,11 @@ fun ResilienceScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> U
             config = failover.modelCooldown,
             onOpenEdit = { editTarget = ResilienceEditTarget.ModelCooldown },
         )
+        Spacer(Modifier.height(4.dp))
+        AccountStrategyComponent(
+            current = failover.accountStrategy,
+            onSelect = { viewModel.updateFailoverSettings(failover.copy(accountStrategy = it)) },
+        )
 
         Spacer(Modifier.height(8.dp))
         Text(
@@ -118,6 +123,56 @@ fun ResilienceScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> U
 }
 
 private enum class ResilienceEditTarget { Concurrency, Retry, CircuitBreaker, ModelCooldown }
+
+/**
+ * 账号选择策略：决定「同一供应商内先烧哪个号的额度」。
+ *
+ * 策略只影响顺序，不改变可用性过滤（禁用/冷却/在途满载仍会被跳过）。
+ */
+@Composable
+private fun AccountStrategyComponent(
+    current: dev.aigw.core.failover.AccountStrategy,
+    onSelect: (dev.aigw.core.failover.AccountStrategy) -> Unit,
+) {
+    SectionLabel("账号选择策略")
+    SectionCard(enterIndex = 4) {
+        val options = listOf(
+            dev.aigw.core.failover.AccountStrategy.SMART to "优先级优先，同级比余额",
+            dev.aigw.core.failover.AccountStrategy.ORDER to "严格按优先级顺序，不随机",
+            dev.aigw.core.failover.AccountStrategy.ROTATE to "轮流使用，均摊负载",
+            dev.aigw.core.failover.AccountStrategy.USAGE to "余额最多的先用",
+            dev.aigw.core.failover.AccountStrategy.PACE to "快重置的先花，少让额度作废",
+        )
+        options.forEach { (strategy, description) ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = strategy.name,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = if (strategy == current) FontWeight.SemiBold else FontWeight.Normal,
+                    )
+                    Text(
+                        text = description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                ChoiceChip(
+                    text = if (strategy == current) "已选" else "选择",
+                    selected = strategy == current,
+                    onClick = { onSelect(strategy) },
+                )
+            }
+            if (strategy != options.last().first) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            }
+        }
+    }
+}
 
 @Composable
 private fun ConcurrencyComponent(config: ConcurrencyConfig, onOpenEdit: () -> Unit) {

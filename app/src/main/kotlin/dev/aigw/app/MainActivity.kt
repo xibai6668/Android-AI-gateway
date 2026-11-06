@@ -76,6 +76,10 @@ import dev.aigw.app.ui.ResilienceScreen
 import dev.aigw.app.ui.SecurityProtectionScreen
 import dev.aigw.app.ui.SubPage
 import dev.aigw.app.ui.AccountTransferScreen
+import dev.aigw.app.ui.ClientKeysScreen
+import dev.aigw.app.ui.ModelPricingScreen
+import dev.aigw.app.ui.RequestRewriteScreen
+import dev.aigw.app.ui.RoutingGroupsScreen
 import dev.aigw.app.ui.TaskCenterScreen
 import dev.aigw.app.ui.UsageScreen
 import dev.aigw.app.ui.formatBytes
@@ -261,6 +265,10 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
                 SubPage.Resilience -> ResilienceScreen(state, viewModel) { subPage = null }
                 SubPage.AppearanceTheme -> AppearanceThemeScreen(state, viewModel) { subPage = null }
                 SubPage.AccountTransfer -> AccountTransferScreen(state, viewModel) { subPage = null }
+                SubPage.ClientKeys -> ClientKeysScreen(state, viewModel) { subPage = null }
+                SubPage.RoutingGroups -> RoutingGroupsScreen(state, viewModel) { subPage = null }
+                SubPage.ModelPricing -> ModelPricingScreen(state, viewModel) { subPage = null }
+                SubPage.RequestRewrite -> RequestRewriteScreen(state, viewModel) { subPage = null }
                 null -> MainTabs(
                     viewModel = viewModel,
                     state = state,

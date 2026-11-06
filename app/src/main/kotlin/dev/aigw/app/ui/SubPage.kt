@@ -38,4 +38,16 @@ sealed interface SubPage {
 
     /** 账号导入导出：备份与迁移（含明文凭证）。 */
     data object AccountTransfer : SubPage
+
+    /** 客户端密钥：谁能调用网关（含白名单与限额）。 */
+    data object ClientKeys : SubPage
+
+    /** 路由组：把多个模型合成一个对外模型名。 */
+    data object RoutingGroups : SubPage
+
+    /** 模型价格：按 token 计算调用费用。 */
+    data object ModelPricing : SubPage
+
+    /** 请求改写：模型别名、system 追加与思考标签清理。 */
+    data object RequestRewrite : SubPage
 }

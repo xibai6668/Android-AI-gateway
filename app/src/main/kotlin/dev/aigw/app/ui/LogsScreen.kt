@@ -61,6 +61,7 @@ import dev.aigw.app.ui.theme.WarningAmber
 import dev.aigw.core.gateway.GatewaySettings
 import dev.aigw.core.usage.CallRecord
 import dev.aigw.core.usage.CallStatus
+import dev.aigw.core.usage.formatMicroUsd
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -336,6 +337,24 @@ private fun CallRow(record: CallRecord, onClick: () -> Unit, onLongClick: () -> 
             }
             if (record.pointsConsumed > 0) {
                 MetricChip("积分", record.pointsConsumed.toString(), MaterialTheme.colorScheme.secondary)
+            }
+            if (record.tries > 1) {
+                MetricChip("尝试", record.tries.toString(), MaterialTheme.colorScheme.error)
+            }
+            if (record.retried) {
+                MetricChip("换号救回", "是", MaterialTheme.colorScheme.tertiary)
+            }
+            if (record.costKnown) {
+                MetricChip("费用", formatMicroUsd(record.costMicros), MaterialTheme.colorScheme.primary)
+            } else if (record.status == CallStatus.SUCCESS) {
+                // 未配价格的模型不能显示成 0 元，否则用户会以为真的免费
+                MetricChip("费用", "未定价", MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (record.clientKeyName.isNotEmpty()) {
+                MetricChip("密钥", record.clientKeyName, MaterialTheme.colorScheme.secondary)
+            }
+            if (record.affinityReused) {
+                MetricChip("会话亲和", "命中", MaterialTheme.colorScheme.onSurfaceVariant)
             }
             if (record.accountNickname.isNotEmpty()) {
                 MetricChip("账号", record.accountNickname, MaterialTheme.colorScheme.onSurfaceVariant)
