@@ -28,7 +28,7 @@ Android 上运行的本地 AI 模型聚合网关：把多家私有 AI 服务账�
 
 ## 特性
 
-- **OpenAI 兼容网关**：`/v1/chat/completions` + `/v1/models`，流式 SSE / 非流式 / 多模态识图。
+- **OpenAI 兼容网关**：`/v1/chat/completions` + `/v1/models`，流式 SSE / 非流式 / 多模态识图；另提供 `/v1/images/generations`（图片生成）与 `/v1/audio/transcriptions`（语音转文字）。
 - **六家内置供应商**：Trae、WorkBuddy、Antigravity、ChatGPT、Loomy、小浣熊（商汤），以及任意自定义 OpenAI 兼容中转站。
 - **同款模型 Failover**：首选供应商失败或无可用账号时，自动切换到拥有同款模型的其他供应商。
 - **智能路由**：`供应商/模型` 前缀路由（含 `trae-cn/`、`codebuddy-global/` 这类区域前缀与 `google/`、`agy/` 等别名），兼支持无前缀的模型名自动推导。
@@ -137,8 +137,11 @@ usage/...                         # 用量统计
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `POST` | `/v1/chat/completions` | 对话补全，支持流式 SSE / 非流式 / 多模态 |
+| `POST` | `/v1/images/generations` | 图片生成（OpenAI Images API；由具备图像通道的供应商承接，自动换号/切家） |
+| `POST` | `/v1/audio/transcriptions` | 语音转文字（multipart 上传；有原生转写端点的供应商优先，否则用声明了音频输入的对话模型代转写） |
 | `GET` | `/v1/models` | 模型列表（并发拉取各供应商后聚合返回；按模型开放名单过滤） |
 | `GET` | `/v1/credits` | 额度查询（别名 `/credits`；本机免 Key） |
+| `GET` | `/api/usage/token` | 令牌用量查询（new-api 形状，`total_available` 为按同单位汇总的真实余额） |
 | `GET` | `/healthz` | 健康检查，返回纯文本 `ok`（不带鉴权） |
 | `GET` | `/authorize` | Trae 网页登录回调入口（Antigravity / 小浣熊各有独立的本地回调端口） |
 

@@ -102,6 +102,8 @@ class LoomyModelCatalog(
             val capabilities = item.objOrNull("capabilities")
             val inputModalities = item.objOrNull("modalities")?.arrayOrNull("input")
             val hasImage = inputModalities?.any { it.asString == "image" } == true
+            // 音频能力必须显式采集：不取就丢掉，转写端点只能靠猜
+            val hasAudio = inputModalities?.any { it.asString == "audio" } == true
             result.add(
                 LoomyModel(
                     id = id,
@@ -111,6 +113,7 @@ class LoomyModelCatalog(
                     reasoning = item.bool("reasoning") || item.bool("supports_reasoning"),
                     toolCall = item.bool("tool_call") || capabilities?.bool("function_calling") == true,
                     attachment = item.bool("attachment") || hasImage,
+                    audio = hasAudio,
                 ),
             )
         }

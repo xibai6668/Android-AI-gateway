@@ -1,15 +1,19 @@
 package dev.aigw.core.provider.loomy
 
+import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import dev.aigw.core.provider.AggregatedChatCall
 import dev.aigw.core.provider.ACTION_TASKS
+import dev.aigw.core.provider.AudioTranscriptionRequest
+import dev.aigw.core.provider.AudioTranscriptionResult
 import dev.aigw.core.provider.AuthKind
 import dev.aigw.core.provider.ChatCall
 import dev.aigw.core.provider.CreditInfo
 import dev.aigw.core.provider.ErrorKind
 import dev.aigw.core.provider.FailedChatCall
 import dev.aigw.core.provider.isStreamingBody
+import dev.aigw.core.provider.MediaCall
 import dev.aigw.core.provider.OpenAiSseAggregator
 import dev.aigw.core.provider.Provider
 import dev.aigw.core.provider.ProviderAccount
@@ -26,6 +30,11 @@ import dev.aigw.core.provider.SmsLoginSupport
 import dev.aigw.core.provider.StreamFailureChatCall
 import dev.aigw.core.provider.StreamingChatCall
 import dev.aigw.core.provider.UpstreamError
+import dev.aigw.core.util.arrayOrNull
+import dev.aigw.core.util.asObjectOrNull
+import dev.aigw.core.util.objOrNull
+import dev.aigw.core.util.stringOrNull
+import java.util.Base64
 
 /**
  * Loomy（讯飞）免费积分通道。
@@ -40,7 +49,7 @@ class LoomyProvider(
     private val pointsClient: LoomyPointsClient = LoomyPointsClient(),
     private val taskClient: LoomyTaskClient = LoomyTaskClient(),
     private val hooks: ProviderHooks = ProviderHooks(),
-) : Provider, SmsLoginSupport {
+) : Provider, SmsLoginSupport, dev.aigw.core.provider.ConversationalTranscriber {
 
     override val id: String = ID
     override val displayName: String = "Loomy"
@@ -67,6 +76,7 @@ class LoomyProvider(
                         if (it.reasoning) put("reasoning", "1")
                         if (it.toolCall) put("tool_call", "1")
                         if (it.attachment) put("attachment", "1")
+                        if (it.audio) put("audio", "1")
                     },
                 )
             },
@@ -137,6 +147,112 @@ class LoomyProvider(
         val kind = LoomyErrors.fromStatus(status, body)
         val exception = LoomyApiException(status, kind, body, LoomyErrors.extractCode(body))
         return UpstreamError(kind.toErrorKind(), exception.message ?: "上游错误")
+    }
+
+    /**
+     * 语音转写：上游是 OpenAI 兼容协议，直接把音频作为 `input_audio` part 发给
+     * **模型目录里声明了音频输入**的模型，让它逐字转写。
+     *
+     * 目录里没有音频模型、或上游其实不认这个 part 时，如实报错而不返回编造文本。
+     */
+    override val supportsAudioTranscription: Boolean get() = true
+
+    override fun transcribeAudio(
+        account: ProviderAccount,
+        request: AudioTranscriptionRequest,
+    ): MediaCall<AudioTranscriptionResult> {
+        val loomy = parseOrNull(account) ?: return MediaCall.Failure(401, "账号凭证无法解析")
+        val model = audioModelOf(request.model, account)
+            ?: return MediaCall.Failure(
+                400,
+                "该账号的模型目录里没有声明音频输入的模型，无法用对话通道转写",
+            )
+        val instruction = buildString {
+            append("把这段录音逐字转写成文本，只输出转写正文，不要解释、不要加标题或引言。")
+            if (request.language.isNotEmpty()) append(" 录音语言是 ${request.language}。")
+            if (request.prompt.isNotEmpty()) append(" 上下文提示：${request.prompt}")
+        }
+        val body = JsonObject().apply {
+            addProperty("model", model)
+            addProperty("stream", true)
+            add("messages", JsonArray().apply {
+                add(JsonObject().apply {
+                    addProperty("role", "user")
+                    add("content", JsonArray().apply {
+                        add(JsonObject().apply {
+                            addProperty("type", "input_audio")
+                            add("input_audio", JsonObject().apply {
+                                addProperty("data", Base64.getEncoder().encodeToString(request.audio))
+                                addProperty("format", request.mimeType.substringAfter('/', "wav").ifEmpty { "wav" })
+                            })
+                        })
+                        add(JsonObject().apply {
+                            addProperty("type", "text")
+                            addProperty("text", instruction)
+                        })
+                    })
+                })
+            })
+        }.toString()
+
+        val call = try {
+            chatClient.openStream(loomy, body)
+        } catch (e: LoomyApiException) {
+            return MediaCall.Failure(e.status, e.body)
+        }
+        if (call.status !in 200..299) {
+            val errorBody = call.errorBody
+            call.close()
+            return MediaCall.Failure(call.status, errorBody)
+        }
+        val text = try {
+            if (call.isEventStream) {
+                readTranscriptionStream(call.stream)
+            } else {
+                val raw = call.stream?.use { it.readBytes().toString(Charsets.UTF_8) }.orEmpty()
+                // 上游「HTTP 200 + 业务错误码」：不能当成功
+                val code = LoomyErrors.extractCode(raw)
+                if (code.isNotEmpty() && code != LoomyConstants.CODE_OK) {
+                    return MediaCall.Failure(200, LoomyErrors.extractMessage(raw))
+                }
+                runCatching { JsonParser.parseString(raw).asJsonObject }.getOrNull()
+                    ?.arrayOrNull("choices")?.firstOrNull()?.asObjectOrNull()
+                    ?.objOrNull("message")?.stringOrNull("content").orEmpty()
+            }
+        } catch (e: Exception) {
+            return MediaCall.Failure(0, e.message ?: "读取上游响应失败")
+        } finally {
+            call.close()
+        }
+        if (text.isBlank()) return MediaCall.Failure(502, "上游未返回转写文本")
+        return MediaCall.Success(AudioTranscriptionResult(text = text.trim(), language = request.language))
+    }
+
+    /** 只在模型目录真的声明了音频输入时才选中；不靠模型名猜。 */
+    private fun audioModelOf(requested: String, account: ProviderAccount): String? {
+        val audioCapable = catalog.models(parseOrNull(account)?.session).filter { it.audio }
+        val model = requested.trim().removePrefix("models/").trim()
+        if (model.isNotEmpty()) {
+            audioCapable.firstOrNull { it.id.equals(model, ignoreCase = true) }?.let { return it.id }
+        }
+        return audioCapable.firstOrNull()?.id
+    }
+
+    private fun readTranscriptionStream(stream: java.io.InputStream?): String {
+        if (stream == null) return ""
+        val text = StringBuilder()
+        stream.bufferedReader(Charsets.UTF_8).use { reader ->
+            while (true) {
+                val line = reader.readLine() ?: break
+                if (!line.startsWith("data:")) continue
+                val payload = line.removePrefix("data:").trim()
+                if (payload.isEmpty() || payload == "[DONE]") continue
+                val obj = runCatching { JsonParser.parseString(payload).asJsonObject }.getOrNull() ?: continue
+                obj.arrayOrNull("choices")?.firstOrNull()?.asObjectOrNull()
+                    ?.objOrNull("delta")?.stringOrNull("content")?.let { text.append(it) }
+            }
+        }
+        return text.toString()
     }
 
     // ------------------------------------------------------------------ 额度 / 动作

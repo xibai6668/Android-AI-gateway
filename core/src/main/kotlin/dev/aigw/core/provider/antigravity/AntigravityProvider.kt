@@ -6,11 +6,18 @@ import com.google.gson.JsonParser
 import dev.aigw.core.provider.AggregatedChatCall
 import dev.aigw.core.provider.AuthKind
 import dev.aigw.core.provider.ChatCall
+import dev.aigw.core.provider.AudioTranscriptionRequest
+import dev.aigw.core.provider.AudioTranscriptionResult
 import dev.aigw.core.provider.CreditInfo
+import dev.aigw.core.provider.CreditUnit
 import dev.aigw.core.provider.ErrorKind
 import dev.aigw.core.provider.FailedChatCall
+import dev.aigw.core.provider.GeneratedImage
+import dev.aigw.core.provider.ImageGenerationRequest
+import dev.aigw.core.provider.ImageGenerationResult
 import dev.aigw.core.provider.LineTransformStream
 import dev.aigw.core.provider.LoopbackOAuthSupport
+import dev.aigw.core.provider.MediaCall
 import dev.aigw.core.provider.OpenAiSseAggregator
 import dev.aigw.core.provider.Provider
 import dev.aigw.core.provider.ProviderAccount
@@ -18,22 +25,26 @@ import dev.aigw.core.provider.ProviderHooks
 import dev.aigw.core.provider.ProviderModel
 import dev.aigw.core.provider.ProviderModelCatalogView
 import dev.aigw.core.provider.QuotaPack
+import dev.aigw.core.provider.SSE_DONE
 import dev.aigw.core.provider.StreamingChatCall
 import dev.aigw.core.provider.UpstreamError
 import dev.aigw.core.provider.queryParam
 import dev.aigw.core.protocol.OpenAiGemini
 import dev.aigw.core.util.HttpSupport
 import dev.aigw.core.util.arrayOrNull
+import dev.aigw.core.util.asObjectOrNull
 import dev.aigw.core.util.bodySnippet
 import dev.aigw.core.util.longOrNull
 import dev.aigw.core.util.newCompletionId
 import dev.aigw.core.util.objOrNull
 import dev.aigw.core.util.stringOrNull
+import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.time.OffsetDateTime
+import java.util.Base64
 import java.util.UUID
 import kotlin.math.roundToLong
 
@@ -53,7 +64,7 @@ class AntigravityProvider(
     private val tokenEndpoint: String = TOKEN_ENDPOINT,
     /** 运行时 UA 里的客户端版本；默认取官方清单的最新版（见 [AntigravityVersion]）。 */
     private val clientVersion: () -> String = { AntigravityVersion.current() },
-) : Provider, LoopbackOAuthSupport {
+) : Provider, LoopbackOAuthSupport, dev.aigw.core.provider.ConversationalTranscriber {
 
     override val id: String = ID
     override val displayName: String = "Antigravity"
@@ -147,7 +158,16 @@ class AntigravityProvider(
                     val displayName = meta?.stringOrNull("displayName").orEmpty().ifEmpty { modelId }
                     // 上游未给 maxTokens 时不填（0 = 界面不展示），不要拿一个常量冒充上下文窗口
                     val contextLength = meta?.longOrNull("maxTokens")?.takeIf { it > 0 } ?: 0L
-                    result.add(ProviderModel(modelId, displayName, contextLength))
+                    // 音频能力只采上游真实声明的字段；没声明就当不支持，不靠模型名猜
+                    val supportsAudio = meta?.let { declaredAudio(it) } == true
+                    result.add(
+                        ProviderModel(
+                            id = modelId,
+                            name = displayName,
+                            contextWindow = contextLength,
+                            extra = if (supportsAudio) mapOf(AUDIO_CAPABILITY to "1") else emptyMap(),
+                        ),
+                    )
                 }
                 if (result.isNotEmpty()) {
                     result.sortBy { it.id }
@@ -207,22 +227,9 @@ class AntigravityProvider(
         // 配额查询反过来只有 prod 给完整数据，两者不能共用一个 base。
         hooks.onVerbose?.invoke("Antigravity 发送内容", "$chatBase/$API_VERSION:streamGenerateContent?alt=sse\n$body")
 
-        val conn = try {
-            open("$chatBase/$API_VERSION:streamGenerateContent?alt=sse", credential.accessToken, body)
-        } catch (e: Exception) {
-            return FailedChatCall(0, e.message ?: "连接失败")
-        }
-        val status = try {
-            conn.responseCode
-        } catch (e: Exception) {
-            conn.disconnect()
-            return FailedChatCall(0, e.message ?: "连接失败")
-        }
-        if (status !in 200..299) {
-            val errorBody = runCatching { HttpSupport.readLimited(conn.errorStream) }.getOrDefault("")
-            conn.disconnect()
-            return FailedChatCall(status, errorBody)
-        }
+        val session = connectStream(credential, body)
+        val conn = session.conn ?: return FailedChatCall(session.status, session.errorBody)
+        val status = session.status
 
         val translator = OpenAiGemini.SseTranslator(newCompletionId(), model)
         val transformed = LineTransformStream(
@@ -241,6 +248,265 @@ class AntigravityProvider(
         return AggregatedChatCall(status, aggregated)
     }
 
+    /**
+     * 建连并判定状态码，[openChat] 与 [generateImage] 共用。
+     *
+     * 成功时返回**仍打开**的 [UpstreamStream.conn]（调用方负责读响应并 disconnect）；
+     * 连接失败、读状态码失败、非 2xx 一律返回 conn = null，连接已断开。
+     */
+    private fun connectStream(credential: Credential, body: String): UpstreamStream {
+        val conn = try {
+            open("$chatBase/$API_VERSION:streamGenerateContent?alt=sse", credential.accessToken, body)
+        } catch (e: Exception) {
+            return UpstreamStream(null, 0, e.message ?: "连接失败")
+        }
+        val status = try {
+            conn.responseCode
+        } catch (e: Exception) {
+            conn.disconnect()
+            return UpstreamStream(null, 0, e.message ?: "连接失败")
+        }
+        if (status !in 200..299) {
+            val errorBody = runCatching { HttpSupport.readLimited(conn.errorStream) }.getOrDefault("")
+            conn.disconnect()
+            return UpstreamStream(null, status, errorBody)
+        }
+        return UpstreamStream(conn, status, "")
+    }
+
+    private class UpstreamStream(val conn: HttpURLConnection?, val status: Int, val errorBody: String)
+
+    // ------------------------------------------------------------------ 图像
+
+    override val supportsImageGeneration: Boolean = true
+
+    /** 音频能否用，取决于当前账号的模型目录里有没有声明音频输入；见 [transcribeAudio]。 */
+    override val supportsAudioTranscription: Boolean = true
+
+    /**
+     * 语音转写：走 Gemini 多模态通道，把音频当 `inlineData` 喂给模型并让它逐字转写。
+     *
+     * 这不是 ASR 引擎，是对话模型「听懂后复述」：长音频会漏字、专名易错，
+     * 所以只作为没有原生转写端点时的备用通道，不能宣称为 whisper 等价。
+     * 凭证策略与 [openChat] 一致：内部绝不主动刷 Token。
+     */
+    override fun transcribeAudio(
+        account: ProviderAccount,
+        request: AudioTranscriptionRequest,
+    ): MediaCall<AudioTranscriptionResult> {
+        val credential = parse(account) ?: return MediaCall.Failure(401, "凭证无法解析")
+        if (credential.projectId.isEmpty()) {
+            return MediaCall.Failure(400, "该账号缺少 project id，请重新登录以获取")
+        }
+        val model = audioModelOf(request.model, account)
+            ?: return MediaCall.Failure(
+                400,
+                "该账号的模型目录里没有声明音频输入的模型，无法用对话通道转写（可改用支持 /audio/transcriptions 的自定义供应商）",
+            )
+        val instruction = transcriptionInstruction(request.prompt, request.language)
+        val openAiBody = JsonObject().apply {
+            addProperty("model", model)
+            addProperty("stream", true)
+            add("messages", JsonArray().apply {
+                add(JsonObject().apply {
+                    addProperty("role", "user")
+                    add("content", JsonArray().apply {
+                        add(JsonObject().apply {
+                            addProperty("type", "input_audio")
+                            add("input_audio", JsonObject().apply {
+                                addProperty("data", Base64.getEncoder().encodeToString(request.audio))
+                                addProperty("format", mimeOrFormat(request.mimeType))
+                            })
+                        })
+                        add(JsonObject().apply {
+                            addProperty("type", "text")
+                            addProperty("text", instruction)
+                        })
+                    })
+                })
+            })
+        }.toString()
+        // 上一行的 parts 由 OpenAiGemini 统一翻译：input_audio → inlineData，图片 → 图片
+        val geminiRequest = OpenAiGemini.toGeminiRequest(openAiBody, model)
+        geminiRequest.objOrNull("generationConfig")?.remove("maxOutputTokens")
+        val body = OpenAiGemini.envelope(credential.projectId, model, geminiRequest, OpenAiGemini.newRequestId())
+        hooks.onVerbose?.invoke("Antigravity 发送内容", "$chatBase/$API_VERSION:streamGenerateContent?alt=sse\n$body")
+
+        val session = connectStream(credential, body)
+        val conn = session.conn ?: return MediaCall.Failure(session.status, session.errorBody)
+        val text = try {
+            readTranscription(conn.inputStream, model)
+        } catch (e: Exception) {
+            return MediaCall.Failure(0, e.message ?: "读取上游响应失败")
+        } finally {
+            conn.disconnect()
+        }
+        if (text.isBlank()) return MediaCall.Failure(502, "上游未返回转写文本")
+        return MediaCall.Success(AudioTranscriptionResult(text = text.trim(), language = request.language))
+    }
+
+    /**
+     * 选用于转写的模型。
+     *
+     * 只在**模型目录真的声明了音频输入**时才用对话通道：凭空挑一个文本模型喂音频，
+     * 上游会把音频丢掉并回一段与录音无关的回答，那就是对客造假。
+     */
+    private fun audioModelOf(requested: String, account: ProviderAccount): String? {
+        val listed = runCatching { listModels(account).models }.getOrDefault(emptyList())
+        val audioCapable = listed.filter { it.extra[AUDIO_CAPABILITY] == "1" }
+        val model = requested.trim().removePrefix("models/").trim()
+        if (model.isNotEmpty()) {
+            val exact = audioCapable.firstOrNull { it.id.equals(model, ignoreCase = true) }
+            if (exact != null) return exact.id
+        }
+        return audioCapable.firstOrNull()?.id
+    }
+
+    /**
+     * 上游模型元数据里是否真的声明了音频输入。
+     *
+     * `fetchAvailableModels` 各家实现口径不一，这里只认几种明确字段
+     * （`inputModalities` / `supportedInputModalities` / `input_modalities` 含 `audio`），
+     * 都不存在就当不支持：宁可报“没有音频模型”，也不能拿一个文本模型去编转写结果。
+     */
+    private fun declaredAudio(meta: JsonObject): Boolean {
+        val keys = listOf("inputModalities", "supportedInputModalities", "input_modalities", "supported_input_modalities")
+        for (key in keys) {
+            val list = meta.arrayOrNull(key) ?: continue
+            if (list.any { it.isJsonPrimitive && it.asString.equals("audio", ignoreCase = true) }) return true
+        }
+        return false
+    }
+
+    /** 逐帧读 SSE 并拼出 `delta.content`；`reasoning_content` 不算转写正文。 */
+    private fun readTranscription(stream: java.io.InputStream, model: String): String {
+        val translator = OpenAiGemini.SseTranslator(newCompletionId(), model)
+        val text = StringBuilder()
+        stream.bufferedReader(StandardCharsets.UTF_8).use { reader ->
+            while (true) {
+                val line = reader.readLine() ?: break
+                for (frame in translator.translate(line)) {
+                    if (frame == SSE_DONE) continue
+                    val payload = frame.removePrefix("data:").trim()
+                    val chunk = runCatching { JsonParser.parseString(payload).asJsonObject }.getOrNull() ?: continue
+                    chunk.arrayOrNull("choices")?.firstOrNull()?.asObjectOrNull()
+                        ?.objOrNull("delta")?.stringOrNull("content")?.let { text.append(it) }
+                }
+            }
+        }
+        return text.toString()
+    }
+
+    /** 转写指令：要求只输出正文，并把调用方的 prompt / language 作为上下文。 */
+    private fun transcriptionInstruction(prompt: String, language: String): String = buildString {
+        append("把这段录音逐字转写成文本，只输出转写正文，不要解释、不要加标题或引言。")
+        if (language.isNotEmpty()) append(" 录音语言是 $language。")
+        if (prompt.isNotEmpty()) append(" 上下文提示：$prompt")
+    }
+
+    /** OpenAI 的 `format` 是裸格式名（wav/mp3），这边拿到的可能是 MIME，统一取裸格式。 */
+    private fun mimeOrFormat(mimeType: String): String =
+        mimeType.substringAfter('/', mimeType).ifEmpty { "wav" }
+
+    /**
+     * 图像生成：与对话共用 `streamGenerateContent` 通道（模型名含 image 时
+     * [OpenAiGemini.envelope] 会把 requestType 设为 image_gen）。
+     *
+     * 上游回图是 parts[].inlineData，[OpenAiGemini.SseTranslator] 已把它翻成 OpenAI 的
+     * `delta.images[].image_url.url`（data URL，含 mime）；这里逐帧收集并拆回 base64。
+     * 凭证策略与 [openChat] 完全一致：内部绝不主动刷新 Token。
+     */
+    override fun generateImage(account: ProviderAccount, request: ImageGenerationRequest): MediaCall<ImageGenerationResult> {
+        val credential = parse(account) ?: return MediaCall.Failure(401, "凭证无法解析")
+        if (credential.projectId.isEmpty()) {
+            return MediaCall.Failure(400, "该账号缺少 project id，请重新登录以获取")
+        }
+        val model = imageModelOf(request.model, account)
+        val openAiBody = JsonObject().apply {
+            addProperty("model", model)
+            addProperty("stream", false)
+            add("messages", JsonArray().apply {
+                add(JsonObject().apply {
+                    addProperty("role", "user")
+                    addProperty("content", request.prompt)
+                })
+            })
+        }.toString()
+        val geminiRequest = OpenAiGemini.toGeminiRequest(openAiBody, model)
+        // 与 openChat 同一处理：上游 gemini 系不接受 maxOutputTokens
+        geminiRequest.objOrNull("generationConfig")?.remove("maxOutputTokens")
+        // image_gen 的 requestId 是上游专用格式 image_gen/<毫秒>/<uuid>/12（CLIProxyAPI 同款）
+        val requestId = "image_gen/${nowMillis()}/${UUID.randomUUID()}/12"
+        val body = OpenAiGemini.envelope(credential.projectId, model, geminiRequest, requestId)
+        hooks.onVerbose?.invoke("Antigravity 发送内容", "$chatBase/$API_VERSION:streamGenerateContent?alt=sse\n$body")
+
+        val session = connectStream(credential, body)
+        val conn = session.conn ?: return MediaCall.Failure(session.status, session.errorBody)
+        val images = try {
+            readImages(conn.inputStream, model)
+        } catch (e: Exception) {
+            return MediaCall.Failure(0, e.message ?: "读取上游响应失败")
+        } finally {
+            conn.disconnect()
+        }
+        if (images.isEmpty()) return MediaCall.Failure(502, "上游未返回图片")
+        return MediaCall.Success(ImageGenerationResult(images))
+    }
+
+    /**
+     * 解析图像模型名。
+     *
+     * 上游真实的图像模型都叫 `gemini-*-image`，按原样下传（不能走 [resolveModel]：那里的
+     * flash/pro 子串规则会把 `gemini-3.6-flash-image` 改写成文本模型，requestType 也就退化成 agent）。
+     * 客户端给的 `dall-e-3` / `gpt-image-*` / 空串是别家的通用名，先从上游目录里找一个真实存在的
+     * 图像模型；目录里也没有就交给 [resolveModel] 原样下传，让上游判定——绝不凭空编造模型名。
+     */
+    private fun imageModelOf(requested: String, account: ProviderAccount): String {
+        val model = requested.trim().removePrefix("models/").trim()
+        if (model.contains("gemini", ignoreCase = true) && model.contains("image", ignoreCase = true)) {
+            return MODEL_ALIASES[model.lowercase()] ?: model
+        }
+        val listed = runCatching { listModels(account).models }.getOrDefault(emptyList())
+        listed.firstOrNull { it.id.contains("image", ignoreCase = true) }?.let { return it.id }
+        // 空模型名不能交给 resolveModel：那里会回退到目录里的第一个文本模型（等于凭空编造），
+        // 空串留给上游直接拒绝，错误原文比“生成了一张文本回复”诚实
+        return if (model.isEmpty()) model else resolveModel(model)
+    }
+
+    /** 逐帧读 SSE，把翻译后的 `delta.images[].image_url.url`（data URL）拆成 base64 + 原 URL。 */
+    private fun readImages(stream: InputStream, model: String): List<GeneratedImage> {
+        val translator = OpenAiGemini.SseTranslator(newCompletionId(), model)
+        val images = ArrayList<GeneratedImage>()
+        stream.bufferedReader(StandardCharsets.UTF_8).use { reader ->
+            while (true) {
+                val line = reader.readLine() ?: break
+                for (frame in translator.translate(line)) {
+                    if (frame == SSE_DONE) continue
+                    val payload = frame.removePrefix("data:").trim()
+                    val chunk = runCatching { JsonParser.parseString(payload).asJsonObject }.getOrNull() ?: continue
+                    images += imagesOf(chunk)
+                }
+            }
+        }
+        return images
+    }
+
+    private fun imagesOf(chunk: JsonObject): List<GeneratedImage> {
+        val choice = chunk.arrayOrNull("choices")?.firstOrNull()?.asObjectOrNull() ?: return emptyList()
+        val container = choice.objOrNull("delta") ?: choice.objOrNull("message") ?: return emptyList()
+        val images = container.arrayOrNull("images") ?: return emptyList()
+        return images.mapNotNull { element -> imageOf(element.asObjectOrNull() ?: return@mapNotNull null) }
+    }
+
+    private fun imageOf(item: JsonObject): GeneratedImage? {
+        val url = item.objOrNull("image_url")?.stringOrNull("url").orEmpty()
+            .ifEmpty { item.stringOrNull("url").orEmpty() }
+        if (url.isEmpty()) return null
+        val match = DATA_URL.matchEntire(url) ?: return GeneratedImage(url = url)
+        // mime 只在 data URL 里（GeneratedImage 没有独立字段），两个字段都带出去供网关挑选
+        return GeneratedImage(b64Json = match.groupValues[2], url = url)
+    }
+
     override fun classify(status: Int, body: String): UpstreamError {
         val message = extractMessage(body).ifEmpty { "上游 HTTP $status" + bodySnippet(body) }
         val lower = message.lowercase()
@@ -249,6 +515,8 @@ class AntigravityProvider(
             // 注意不要把 401/403 降级成短冷却——那会导致反复触发 OAuth 刷新，
             // 加速 Google 风控吊销 refresh_token（「越修越频繁失效」的根因）。
             status == 401 || status == 403 -> ErrorKind.SESSION_DEAD
+            // 图像通道用 status=0 表示连不上/读响应失败（与 ChatCall 的口径一致）
+            status <= 0 -> ErrorKind.NETWORK
             status == 404 -> ErrorKind.CLIENT // 模型不存在属于客户端入参错误，不连累账号被禁用
             status == 429 && (lower.contains("quota") || lower.contains("capacity")) -> ErrorKind.QUOTA
             status == 429 -> ErrorKind.SOFT_RATE
@@ -832,6 +1100,8 @@ class AntigravityProvider(
         return CreditInfo(
             pct,
             known = true,
+            // 这是配额剩余百分比，不是积分：不带单位就会被当成「87 点」与别家相加
+            unit = CreditUnit.PERCENT,
             detail = buildString {
                 append("$tierLabel · 组配额剩余 $pct%（最紧：${tightest.groupName} ${tightest.windowName}）")
                 if (stillUsable && pct == 0L) {
@@ -1066,6 +1336,12 @@ class AntigravityProvider(
         )
 
         private const val MODEL_CACHE_TTL_MILLIS = 10L * 60 * 1000
+
+        /** 模型目录 `extra` 里的音频能力位（只在上游明确声明时写入）。 */
+        const val AUDIO_CAPABILITY = "audio"
+
+        /** 上游回图的 data URL：`data:<mime>;base64,<data>`。mime 必须保留，网关/客户端据此存盘。 */
+        private val DATA_URL = Regex("^data:([^;,]+);base64,(.+)$", RegexOption.DOT_MATCHES_ALL)
 
         val SCOPES = listOf(
             "https://www.googleapis.com/auth/cloud-platform",

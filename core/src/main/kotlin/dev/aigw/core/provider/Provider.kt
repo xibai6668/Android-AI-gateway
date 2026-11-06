@@ -69,6 +69,14 @@ data class QuotaPack(
 )
 
 /**
+ * 用「音频对话模型」代做转写的供应商。
+ *
+ * 与有原生 `/audio/transcriptions` 端点的供应商区分：后者的结果是真正的语音识别，
+ * 前者只能让对话模型听懂录音后复述，长音频会漏字。语音端点的候选排序需要这个区分。
+ */
+interface ConversationalTranscriber
+
+/**
  * 一个上游供应商。
  *
  * 抽象边界刻意定在「OpenAI 请求体 → OpenAI 格式响应」：[openChat] 接收标准 OpenAI 请求体，
@@ -106,6 +114,30 @@ interface Provider {
 
     /** 发起一次对话。 */
     fun openChat(account: ProviderAccount, openAiBody: String): ChatCall
+
+    /**
+     * 是否实现 `/v1/images/generations`。
+     *
+     * 声明为 true 的 provider 才能被图像端点路由到；网关只在支持者之间做 Failover，
+     * 否则会把没有任何图像能力的供应商也算进候选，白白失败一轮。
+     */
+    val supportsImageGeneration: Boolean get() = false
+
+    /** 是否实现 `/v1/audio/transcriptions`（同上，用于语音端点的候选过滤）。 */
+    val supportsAudioTranscription: Boolean get() = false
+
+    /**
+     * 生成图片。只有 [supportsImageGeneration] 为 true 时才会被网关调用。
+     *
+     * 与 [openChat] 同一套边界：入参已是网关解析好的语义对象，上游私有协议的双向转换
+     * 封在实现内部；失败一律走 [MediaCall.Failure]，由网关按 [classify] 决定换号还是终止。
+     */
+    fun generateImage(account: ProviderAccount, request: ImageGenerationRequest): MediaCall<ImageGenerationResult> =
+        MediaCall.Failure(501, "供应商 $displayName 不支持图片生成")
+
+    /** 语音转写；[supportsAudioTranscription] 为 false 时不会被调用。 */
+    fun transcribeAudio(account: ProviderAccount, request: AudioTranscriptionRequest): MediaCall<AudioTranscriptionResult> =
+        MediaCall.Failure(501, "供应商 $displayName 不支持语音转写")
 
     /** 预刷新凭证；返回新账号表示 token 发生轮换（调用方需原子写回）。 */
     fun refreshAccount(account: ProviderAccount, skewSeconds: Long): ProviderAccount? = null

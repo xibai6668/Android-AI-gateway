@@ -360,10 +360,42 @@ object OpenAiGemini {
                         })
                     }
                 }
+                // OpenAI 的音频 part（`{type:input_audio, input_audio:{data, format}}`）
+                // 同样是 inlineData；不处理就会被静默丢掉，模型拿到空内容后会凭空编造
+                "input_audio" -> {
+                    val audio = part.objOrNull("input_audio") ?: continue
+                    val data = audio.stringOrNull("data").orEmpty()
+                    if (data.isEmpty()) continue
+                    flushText()
+                    val format = audio.stringOrNull("format").orEmpty().ifEmpty { "wav" }
+                    parts.add(JsonObject().apply {
+                        add("inlineData", JsonObject().apply {
+                            addProperty("mimeType", audioMimeOf(format))
+                            addProperty("data", data)
+                        })
+                    })
+                }
             }
         }
         flushText()
         return if (parts.size() > 0) parts else null
+    }
+
+    /** OpenAI `input_audio.format`（裸格式名）→ MIME；已是 MIME 时原样返回。 */
+    fun audioMimeOf(format: String): String {
+        val value = format.trim().lowercase()
+        if (value.isEmpty()) return "audio/wav"
+        if (value.contains('/')) return value
+        return when (value) {
+            "mp3" -> "audio/mpeg"
+            "wav" -> "audio/wav"
+            "m4a", "mp4" -> "audio/mp4"
+            "webm" -> "audio/webm"
+            "ogg" -> "audio/ogg"
+            "flac" -> "audio/flac"
+            "aac" -> "audio/aac"
+            else -> "audio/$value"
+        }
     }
 
     private fun toGeminiTools(tools: JsonArray): JsonArray? {

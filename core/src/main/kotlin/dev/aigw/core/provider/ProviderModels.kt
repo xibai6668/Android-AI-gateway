@@ -22,7 +22,24 @@ data class CreditInfo(
     /** false 表示上游未返回可解析的额度字段，界面显示「—」而不是 0。 */
     val known: Boolean = true,
     val detail: String = "",
+    /**
+     * 余额的计量单位；空串等同 [CreditUnit.CREDITS]。
+     *
+     * 各家口径不一样：Trae / 小浣熊 / Loomy 是积分，Antigravity 没有积分条目时只能拿到
+     * 配额剩余百分比（0~100）。不带单位就会把 87% 和 9 万积分加成「90087」，
+     * 对客报余额时必须按单位分组，不能跨单位直接相加。
+     */
+    val unit: String = "",
 )
+
+/** 余额单位取值（[CreditInfo.unit]）。 */
+object CreditUnit {
+    /** 积分 / 权益包份数，各家可相加做总量。 */
+    const val CREDITS = "credits"
+
+    /** 配额剩余百分比（0~100），只能按账号展示，不能与积分类相加。 */
+    const val PERCENT = "percent"
+}
 
 /** provider 专属动作的结果。 */
 data class ProviderActionResult(
