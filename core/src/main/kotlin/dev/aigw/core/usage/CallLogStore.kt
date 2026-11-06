@@ -52,6 +52,24 @@ data class CallRecord(
     val responseBody: String,
     /** 返回原文（截断保存）：流式为上游逐行报文，非流式为完整 JSON；排查 503/空回复用。 */
     val rawResponse: String = "",
+    /**
+     * 本次请求一共向上游尝试了几次（含最终成功的那次）。
+     *
+     * 与「请求数」分开记：一次请求换 3 个号才成功，请求数是 1、尝试数是 3。
+     * 把两者混为一谈会让成功率既不能反映客户端体验、也不能反映上游健康度。
+     */
+    val tries: Int = 1,
+    /** 是否靠换号/换供应商救回来的（尝试数 > 1 且最终成功）。 */
+    val retried: Boolean = false,
+    /** 调用方的客户端密钥 id / 名称；本机免鉴权调用为空。 */
+    val clientKeyId: String = "",
+    val clientKeyName: String = "",
+    /** 本次调用的费用（微美元，1e-6 USD）。 */
+    val costMicros: Long = 0L,
+    /** 费用是否算得出来；false 表示该模型没配价格，界面必须显示「未定价」而不是 0 元。 */
+    val costKnown: Boolean = false,
+    /** 是否复用了会话亲和（同会话仍落在上一轮的账号上）。 */
+    val affinityReused: Boolean = false,
 )
 
 /** 用量统计聚合。 */
@@ -66,6 +84,12 @@ data class UsageStats(
     val failed: Long = 0,
     /** 客户端中途断开（流式中断）的请求数；三者相加应等于 [requests]。 */
     val aborted: Long = 0,
+    /** 靠换号/换供应商救回来的请求数（是 [requests] 的子集，不是另一个分类）。 */
+    val retried: Long = 0,
+    /** 已算出费用的调用合计（微美元）。 */
+    val costMicros: Long = 0,
+    /** 有记录但价格未知的调用数：它的费用**没有**计入 [costMicros]，界面要一并显示。 */
+    val unpriced: Long = 0,
 ) {
     /** 命中率（0~100 的百分比）；没有输入 token 时返回 null（无意义，不编造 0%）。 */
     val cacheHitPercent: Double?
@@ -329,6 +353,13 @@ class CallLogStore(
                     requestBody = obj.get("requestBody")?.asString.orEmpty(),
                     responseBody = obj.get("responseBody")?.asString.orEmpty(),
                     rawResponse = obj.get("rawResponse")?.asString.orEmpty(),
+                    tries = obj.get("tries")?.asInt ?: 1,
+                    retried = obj.get("retried")?.asBoolean ?: false,
+                    clientKeyId = obj.get("clientKeyId")?.asString.orEmpty(),
+                    clientKeyName = obj.get("clientKeyName")?.asString.orEmpty(),
+                    costMicros = obj.get("costMicros")?.asLong ?: 0L,
+                    costKnown = obj.get("costKnown")?.asBoolean ?: false,
+                    affinityReused = obj.get("affinityReused")?.asBoolean ?: false,
                 ),
             )
         }
@@ -463,6 +494,13 @@ private fun CallRecord.toJson(): JsonObject = JsonObject().apply {
     addProperty("requestBody", requestBody)
     addProperty("responseBody", responseBody)
     addProperty("rawResponse", rawResponse)
+    addProperty("tries", tries)
+    addProperty("retried", retried)
+    addProperty("clientKeyId", clientKeyId)
+    addProperty("clientKeyName", clientKeyName)
+    addProperty("costMicros", costMicros)
+    addProperty("costKnown", costKnown)
+    addProperty("affinityReused", affinityReused)
 }
 
 private operator fun UsageStats.plus(record: CallRecord) = copy(
@@ -474,6 +512,11 @@ private operator fun UsageStats.plus(record: CallRecord) = copy(
     success = success + if (record.status == CallStatus.SUCCESS) 1 else 0,
     failed = failed + if (record.status == CallStatus.FAILED) 1 else 0,
     aborted = aborted + if (record.status == CallStatus.ABORTED) 1 else 0,
+    retried = retried + if (record.retried) 1 else 0,
+    // 未定价的调用不计入金额，单独计数：合计旁并排告知用户「另有 N 次未定价」，
+    // 把它算成 0 元会让总金额看起来偏低。
+    costMicros = costMicros + if (record.costKnown) record.costMicros else 0L,
+    unpriced = unpriced + if (record.costKnown) 0 else 1,
 )
 
 private operator fun UsageStats.minus(record: CallRecord) = copy(
@@ -485,6 +528,9 @@ private operator fun UsageStats.minus(record: CallRecord) = copy(
     success = (success - if (record.status == CallStatus.SUCCESS) 1 else 0).coerceAtLeast(0),
     failed = (failed - if (record.status == CallStatus.FAILED) 1 else 0).coerceAtLeast(0),
     aborted = (aborted - if (record.status == CallStatus.ABORTED) 1 else 0).coerceAtLeast(0),
+    retried = (retried - if (record.retried) 1 else 0).coerceAtLeast(0),
+    costMicros = (costMicros - if (record.costKnown) record.costMicros else 0L).coerceAtLeast(0),
+    unpriced = (unpriced - if (record.costKnown) 0 else 1).coerceAtLeast(0),
 )
 
 private fun UsageStats.toJson(): JsonObject = JsonObject().apply {
@@ -496,11 +542,15 @@ private fun UsageStats.toJson(): JsonObject = JsonObject().apply {
     addProperty("success", success)
     addProperty("failed", failed)
     addProperty("aborted", aborted)
+    addProperty("retried", retried)
+    addProperty("costMicros", costMicros)
+    addProperty("unpriced", unpriced)
 }
 
 private fun UsageStats.isZero(): Boolean =
     requests == 0L && promptTokens == 0L && completionTokens == 0L &&
-        totalTokens == 0L && cachedTokens == 0L && success == 0L && failed == 0L && aborted == 0L
+        totalTokens == 0L && cachedTokens == 0L && success == 0L && failed == 0L && aborted == 0L &&
+        retried == 0L && costMicros == 0L && unpriced == 0L
 
 private fun usageStatsFromJson(raw: String): UsageStats {
     val obj = runCatching { JsonParser.parseString(raw).asJsonObject }.getOrNull() ?: return UsageStats()
@@ -513,5 +563,8 @@ private fun usageStatsFromJson(raw: String): UsageStats {
         success = obj.get("success")?.asLong ?: 0L,
         failed = obj.get("failed")?.asLong ?: 0L,
         aborted = obj.get("aborted")?.asLong ?: 0L,
+        retried = obj.get("retried")?.asLong ?: 0L,
+        costMicros = obj.get("costMicros")?.asLong ?: 0L,
+        unpriced = obj.get("unpriced")?.asLong ?: 0L,
     )
 }

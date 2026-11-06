@@ -2,10 +2,15 @@ package dev.aigw.core.pool
 
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import dev.aigw.core.failover.AccountCandidate
+import dev.aigw.core.failover.AccountStrategy
+import dev.aigw.core.failover.orderAccounts
+import dev.aigw.core.provider.CreditUnit
 import dev.aigw.core.provider.ProviderAccount
 import dev.aigw.core.store.KeyValueStore
 import dev.aigw.core.util.objOrNull
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.read
 import kotlin.concurrent.write
@@ -18,6 +23,12 @@ data class AccountStatus(
     /** 权益包/积分余额；[creditsKnown] 为 false 时该值无意义。 */
     val credits: Long,
     val creditsKnown: Boolean,
+    /**
+     * 余额单位（见 [dev.aigw.core.provider.CreditUnit]）；空串等同 credits。
+     *
+     * 带单位是为了不把「配额剩余 87%」与「9 万积分」当成同一个数相加。
+     */
+    val creditUnit: String = "",
     /** provider 给出的额度补充说明（如「来源=团队，当日剩余=…」）。 */
     val detail: String,
     /** 上次失败原因（凭证失效或手动停用的说明）；空串表示一切正常。 */
@@ -45,19 +56,31 @@ data class PoolSummary(
     val usable: Int,
     val disabled: Int,
     val disabledByUser: Int,
+    /** 仅 [CreditUnit.CREDITS] 口径的余额合计；百分比余额不参与相加。 */
     val totalCredits: Long,
     /** 有多少个账号的额度是已知的。 */
     val creditsKnown: Int,
+    /** 有多少个账号的余额是百分比口径（不计入 [totalCredits]）。 */
+    val percentKnown: Int = 0,
 )
 
 private class Entry(var account: ProviderAccount) {
     var credits: Long = 0
     var creditsKnown: Boolean = false
+    var creditUnit: String = ""
     var detail: String = ""
     var disabled: Boolean = false
     var enabled: Boolean = true
     var reason: String = ""
     var priority: Int = 0
+
+    /**
+     * 额度重置时刻（毫秒，0 未知）。只用于 PACE 策略。
+     *
+     * 取各额度包里「最近的过期/重置时刻」：订阅类上游报的是窗口重置，
+     * 积分类报的是过期，两者语义都是「过了这一刻未用就作废」。
+     */
+    var resetAtMillis: Long = 0
 
     fun healthy(): Boolean = !disabled && enabled
 }
@@ -108,6 +131,9 @@ class AccountPool(
 
     /** 本地冷却表：`providerId/uid` → 冷却截止毫秒（仅内存）。 */
     private val cooldowns = ConcurrentHashMap<String, Long>()
+
+    /** ROTATE 策略的全局游标：递增到「下一个该用的位置」，天然均摊且无额外状态。 */
+    private val rotationCursor = AtomicLong(0)
 
     init {
         load()
@@ -242,12 +268,17 @@ class AccountPool(
         credits: Long,
         known: Boolean = true,
         detail: String = "",
+        unit: String = "",
+        /** 额度重置/过期时刻（毫秒）；0 未知。PACE 策略靠它判断「快作废的先花」。 */
+        resetAtMillis: Long = 0L,
     ) {
         val found = lock.write {
             val entry = entries[keyOf(providerId, uid)] ?: return@write false
             entry.credits = credits
             entry.creditsKnown = known
             entry.detail = detail
+            entry.creditUnit = unit
+            entry.resetAtMillis = resetAtMillis
             true
         }
         if (found) persistState(providerId, uid)
@@ -286,22 +317,52 @@ class AccountPool(
 
     // ---------------------------------------------------------------- 选号
 
-    /** 取该 provider 可用账号中优先级最高者，同级取余额最高者；[exclude] 用于同一请求内的换号重试。 */
-    fun pick(providerId: String, exclude: Set<String> = emptySet(), accountFilter: (String) -> Boolean = { true }): ProviderAccount? = lock.read {
+    /**
+     * 取该 provider 可用账号中优先级最高者，同级取余额最高者；[exclude] 用于同一请求内的换号重试。
+     *
+     * 这是 SMART 策略的快捷入口，与 [pickByStrategy] 的 SMART 分支同口径。
+     */
+    fun pick(providerId: String, exclude: Set<String> = emptySet(), accountFilter: (String) -> Boolean = { true }): ProviderAccount? =
+        pickByStrategy(providerId, AccountStrategy.SMART, exclude, accountFilter)
+
+    /**
+     * 按指定策略选号。
+     *
+     * 过滤条件（排除 / 不健康 / 冷却中 / 外部过滤）对所有策略一致——策略只决定「谁先谁后」，
+     * 不能把不可用的账号重新纳入。策略本身是纯函数（[orderAccounts]），便于单测与排障。
+     *
+     * [rotationCursor] 只对 ROTATE 生效：用「已发起请求数」当游标，天然均摊。
+     */
+    fun pickByStrategy(
+        providerId: String,
+        strategy: AccountStrategy,
+        exclude: Set<String> = emptySet(),
+        accountFilter: (String) -> Boolean = { true },
+    ): ProviderAccount? = lock.read {
         val group = byProvider[providerId] ?: return@read null
-        var best: Entry? = null
-        for (entry in group) {
-            if (entry.account.uid in exclude) continue
-            if (!entry.healthy()) continue
-            if (isCooling(providerId, entry.account.uid)) continue
-            if (!accountFilter(entry.account.uid)) continue
-            // 先比优先级（用户手动排序，最高优先），同级再比余额：
-            // 用户把某个号拖到最上面，就是希望它先被用，不该被余额更高的号盖掉。
-            val better = best == null || entry.priority > best.priority ||
-                (entry.priority == best.priority && entry.credits > best.credits)
-            if (better) best = entry
+        val candidates = group.mapNotNull { entry ->
+            val uid = entry.account.uid
+            if (uid in exclude) return@mapNotNull null
+            if (!entry.healthy()) return@mapNotNull null
+            if (isCooling(providerId, uid)) return@mapNotNull null
+            if (!accountFilter(uid)) return@mapNotNull null
+            entry to AccountCandidate(
+                uid = uid,
+                priority = entry.priority,
+                credits = entry.credits,
+                creditsKnown = entry.creditsKnown,
+                resetAtMillis = entry.resetAtMillis,
+            )
         }
-        best?.account
+        if (candidates.isEmpty()) return@read null
+        val ordered = orderAccounts(
+            candidates = candidates.map { it.second },
+            strategy = strategy,
+            rotationCursor = if (strategy == AccountStrategy.ROTATE) rotationCursor.incrementAndGet() else 0L,
+            nowMillis = nowMillis(),
+        )
+        val byUid = candidates.associate { it.second.uid to it.first }
+        ordered.firstNotNullOfOrNull { byUid[it]?.account }
     }
 
     /**
@@ -353,6 +414,7 @@ class AccountPool(
         var disabledByUser = 0
         var totalCredits = 0L
         var creditsKnown = 0
+        var percentKnown = 0
         for (entry in source) {
             total++
             when {
@@ -361,8 +423,13 @@ class AccountPool(
                 else -> usable++
             }
             if (entry.creditsKnown) {
-                totalCredits += entry.credits
-                creditsKnown++
+                // 百分比余额与积分类不是同一个量纲，混进合计就是报假余额
+                if (entry.creditUnit == CreditUnit.PERCENT) {
+                    percentKnown++
+                } else {
+                    totalCredits += entry.credits
+                    creditsKnown++
+                }
             }
         }
         PoolSummary(
@@ -372,6 +439,7 @@ class AccountPool(
             disabledByUser = disabledByUser,
             totalCredits = totalCredits,
             creditsKnown = creditsKnown,
+            percentKnown = percentKnown,
         )
     }
 
@@ -426,6 +494,7 @@ class AccountPool(
         nickname = entry.account.nickname,
         credits = entry.credits,
         creditsKnown = entry.creditsKnown,
+        creditUnit = entry.creditUnit,
         detail = entry.detail,
         reason = entry.reason,
         disabled = entry.disabled,
@@ -463,7 +532,9 @@ class AccountPool(
     private fun stateJson(entry: Entry): JsonObject = JsonObject().apply {
         addProperty("credits", entry.credits)
         addProperty("creditsKnown", entry.creditsKnown)
+        addProperty("creditUnit", entry.creditUnit)
         addProperty("detail", entry.detail)
+        addProperty("resetAt", entry.resetAtMillis)
         addProperty("disabled", entry.disabled)
         addProperty("enabled", entry.enabled)
         addProperty("reason", entry.reason)
@@ -478,7 +549,9 @@ class AccountPool(
             readState(account.providerId, account.uid)?.let { state ->
                 entry.credits = state.get("credits")?.asLong ?: 0L
                 entry.creditsKnown = state.get("creditsKnown")?.asBoolean ?: false
+                entry.creditUnit = state.get("creditUnit")?.asString.orEmpty()
                 entry.detail = state.get("detail")?.asString.orEmpty()
+                entry.resetAtMillis = state.get("resetAt")?.asLong ?: 0L
                 entry.disabled = state.get("disabled")?.asBoolean ?: false
                 entry.enabled = state.get("enabled")?.asBoolean ?: true
                 entry.reason = state.get("reason")?.asString.orEmpty()

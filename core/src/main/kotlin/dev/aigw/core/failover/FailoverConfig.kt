@@ -153,6 +153,8 @@ data class ModelFailoverSettings(
      * 不影响禁用/启用语义，到期自动恢复。
      */
     val accountCooldownMs: Long = DEFAULT_ACCOUNT_COOLDOWN_MS,
+    /** 账号选择策略（默认 SMART = 优先级优先、同级比余额）。 */
+    val accountStrategy: AccountStrategy = AccountStrategy.SMART,
     // 逻辑模型名 -> 候选供应商列表
     val routes: Map<String, List<FailoverCandidate>> = emptyMap(),
 ) {
@@ -163,6 +165,7 @@ data class ModelFailoverSettings(
         add("concurrency", concurrency.toJson())
         add("modelCooldown", modelCooldown.toJson())
         addProperty("accountCooldownMs", accountCooldownMs)
+        addProperty("accountStrategy", accountStrategy.name)
         val routesObj = JsonObject()
         for ((model, candidates) in routes) {
             val arr = JsonArray()
@@ -199,6 +202,10 @@ data class ModelFailoverSettings(
                 modelCooldown = ModelCooldownConfig.fromJson(obj.getAsJsonObject("modelCooldown")),
                 accountCooldownMs = obj.get("accountCooldownMs")?.asLong
                     ?.coerceIn(0L, 600_000L) ?: DEFAULT_ACCOUNT_COOLDOWN_MS,
+                // 未知策略名落回 SMART：旧版写进来的配置（没有该字段）也是这个默认值
+                accountStrategy = runCatching {
+                    AccountStrategy.valueOf(obj.get("accountStrategy")?.asString.orEmpty())
+                }.getOrDefault(AccountStrategy.SMART),
                 routes = routes,
             )
         }
