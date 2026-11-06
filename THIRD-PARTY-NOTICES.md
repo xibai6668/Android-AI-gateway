@@ -46,6 +46,18 @@
   - 「Claude Code / Codex CLI 特征文本」替换表——上游以 `Illegal API invocation from an unapproved channel`
     拒绝带这些特征文本的请求，替换表来自其用真实客户端逐词实测的结论
   - 错误分类与重试口径的对照
+- 借鉴内容（网关后台能力，**仅设计思路与行为口径，未复制任何代码**；其实现为 Go + 内嵌 JS，本项目为 Kotlin）：
+  - 客户端密钥与上游凭证分离、每密钥可命名/启停/轮换、模型白名单、多窗口限额（日/周/月/每 N 小时），
+    以及「超额在打上游之前拒绝 + 429 带 Retry-After 与重置时刻」的口径（`gateway/ClientKeys.kt`）
+  - 会话亲和的分档思想（一轮内必保持、跨轮在缓存值得留时保持）与「亲和失败绝不阻断请求」
+    （`gateway/SessionAffinity.kt` 取「一轮内必保持」为默认）
+  - 路由组的规则维度（token 阈值/图片/压缩请求/工作目录/时段与星期）与「规则只在一轮开始时判定」
+    （`gateway/RoutingGroups.kt`）
+  - 请求/尝试分层计量（一次请求被重试接住不算失败）、未定价调用「不计为 0 而是标未定价」
+    （`usage/CallLogStore.kt`、`usage/ModelPricing.kt`）
+  - 中间件钩子「抛异常或超时即视为未改动」的容错铁律（`gateway/GatewayMiddleware.kt`）
+  - 可观测内部 API 的划分（路由预览 / 用量 / 限额自查）与「密钥只看得到自己的额度」
+    （`gateway/GatewayHttpServer.kt`）
 
 ### 4. workbuddy2api-panel
 

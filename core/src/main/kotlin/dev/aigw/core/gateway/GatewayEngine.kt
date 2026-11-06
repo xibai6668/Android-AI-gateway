@@ -72,6 +72,8 @@ data class CreditRefreshResult(
     val balance: Long,
     val known: Boolean,
     val error: String,
+    /** 余额单位（[dev.aigw.core.provider.CreditUnit]）；空串等同 credits。 */
+    val unit: String = "",
 )
 
 /** 批量动作的目标账号（providerId + uid）。 */
@@ -298,6 +300,85 @@ class GatewayEngine(
     @Volatile
     private var modelExposure: ModelExposureSettings = ModelExposureSettings.load(store)
 
+    // ------------------------------------------------- 客户端密钥 / 会话亲和 / 路由组 / 改写 / 价格
+
+    /** 客户端密钥台账（与上游凭证完全分离，只管「谁能调网关」）。 */
+    val clientKeyStore = ClientKeyStore(store, nowMillis)
+
+    /** 密钥用量台账：独立于调用记录开关，清日志不会把额度「赚」回来。 */
+    val clientKeyUsage = ClientKeyUsageLedger(store, nowMillis)
+
+    /** 会话 → (供应商, 账号) 亲和表；只存内存，重启后重新学习。 */
+    val sessionAffinity = SessionAffinity(nowMillis = nowMillis)
+
+    @Volatile
+    private var routingGroups: RoutingGroupSettings =
+        RoutingGroupSettings.fromJson(store.read(RoutingGroupSettings.STORE_KEY))
+
+    @Volatile
+    private var middlewareSettings: MiddlewareSettings =
+        MiddlewareSettings.fromJson(store.read(MiddlewareSettings.STORE_KEY))
+
+    /** 由 [middlewareSettings] 构建的改写链；无任何改写时为空链（网关走零开销路径）。 */
+    @Volatile
+    private var middlewareChain: MiddlewareChain = MiddlewareChain.build(middlewareSettings)
+
+    @Volatile
+    private var pricingTable: dev.aigw.core.usage.PricingTable =
+        dev.aigw.core.usage.PricingTable.fromJson(store.read(dev.aigw.core.usage.PricingTable.STORE_KEY))
+
+    fun routingGroupSettings(): RoutingGroupSettings = routingGroups
+
+    fun updateRoutingGroups(updated: RoutingGroupSettings) {
+        routingGroups = updated
+        store.write(RoutingGroupSettings.STORE_KEY, updated.toJson().toString())
+        log("路由组已更新（共 ${updated.groups.size} 组）")
+    }
+
+    fun middlewareSettings(): MiddlewareSettings = middlewareSettings
+
+    fun middleware(): MiddlewareChain = middlewareChain
+
+    fun updateMiddlewareSettings(updated: MiddlewareSettings) {
+        middlewareSettings = updated
+        middlewareChain = MiddlewareChain.build(updated)
+        store.write(MiddlewareSettings.STORE_KEY, updated.toJson().toString())
+        log("请求改写已更新（别名 ${updated.aliases.size} 条，system 追加=${if (updated.systemPromptAppend.isNotBlank()) "有" else "无"}，清理 think 标签=${if (updated.stripThinkTags) "开" else "关"}）")
+    }
+
+    fun pricingTable(): dev.aigw.core.usage.PricingTable = pricingTable
+
+    fun updatePricingTable(updated: dev.aigw.core.usage.PricingTable) {
+        pricingTable = updated
+        store.write(dev.aigw.core.usage.PricingTable.STORE_KEY, updated.toJson().toString())
+        log("模型价格表已更新（共 ${updated.prices.size} 个模型）")
+    }
+
+    /** 账号选择策略：与路由/容错设置一起存，策略变更立即生效（选号每次实时读取）。 */
+    fun accountStrategy(): dev.aigw.core.failover.AccountStrategy = failoverSettings.accountStrategy
+
+    /**
+     * 计算一次调用的费用（微美元）。
+     *
+     * 返回 `null` 表示该模型没配价格——调用方必须显示「未定价」而不是 0 元。
+     */
+    fun costMicrosOf(
+        modelFullId: String,
+        promptTokens: Long,
+        completionTokens: Long,
+        cacheReadTokens: Long,
+        cacheWriteTokens: Long = 0L,
+    ): Long? {
+        val cost = dev.aigw.core.usage.costOf(
+            price = pricingTable.priceOf(modelFullId),
+            promptTokens = promptTokens,
+            completionTokens = completionTokens,
+            cacheReadTokens = cacheReadTokens,
+            cacheWriteTokens = cacheWriteTokens,
+        ) ?: return null
+        return dev.aigw.core.usage.toMicroUsd(cost)
+    }
+
     /** 当前正在监听的登录回调服务（同一时间只允许一个登录流程）。 */
     private var callbackServer: LoopbackCallbackServer? = null
 
@@ -424,8 +505,29 @@ class GatewayEngine(
     /**
      * 对外暴露的模型目录：模型页 UI 用 `modelsStreaming`（不过滤，展示全量，供勾选）；
      * HTTP `/v1/models` 用本方法（按开放名单过滤）。
+     *
+     * 路由组也会出现在这里（`group/<id>`）：组对客户端就是一个模型，
+     * 不列出来客户端就没法选它。
      */
-    fun exposedModels(): List<RoutedModel> = filterExposed(models())
+    fun exposedModels(): List<RoutedModel> = filterExposed(models()) + groupModels()
+
+    /** 把路由组投影成模型条目；能力/上下文取自组内首位成员的模型元数据。 */
+    private fun groupModels(): List<RoutedModel> = routingGroups.groups
+        .filter { it.enabled && it.members.isNotEmpty() }
+        .mapNotNull { group ->
+            val first = group.members.first()
+            val memberModel = models().firstOrNull { it.providerId == first.providerId && it.model.id == first.model }
+                ?: return@mapNotNull RoutedModel(
+                    providerId = RoutingGroupSettings.PREFIX + group.id,
+                    providerName = "路由组",
+                    model = dev.aigw.core.provider.ProviderModel(group.displayName, group.displayName),
+                )
+            RoutedModel(
+                providerId = RoutingGroupSettings.PREFIX + group.id,
+                providerName = "路由组",
+                model = memberModel.model.copy(id = group.id, name = group.displayName),
+            )
+        }
 
     // ------------------------------------------------------------------ 代理
 
@@ -670,7 +772,7 @@ class GatewayEngine(
             pool.updateCredits(providerId, uid, 0, false, reason)
             return CreditRefreshResult(providerId, uid, account.nickname, 0, false, reason)
         }
-        pool.updateCredits(providerId, uid, info.balance, info.known, info.detail)
+        pool.updateCredits(providerId, uid, info.balance, info.known, info.detail, info.unit)
         if (info.known) {
             log("额度刷新 $providerId/${account.nickname.ifEmpty { uid }}：${info.balance}（${info.detail}）")
         } else {
@@ -678,7 +780,7 @@ class GatewayEngine(
         }
         return CreditRefreshResult(
             providerId, uid, account.nickname, info.balance, info.known,
-            if (info.known) "" else info.detail,
+            if (info.known) "" else info.detail, info.unit,
         )
     }
 
@@ -1423,9 +1525,25 @@ class GatewayEngine(
      * 3. 若只配置了一个供应商的账号，自动由该供应商接管所有请求；
      * 4. 其它情况落到有账号的供应商或 `defaultProvider`。
      */
-    fun resolveRoute(requested: String): Route? {
+    fun resolveRoute(requested: String, body: String = ""): Route? {
         var model = requested.trim()
         if (model.isEmpty()) return null
+
+        // 路由组：首选路由由组内首位成员决定，其余成员在 resolveCandidateRoutes 里作为备用。
+        // 放在最前面，因为组名本身就是对外模型 id，不该再进入后面的前缀/特征推断。
+        val groupId = RoutingGroupSettings.groupIdOf(model, routingGroups)
+        if (groupId != null) {
+            val group = routingGroups.find(groupId)
+            if (group != null) {
+                val ordered = RoutingGroupResolver.orderMembers(group, ruleContextOf(body))
+                val first = ordered.firstOrNull()
+                if (first != null && registry.get(first.providerId) != null &&
+                    providerSettings(first.providerId).enabled
+                ) {
+                    return Route(first.providerId, first.model)
+                }
+            }
+        }
 
         // 剥离可能存在的 "models/" 前缀（Google/Gemini 客户端与 SDK 的常见标准命名）
         if (model.startsWith("models/", ignoreCase = true)) {
@@ -1506,11 +1624,33 @@ class GatewayEngine(
      * 若选号不感知在途，多个请求会全挤在优先级最高的那一个账号上排队，其它账号完全闲着。
      * 全部账号都满载时仍返回首选账号，由调用方决定是排队还是快速拒绝。
      */
-    fun pickAccount(providerId: String, exclude: Set<String> = emptySet(), region: String? = null): ProviderAccount? {
+    fun pickAccount(
+        providerId: String,
+        exclude: Set<String> = emptySet(),
+        region: String? = null,
+        /** 会话键（亲和命中时优先用上一轮答过它的账号）。 */
+        sessionKey: String = "",
+    ): ProviderAccount? {
+        // 亲和优先：命中时直接复用该账号，但**仍然走完整过滤**——账号可能已失效/被禁用/在冷却，
+        // 那时不能因为它「曾经答过」就把请求送去撞墙。
+        if (sessionKey.isNotEmpty()) {
+            val binding = sessionAffinity.lookup(sessionKey)
+            if (binding != null && binding.providerId == providerId && binding.uid !in exclude) {
+                val account = pool.account(providerId, binding.uid)
+                if (account != null && isAccountUsable(providerId, binding.uid) && hasLoadCapacity(providerId, binding.uid)) {
+                    return account
+                }
+            }
+        }
         val candidate = pickAccountIgnoringLoad(providerId, exclude, region) ?: return null
         if (hasLoadCapacity(providerId, candidate.uid)) return candidate
         return pickAccountIgnoringLoad(providerId, exclude, region, requireIdle = true) ?: candidate
     }
+
+    /** 账号当前是否可用（未禁用、未冷却）。亲和复用前的最后一道闸。 */
+    private fun isAccountUsable(providerId: String, uid: String): Boolean =
+        pool.statuses(providerId).firstOrNull { it.uid == uid }?.usable == true &&
+            !pool.isCooling(providerId, uid)
 
     private fun hasLoadCapacity(providerId: String, uid: String): Boolean =
         concurrencyGate.hasCapacity("$providerId/$uid")
@@ -1524,29 +1664,72 @@ class GatewayEngine(
     ): ProviderAccount? {
         val idleFilter: (String) -> Boolean = { uid -> !requireIdle || hasLoadCapacity(providerId, uid) }
         if (region == null) {
-            if (!requireIdle) return pool.pick(providerId, exclude)
-            return pool.pick(providerId, exclude, accountFilter = idleFilter)
+            if (!requireIdle) return pool.pickByStrategy(providerId, accountStrategy(), exclude)
+            return pool.pickByStrategy(providerId, accountStrategy(), exclude, accountFilter = idleFilter)
         }
         val regionAware = registry.get(providerId) as? dev.aigw.core.provider.RegionAwareSupport
             ?: return pickAccountIgnoringLoad(providerId, exclude, null, requireIdle)
         // 一次取状态快照（单次加锁），避免对每个账号各加一次读锁
         val statusByUid = pool.statuses(providerId).associateBy { it.uid }
-        return pool.accounts(providerId)
+        val candidates = pool.accounts(providerId)
             .filter { account -> account.uid !in exclude }
             .filter { account -> statusByUid[account.uid]?.usable == true }
             .filter { account -> regionAware.regionOf(account) == region }
             .filter { account -> idleFilter(account.uid) }
-            .maxByOrNull { account -> statusByUid[account.uid]?.credits ?: 0L }
+            .map { account ->
+                val status = statusByUid[account.uid]
+                dev.aigw.core.failover.AccountCandidate(
+                    uid = account.uid,
+                    priority = status?.priority ?: 0,
+                    credits = status?.credits ?: 0L,
+                    creditsKnown = status?.creditsKnown ?: false,
+                )
+            }
+        val ordered = dev.aigw.core.failover.orderAccounts(candidates, accountStrategy())
+        val byUid = pool.accounts(providerId).associateBy { it.uid }
+        return ordered.firstNotNullOfOrNull { byUid[it] }
+    }
+
+    /**
+     * 从请求体构造规则上下文。
+     *
+     * 只在解析候选路由时算一次：规则只在一轮开始时决策，工具回调过程中不重新判定，
+     * 否则同一轮会在中途换模型，上游前缀缓存整段作废。
+     */
+    private fun ruleContextOf(body: String): RuleContext {
+        if (body.isEmpty()) return RuleContext(nowMillis = now())
+        return RuleContext(
+            promptTokens = RoutingGroupResolver.estimatePromptTokens(body),
+            hasImage = RoutingGroupResolver.bodyHasImage(body),
+            compactRequest = RoutingGroupResolver.isCompactRequest(body),
+            folder = RoutingGroupResolver.detectFolder(body),
+            nowMillis = now(),
+        )
     }
 
     /**
      * 解析请求模型的所有候选路由（支持同款模型跨供应商故障转移 Failover）。
      *
-     * 1. 若配置了显式多供应商优先级映射表，按优先级（priority 降序）依次尝试；
-     * 2. 否则自动回退到启发式同名/同款探测逻辑；
-     * 3. 熔断中或无可用账号的供应商会被合理标记或降级。
+     * 优先级：路由组（`group/<id>` 或裸组名）> 显式多供应商映射表 > 启发式同名/同款探测。
+     * [body] 非空时用于评估组规则的上下文（token 估算、图片、压缩、工作目录）；
+     * 为空则依赖请求体的规则条件一律不命中，只剩时段/星期类条件生效。
      */
-    fun resolveCandidateRoutes(requested: String): List<Route> {
+    fun resolveCandidateRoutes(requested: String, body: String = ""): List<Route> {
+        // 路由组优先：组是用户显式声明的意图，不应被启发式回退盖过
+        val groupId = RoutingGroupSettings.groupIdOf(requested, routingGroups)
+        if (groupId != null) {
+            val group = routingGroups.find(groupId)
+            if (group != null) {
+                val ordered = RoutingGroupResolver.orderMembers(group, ruleContextOf(body))
+                val routes = ordered.mapNotNull { member ->
+                    if (registry.get(member.providerId) == null) return@mapNotNull null
+                    if (!providerSettings(member.providerId).enabled) return@mapNotNull null
+                    Route(member.providerId, member.model)
+                }
+                if (routes.isNotEmpty()) return routes
+            }
+        }
+
         val primary = resolveRoute(requested) ?: return emptyList()
         // 开关关闭时**只**用首选路由：不得跨供应商转移。
         // 此前只在下面「显式路由表」分支判了 enabled，启发式回退照跑，
