@@ -3,14 +3,19 @@ package dev.aigw.app.ui
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -30,6 +35,7 @@ import dev.aigw.app.ui.providers.ProviderUiRegistry
  * 账号卡片里的「专属信息区」由该供应商自己的 UI 组件渲染（[ProviderUiRegistry]），
  * 所以这里不需要认识设备指纹、签到、兑换码这些概念。
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ProviderDetailScreen(
     providerId: String,
@@ -96,6 +102,15 @@ fun ProviderDetailScreen(
         )
     }
 
+    // 供应商级设置（启停/默认模型）：engine 侧带缓存，读它不会每帧打盘
+    val providerSettings = viewModel.providerSettings(providerId)
+    var defaultModel by remember(providerSettings.defaultModel) {
+        mutableStateOf(providerSettings.defaultModel)
+    }
+    val providerModels = remember(state.models, providerId) {
+        state.models.filter { it.providerId == providerId }
+    }
+
     PageScaffold(
         title = info?.displayName ?: providerId,
         subtitle = "${accounts.size} 个账号 · 可用 ${accounts.count { it.usable }}",
@@ -136,7 +151,69 @@ fun ProviderDetailScreen(
             }
         }
 
-        ui.SettingsSection(viewModel.providerSettings(providerId)) { updated ->
+        // 供应商级设置：启停与默认模型。与页面末尾的「供应商专属设置」区分开，
+        // 后者由各家 ProviderUi 按需实现（默认实现为空，7 家目前都没用上）。
+        SectionCard {
+            SectionLabel("供应商设置")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("启用该供应商")
+                    Text(
+                        text = "停用后不参与模型目录与路由（账号与登录状态保留）",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = providerSettings.enabled,
+                    onCheckedChange = { enabled ->
+                        viewModel.updateProviderSettings(providerId, providerSettings.copy(enabled = enabled))
+                    },
+                )
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            OutlinedTextField(
+                value = defaultModel,
+                onValueChange = { defaultModel = it },
+                label = { Text("默认模型") },
+                supportingText = { Text("模型名不带 provider/ 前缀时用它；留空沿用供应商自己的默认") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            if (providerModels.isNotEmpty()) {
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    providerModels.forEach { routed ->
+                        ChoiceChip(
+                            text = routed.model.id,
+                            selected = defaultModel == routed.model.id,
+                            onClick = { defaultModel = routed.model.id },
+                        )
+                    }
+                }
+            } else {
+                Text(
+                    text = "先到「模型」页刷新目录，就能从这里点选该供应商的模型。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            OutlineActionButton("保存默认模型") {
+                viewModel.updateProviderSettings(
+                    providerId,
+                    providerSettings.copy(defaultModel = defaultModel.trim()),
+                )
+                viewModel.notice("已保存默认模型")
+            }
+        }
+
+        ui.SettingsSection(providerSettings) { updated ->
             viewModel.updateProviderSettings(providerId, updated)
         }
     }
