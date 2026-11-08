@@ -16,19 +16,28 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -676,4 +685,174 @@ fun PointsBillsHint(text: String, error: Boolean = false) {
         style = MaterialTheme.typography.bodySmall,
         color = if (error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
     )
+}
+
+/**
+ * 对话框内容的标准容器。
+ *
+ * `AlertDialog` 的 `text` 槽不会滚动，内容超过可用高度就被直接裁掉（标题与按钮还在，
+ * 中段却看不见也划不动）。所有内容可变的对话框都应该用它包一层。
+ */
+@Composable
+fun DialogContentColumn(
+    modifier: Modifier = Modifier,
+    verticalArrangement: Arrangement.Vertical = Arrangement.spacedBy(10.dp),
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(max = 460.dp)
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = verticalArrangement,
+        content = content,
+    )
+}
+
+/**
+ * 多选底部抽屉：搜索 + 全选/清空 + 复选行，勾完一次性确认。
+ *
+ * 用抽屉而不是对话框：候选常有上百条（完整模型目录），对话框的高度受限且不可滚动，
+ * 列表会被直接裁掉；抽屉里可以拿满屏高度、用 LazyColumn 懒加载，也不会误触到底下的页面。
+ *
+ * [preselected] 是进来时就已经选中的键（如密钥已有的白名单），[hiddenKeys] 是压根不该出现的键
+ * （如已经加进组的成员）。确认时回调保持 [items] 的顺序，避免选择顺序影响结果。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun <T> MultiSelectSheet(
+    title: String,
+    subtitle: String,
+    items: List<T>,
+    keyOf: (T) -> String,
+    labelOf: (T) -> String,
+    emptyHint: String,
+    confirmLabel: (Int) -> String,
+    onDismiss: () -> Unit,
+    onConfirm: (List<T>) -> Unit,
+    metaOf: (T) -> String? = { null },
+    preselected: Set<String> = emptySet(),
+    hiddenKeys: Set<String> = emptySet(),
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var keyword by remember { mutableStateOf("") }
+    var selected by remember(preselected) { mutableStateOf(preselected) }
+
+    val key = keyword.trim().lowercase()
+    val candidates = remember(items, key, hiddenKeys) {
+        items.filter { it ->
+            keyOf(it) !in hiddenKeys && (key.isEmpty() || labelOf(it).lowercase().contains(key))
+        }
+    }
+    val allSelected = candidates.isNotEmpty() && candidates.all { keyOf(it) in selected }
+
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (candidates.isNotEmpty()) {
+                    TextButton(onClick = {
+                        // 只作用于当前搜索结果：搜完关键词再全选，才不会把没看见的条目一起选上
+                        val keys = candidates.map(keyOf).toSet()
+                        selected = if (allSelected) selected - keys else selected + keys
+                    }) { Text(if (allSelected) "清空" else "全选") }
+                }
+            }
+
+            OutlinedTextField(
+                value = keyword,
+                onValueChange = { keyword = it },
+                label = { Text("搜索") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+
+            if (candidates.isEmpty()) {
+                Text(
+                    text = emptyHint,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 420.dp),
+                ) {
+                    items(candidates, key = { keyOf(it) }) { item ->
+                        val itemKey = keyOf(item)
+                        val checked = itemKey in selected
+                        val meta = metaOf(item)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(MaterialTheme.shapes.small)
+                                .clickable {
+                                    selected = if (checked) selected - itemKey else selected + itemKey
+                                }
+                                .padding(vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Checkbox(
+                                checked = checked,
+                                onCheckedChange = { on ->
+                                    selected = if (on) selected + itemKey else selected - itemKey
+                                },
+                                modifier = Modifier.size(22.dp),
+                            )
+                            Column(Modifier.weight(1f).padding(start = 6.dp)) {
+                                Text(
+                                    text = labelOf(item),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                if (meta != null) {
+                                    Text(
+                                        text = meta,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "已选 ${selected.size}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = onDismiss) { Text("取消") }
+                TextButton(
+                    onClick = { onConfirm(items.filter { keyOf(it) in selected }) },
+                    enabled = selected.isNotEmpty(),
+                ) { Text(confirmLabel(selected.size)) }
+            }
+        }
+    }
 }
