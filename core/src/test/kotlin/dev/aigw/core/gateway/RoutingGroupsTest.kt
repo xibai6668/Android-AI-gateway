@@ -352,10 +352,16 @@ class RoutingGroupsTest {
         val settings = RoutingGroupSettings(groups = listOf(RoutingGroup(id = "work", name = "工作")))
         assertEquals("work", RoutingGroupSettings.groupIdOf("group/work", settings))
         assertEquals("work", RoutingGroupSettings.groupIdOf("work", settings))
+        // 旧版 /v1/models 上报过的重复段写法（客户端把它缓存在本地配置里）
+        assertEquals("work", RoutingGroupSettings.groupIdOf("group/work/work", settings))
         // 不存在的组一律当普通模型名
         assertNull(RoutingGroupSettings.groupIdOf("group/missing", settings))
         assertNull(RoutingGroupSettings.groupIdOf("gpt-4o", settings))
         assertNull(RoutingGroupSettings.groupIdOf("group/", settings))
         assertNull(RoutingGroupSettings.groupIdOf("", settings))
+
+        // 组名本身含 '/' 时按精确匹配，不被首段截断
+        val nested = RoutingGroupSettings(groups = listOf(RoutingGroup(id = "a/b", name = "嵌套")))
+        assertEquals("a/b", RoutingGroupSettings.groupIdOf("group/a/b", nested))
     }
 }

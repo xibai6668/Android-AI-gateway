@@ -521,11 +521,13 @@ class GatewayEngine(
                     providerId = RoutingGroupSettings.PREFIX + group.id,
                     providerName = "路由组",
                     model = dev.aigw.core.provider.ProviderModel(group.displayName, group.displayName),
+                    routePrefix = RoutingGroupSettings.ROUTE_PREFIX,
                 )
             RoutedModel(
                 providerId = RoutingGroupSettings.PREFIX + group.id,
                 providerName = "路由组",
                 model = memberModel.model.copy(id = group.id, name = group.displayName),
+                routePrefix = RoutingGroupSettings.ROUTE_PREFIX,
             )
         }
 

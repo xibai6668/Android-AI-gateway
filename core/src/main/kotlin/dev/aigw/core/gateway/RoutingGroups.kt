@@ -189,6 +189,9 @@ data class RoutingGroupSettings(val groups: List<RoutingGroup> = emptyList()) {
         const val STORE_KEY = "settings/routing_groups.json"
         const val PREFIX = "group/"
 
+        /** 组条目对外的路由前缀：客户端看到的完整 id 是 `group/<组名>`。 */
+        val ROUTE_PREFIX: String = PREFIX.trimEnd('/')
+
         fun fromJson(raw: String?): RoutingGroupSettings {
             if (raw.isNullOrBlank()) return RoutingGroupSettings()
             val root = runCatching { JsonParser.parseString(raw).asJsonObject }.getOrNull()
@@ -210,7 +213,11 @@ data class RoutingGroupSettings(val groups: List<RoutingGroup> = emptyList()) {
             if (requested.isEmpty()) return null
             if (requested.startsWith(PREFIX)) {
                 val id = requested.removePrefix(PREFIX).trim()
-                return id.takeIf { settings.find(it) != null }
+                if (settings.find(id) != null) return id
+                // 精确匹配落空时按首个路径段兜底：兼容客户端本地缓存里旧版 /v1/models
+                // 上报过的重复段写法（group/<组名>/<组名>）。放在精确匹配之后，
+                // 组名本身含 '/' 时才不会被截断。
+                return id.substringBefore('/').trim().takeIf { it.isNotEmpty() && settings.find(it) != null }
             }
             return requested.takeIf { settings.find(it) != null }
         }

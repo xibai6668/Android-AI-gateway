@@ -218,6 +218,26 @@ class ModelsStreamingTest {
         assertEquals(listOf("codebuddy-cn/glm-5.2"), chunk.map { it.fullId })
     }
 
+    @Test
+    fun `路由组对外的 fullId 必须能被 resolveRoute 原样解析`() {
+        val engine = engineWith(
+            FixedProvider("alpha", ProviderModelCatalogView(listOf(ProviderModel("m1", "m1")), false, "")),
+        )
+        engine.updateRoutingGroups(
+            RoutingGroupSettings(
+                groups = listOf(
+                    RoutingGroup(id = "work", name = "工作", members = listOf(GroupMember("alpha", "m1"))),
+                ),
+            ),
+        )
+
+        // /v1/models 上报的 id 就是组对外的完整 id，客户端原样回传必须能路由（曾拼成 group/work/work）
+        val groupEntry = engine.exposedModels().single { it.providerId.startsWith(RoutingGroupSettings.PREFIX) }
+        assertEquals("group/work", groupEntry.fullId)
+        assertEquals("work", RoutingGroupSettings.groupIdOf(groupEntry.fullId, engine.routingGroupSettings()))
+        assertEquals(Route("alpha", "m1"), engine.resolveRoute(groupEntry.fullId))
+    }
+
     /**
      * 仅用于验证区域拆分：regions 返回 cn/global，各区域的账号返回各自的目录。
      */
