@@ -347,9 +347,7 @@ private fun AboutDialog(onDismiss: () -> Unit) {
             TextButton(onClick = onDismiss) { Text("关闭") }
         },
         text = {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally,
+            DialogContentColumn(
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 Text(

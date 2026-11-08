@@ -208,7 +208,7 @@ private fun ProxyTypeDialog(
         onDismissRequest = onDismiss,
         title = { Text("代理类型") },
         text = {
-            Column(Modifier.fillMaxWidth()) {
+            DialogContentColumn(verticalArrangement = Arrangement.Top) {
                 for (type in ProxyType.entries) {
                     Text(
                         text = type.label,

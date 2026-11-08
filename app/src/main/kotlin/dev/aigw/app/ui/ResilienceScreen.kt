@@ -286,7 +286,7 @@ private fun ConcurrencyEditDialog(
         onDismissRequest = onDismiss,
         title = { Text("修改并发参数") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            DialogContentColumn {
                 NumberField("单账号在途上限（条，0=不限）", perAccount, 2) { perAccount = it }
                 NumberField("全局在途上限（条，0=不限）", global, 3) { global = it }
                 NumberField("排队超时（毫秒）", timeout, 6) { timeout = it }
@@ -333,7 +333,7 @@ private fun RetryEditDialog(
         onDismissRequest = onDismiss,
         title = { Text("修改重试参数") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            DialogContentColumn {
                 NumberField("最大尝试次数（1-10）", attempts, 2) { attempts = it }
                 NumberField("初始退避（毫秒）", initial, 5) { initial = it }
                 NumberField("退避上限（毫秒）", maxBackoff, 6) { maxBackoff = it }
@@ -377,7 +377,7 @@ private fun CircuitBreakerEditDialog(
         onDismissRequest = onDismiss,
         title = { Text("修改熔断参数") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            DialogContentColumn {
                 NumberField("连续失败阈值（1-100）", threshold, 3) { threshold = it }
                 NumberField("熔断静默时长（秒，1-3600）", openSeconds, 4) { openSeconds = it }
                 NumberField("半开恢复成功数（1-10）", halfOpen, 2) { halfOpen = it }
@@ -416,7 +416,7 @@ private fun ModelCooldownEditDialog(
         onDismissRequest = onDismiss,
         title = { Text("修改模型级冷却") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            DialogContentColumn {
                 NumberField("冷却时长（秒）", cooldownSeconds, 5) { cooldownSeconds = it }
                 NumberField("冷却上限（秒）", maxSeconds, 5) { maxSeconds = it }
                 Text(

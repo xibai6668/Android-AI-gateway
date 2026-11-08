@@ -326,7 +326,7 @@ private fun RateLimitEditDialog(
         onDismissRequest = onDismiss,
         title = { Text("修改账号限速参数") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            DialogContentColumn {
                 OutlinedTextField(
                     value = minText,
                     onValueChange = { minText = it.filter(Char::isDigit).take(5) },

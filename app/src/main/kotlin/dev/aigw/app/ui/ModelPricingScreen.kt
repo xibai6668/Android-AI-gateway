@@ -158,7 +158,7 @@ private fun PriceEditDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (initialPrice == null) "添加模型价格" else "编辑模型价格") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            DialogContentColumn {
                 OutlinedTextField(
                     value = model,
                     onValueChange = { model = it },
