@@ -1,19 +1,25 @@
 package dev.aigw.app.ui
 
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -28,6 +34,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -36,6 +47,7 @@ import dev.aigw.core.gateway.ClientKey
 import dev.aigw.core.gateway.KeyLimit
 import dev.aigw.core.gateway.KeyUsage
 import dev.aigw.core.gateway.LimitPeriod
+import dev.aigw.core.provider.RoutedModel
 import dev.aigw.core.usage.formatMicroUsd
 
 /**
@@ -46,9 +58,12 @@ import dev.aigw.core.usage.formatMicroUsd
  */
 @Composable
 fun ClientKeysScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) {
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     var editing by remember { mutableStateOf<ClientKey?>(null) }
     var creating by remember { mutableStateOf(false) }
     var revealSecret by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var viewingSecret by remember { mutableStateOf<Pair<String, String>?>(null) }
 
     PageScaffold(
         title = "客户端密钥",
@@ -80,6 +95,11 @@ fun ClientKeysScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> U
                     enterIndex = index + 1,
                     onToggle = { enabled -> viewModel.updateClientKey(key.copy(enabled = enabled)) },
                     onEdit = { editing = key },
+                    onViewSecret = { viewingSecret = key.name to key.secret },
+                    onCopySecret = {
+                        clipboard.setText(AnnotatedString(key.secret))
+                        Toast.makeText(context, "已复制密钥", Toast.LENGTH_SHORT).show()
+                    },
                     onRotate = { viewModel.rotateClientKey(key.id) { secret -> revealSecret = key.name to secret } },
                     onResetUsage = { viewModel.resetClientKeyUsage(key.id) },
                     onDelete = { viewModel.removeClientKey(key.id) },
@@ -92,6 +112,7 @@ fun ClientKeysScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> U
         val current = editing
         ClientKeyEditDialog(
             current = current,
+            models = state.models,
             onDismiss = {
                 creating = false
                 editing = null
@@ -118,26 +139,76 @@ fun ClientKeysScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> U
             title = { Text("密钥已生成：$name") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SelectionContainer {
+                        Text(
+                            text = secret,
+                            style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.shapes.small)
+                                .padding(12.dp),
+                        )
+                    }
                     Text(
-                        text = secret,
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(MaterialTheme.colorScheme.surfaceVariant)
-                            .padding(12.dp),
-                    )
-                    Text(
-                        text = "这段密钥只显示这一次，请先复制保存。关闭后列表里只会显示末四位。",
+                        text = "密钥已生成。之后可以在列表卡片随时查看或再次复制。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             },
-            confirmButton = { TextButton(onClick = { revealSecret = null }) { Text("已保存") } },
+            confirmButton = {
+                TextButton(onClick = { revealSecret = null }) { Text("已保存") }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        clipboard.setText(AnnotatedString(secret))
+                        Toast.makeText(context, "已复制密钥", Toast.LENGTH_SHORT).show()
+                    },
+                ) { Text("复制") }
+            },
+        )
+    }
+
+    viewingSecret?.let { (name, secret) ->
+        AlertDialog(
+            onDismissRequest = { viewingSecret = null },
+            title = { Text("查看密钥：$name") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SelectionContainer {
+                        Text(
+                            text = secret,
+                            style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.shapes.small)
+                                .padding(12.dp),
+                        )
+                    }
+                    Text(
+                        text = "密钥保存在本机，支持长按选择或直接复制。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { viewingSecret = null }) { Text("关闭") }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        clipboard.setText(AnnotatedString(secret))
+                        Toast.makeText(context, "已复制密钥", Toast.LENGTH_SHORT).show()
+                    },
+                ) { Text("复制") }
+            },
         )
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ClientKeyCard(
     key: ClientKey,
@@ -145,6 +216,8 @@ private fun ClientKeyCard(
     enterIndex: Int,
     onToggle: (Boolean) -> Unit,
     onEdit: () -> Unit,
+    onViewSecret: () -> Unit,
+    onCopySecret: () -> Unit,
     onRotate: () -> Unit,
     onResetUsage: () -> Unit,
     onDelete: () -> Unit,
@@ -162,7 +235,7 @@ private fun ClientKeyCard(
                 Text(key.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Text(
                     text = key.maskedSecret,
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -181,7 +254,13 @@ private fun ClientKeyCard(
             )
         }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            SmallAction("查看密钥", onViewSecret)
+            SmallAction("复制", onCopySecret)
             SmallAction("编辑", onEdit)
             SmallAction("轮换", { confirmRotate = true })
             SmallAction("重置用量", onResetUsage)
@@ -275,19 +354,22 @@ private fun limitText(limit: KeyLimit): String {
 @Composable
 private fun ClientKeyEditDialog(
     current: ClientKey?,
+    models: List<RoutedModel>,
     onDismiss: () -> Unit,
     onConfirm: (name: String, secret: String?, models: List<String>, limits: List<KeyLimit>) -> Unit,
 ) {
     var name by remember { mutableStateOf(current?.name.orEmpty()) }
     var secret by remember { mutableStateOf("") }
-    var models by remember { mutableStateOf(current?.allowedModels?.joinToString("\n").orEmpty()) }
+    var selectedModels by remember { mutableStateOf(current?.allowedModels ?: emptyList()) }
+    var manualInput by remember { mutableStateOf("") }
+    var pickingModels by remember { mutableStateOf(false) }
     var limits by remember { mutableStateOf(current?.limits ?: emptyList()) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (current == null) "新建密钥" else "编辑密钥") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            DialogContentColumn {
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
@@ -304,16 +386,88 @@ private fun ClientKeyEditDialog(
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
-                OutlinedTextField(
-                    value = models,
-                    onValueChange = { models = it },
-                    label = { Text("可用模型（一行一条，留空不限）") },
-                    supportingText = {
-                        Text("支持 provider/model、以 /* 结尾的前缀通配、group/<组名>")
-                    },
-                    minLines = 3,
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+                // 结构化可用模型编辑
+                Row(
                     modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = if (selectedModels.isEmpty()) "可用模型（不限）" else "可用模型 · ${selectedModels.size}",
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    SmallAction("从模型列表选择") { pickingModels = true }
+                }
+
+                if (selectedModels.isEmpty()) {
+                    Text(
+                        text = "未配置白名单时允许调用所有模型。可从列表勾选或手动添加前缀通配/路由组。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 180.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        selectedModels.forEach { modelId ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.shapes.small)
+                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Text(
+                                    text = modelId,
+                                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                SmallAction("移除") {
+                                    selectedModels = selectedModels.filter { it != modelId }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedTextField(
+                        value = manualInput,
+                        onValueChange = { manualInput = it },
+                        label = { Text("手动添加") },
+                        placeholder = { Text("provider/model、provider/* 或 group/组名") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    SmallAction("添加") {
+                        val trimmed = manualInput.trim()
+                        if (trimmed.isNotEmpty() && trimmed !in selectedModels) {
+                            selectedModels = selectedModels + trimmed
+                            manualInput = ""
+                        }
+                    }
+                }
+
+                Text(
+                    text = "支持 provider/model、以 /* 结尾的前缀通配、group/<组名>",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -334,11 +488,10 @@ private fun ClientKeyEditDialog(
         confirmButton = {
             TextButton(
                 onClick = {
-                    val parsedModels = models.lines().map { it.trim() }.filter { it.isNotEmpty() }
                     onConfirm(
                         name.trim().ifEmpty { "未命名密钥" },
                         secret.trim().takeIf { it.isNotEmpty() && current == null },
-                        parsedModels,
+                        selectedModels,
                         limits,
                     )
                 },
@@ -346,8 +499,35 @@ private fun ClientKeyEditDialog(
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
+
+    if (pickingModels) {
+        val catalogKeys = remember(models) { models.map { it.fullId }.toSet() }
+        val preselected = remember(selectedModels, catalogKeys) {
+            selectedModels.filter { it in catalogKeys }.toSet()
+        }
+        MultiSelectSheet(
+            title = "选择可用模型",
+            subtitle = "勾选允许调用的模型，确认后合并进白名单",
+            items = models,
+            keyOf = { it.fullId },
+            labelOf = { it.fullId },
+            metaOf = { it.providerName },
+            emptyHint = "当前没有可用模型，请先在供应商页面配置账号",
+            confirmLabel = { "添加 $it 项" },
+            preselected = preselected,
+            onDismiss = { pickingModels = false },
+            onConfirm = { picked ->
+                val pickedIds = picked.map { it.fullId }
+                // 按目录顺序去重合并：保留原有非目录项（如通配符、组），再合并新选的模型
+                val merged = (selectedModels + pickedIds).distinct()
+                selectedModels = merged
+                pickingModels = false
+            },
+        )
+    }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun LimitEditorRow(limit: KeyLimit, onChange: (KeyLimit) -> Unit, onRemove: () -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -356,20 +536,25 @@ private fun LimitEditorRow(limit: KeyLimit, onChange: (KeyLimit) -> Unit, onRemo
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            LimitPeriod.entries.forEach { period ->
-                ChoiceChip(
-                    text = when (period) {
-                        LimitPeriod.DAY -> "日"
-                        LimitPeriod.WEEK -> "周"
-                        LimitPeriod.MONTH -> "月"
-                        LimitPeriod.HOURS -> "小时"
-                        LimitPeriod.DAYS -> "天"
-                    },
-                    selected = limit.period == period,
-                    onClick = { onChange(limit.copy(period = period)) },
-                )
+            FlowRow(
+                modifier = Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                LimitPeriod.entries.forEach { period ->
+                    ChoiceChip(
+                        text = when (period) {
+                            LimitPeriod.DAY -> "日"
+                            LimitPeriod.WEEK -> "周"
+                            LimitPeriod.MONTH -> "月"
+                            LimitPeriod.HOURS -> "小时"
+                            LimitPeriod.DAYS -> "天"
+                        },
+                        selected = limit.period == period,
+                        onClick = { onChange(limit.copy(period = period)) },
+                    )
+                }
             }
-            Box(Modifier.weight(1f))
             SmallAction("移除", onRemove)
         }
         if (limit.period == LimitPeriod.HOURS || limit.period == LimitPeriod.DAYS) {

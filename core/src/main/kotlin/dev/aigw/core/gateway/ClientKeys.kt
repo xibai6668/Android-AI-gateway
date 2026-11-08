@@ -66,7 +66,7 @@ data class ClientKey(
         return false
     }
 
-    /** 只含末尾 4 位的展示形式。日志与界面都不该出现完整密钥。 */
+    /** 只含末尾 4 位的展示形式：列表与日志的默认展示，完整值只在用户主动查看或复制时给出。 */
     val maskedSecret: String
         get() = if (secret.length <= 4) "****" else "****" + secret.takeLast(4)
 }

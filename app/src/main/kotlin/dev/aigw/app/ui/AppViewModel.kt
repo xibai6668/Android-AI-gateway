@@ -809,7 +809,7 @@ class AppViewModel(
 
     // ------------------------------------------------------------ 客户端密钥
 
-    /** 新建密钥；[onCreated] 在创建后回调（用于把完整密钥展示一次给用户复制）。 */
+    /** 新建密钥；[onCreated] 在创建后回调（用于立刻把新密钥展示给用户复制，之后仍可在列表里查看）。 */
     fun addClientKey(
         name: String,
         secret: String?,
@@ -847,7 +847,7 @@ class AppViewModel(
         }
     }
 
-    /** 轮换密钥：[onRotated] 拿到新密钥后必须立刻展示给用户，之后只能看到末四位。 */
+    /** 轮换密钥：[onRotated] 拿到新密钥后立刻展示给用户；旧密钥立即失效，新密钥之后仍可在列表里查看。 */
     fun rotateClientKey(id: String, onRotated: (String) -> Unit) {
         viewModelScope.launch {
             val secret = withContext(Dispatchers.IO) { engine.clientKeyStore.rotate(id) }
