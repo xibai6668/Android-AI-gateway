@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
@@ -27,6 +26,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -35,7 +35,6 @@ import dev.aigw.core.gateway.GroupMember
 import dev.aigw.core.gateway.GroupRule
 import dev.aigw.core.gateway.GroupStrategy
 import dev.aigw.core.gateway.RoutingGroup
-import dev.aigw.core.gateway.RoutingGroupSettings
 
 /**
  * 路由组页。
@@ -219,7 +218,7 @@ private fun RoutingGroupEditDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (current == null) "新建路由组" else "编辑路由组") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            DialogContentColumn {
                 OutlinedTextField(
                     value = id,
                     onValueChange = { id = it },
@@ -247,43 +246,53 @@ private fun RoutingGroupEditDialog(
                     GroupAction("添加成员") { addingMember = true }
                 }
                 members.forEachIndexed { index, member ->
-                    Row(
+                    Column(
                         modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        Text(
-                            text = "${member.providerId}/${member.model}",
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.weight(1f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        OutlinedTextField(
-                            value = member.priority.toString(),
-                            onValueChange = { text ->
-                                text.toIntOrNull()?.let { next ->
-                                    members = members.toMutableList().also { it[index] = member.copy(priority = next) }
-                                }
-                            },
-                            label = { Text("优先级") },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            singleLine = true,
-                            modifier = Modifier.weight(0.5f),
-                        )
-                        OutlinedTextField(
-                            value = member.weight.toString(),
-                            onValueChange = { text ->
-                                text.toIntOrNull()?.let { next ->
-                                    members = members.toMutableList().also { it[index] = member.copy(weight = next) }
-                                }
-                            },
-                            label = { Text("权重") },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            singleLine = true,
-                            modifier = Modifier.weight(0.5f),
-                        )
-                        GroupAction("移除") { members = members.filterIndexed { i, _ -> i != index } }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(
+                                text = "${member.providerId}/${member.model}",
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            GroupAction("移除") { members = members.filterIndexed { i, _ -> i != index } }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            OutlinedTextField(
+                                value = member.priority.toString(),
+                                onValueChange = { text ->
+                                    text.toIntOrNull()?.let { next ->
+                                        members = members.toMutableList().also { it[index] = member.copy(priority = next) }
+                                    }
+                                },
+                                label = { Text("优先级") },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                singleLine = true,
+                                modifier = Modifier.weight(1f),
+                            )
+                            OutlinedTextField(
+                                value = member.weight.toString(),
+                                onValueChange = { text ->
+                                    text.toIntOrNull()?.let { next ->
+                                        members = members.toMutableList().also { it[index] = member.copy(weight = next) }
+                                    }
+                                },
+                                label = { Text("权重") },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                singleLine = true,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
                     }
                 }
 
@@ -334,67 +343,39 @@ private fun RoutingGroupEditDialog(
     )
 
     if (addingMember) {
-        MemberPickerDialog(
-            models = models,
-            existing = members,
+        val existingKeys = remember(members) {
+            members.map { "${it.providerId}/${it.model}" }.toSet()
+        }
+        MultiSelectSheet(
+            title = "选择成员",
+            subtitle = "从当前模型目录添加成员（可多选）",
+            items = models,
+            keyOf = { it.fullId },
+            labelOf = { it.fullId },
+            metaOf = { routed ->
+                listOfNotNull(
+                    routed.providerName.ifBlank { null },
+                    routed.region?.let { "区域 $it" },
+                    if (routed.cached) "缓存" else null,
+                ).joinToString(" · ").ifEmpty { null }
+            },
+            emptyHint = "没有可添加的模型。先在「模型」页刷新目录。",
+            confirmLabel = { "添加 $it 项" },
+            hiddenKeys = existingKeys,
             onDismiss = { addingMember = false },
-            onPick = { member ->
-                members = members + member
+            onConfirm = { picked ->
+                val newMembers = picked
+                    .map { GroupMember(it.providerId, it.model.id) }
+                    .filter { newMember ->
+                        members.none { it.providerId == newMember.providerId && it.model == newMember.model }
+                    }
+                val seen = HashSet<String>()
+                val uniqueNew = newMembers.filter { seen.add("${it.providerId}/${it.model}") }
+                members = members + uniqueNew
                 addingMember = false
             },
         )
     }
-}
-
-@Composable
-private fun MemberPickerDialog(
-    models: List<dev.aigw.core.provider.RoutedModel>,
-    existing: List<GroupMember>,
-    onDismiss: () -> Unit,
-    onPick: (GroupMember) -> Unit,
-) {
-    var keyword by remember { mutableStateOf("") }
-    val candidates = remember(models, keyword) {
-        val key = keyword.trim().lowercase()
-        models
-            .filter { key.isEmpty() || it.fullId.lowercase().contains(key) }
-            .filterNot { routed -> existing.any { it.providerId == routed.providerId && it.model == routed.model.id } }
-            .take(60)
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("选择成员") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = keyword,
-                    onValueChange = { keyword = it },
-                    label = { Text("搜索模型") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                if (candidates.isEmpty()) {
-                    Text(
-                        text = "没有匹配的模型。先在「模型」页刷新目录。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                candidates.forEach { routed ->
-                    Text(
-                        text = routed.fullId,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onPick(GroupMember(routed.providerId, routed.model.id)) }
-                            .padding(vertical = 8.dp),
-                    )
-                }
-            }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-    )
 }
 
 @Composable
