@@ -2,10 +2,12 @@ package dev.aigw.app.ui
 
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -21,6 +23,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.input.KeyboardType
+import dev.aigw.core.gateway.GatewaySettings
 
 /** 接入设置：客户端要用的地址、端口与网关鉴权 Key。 */
 @OptIn(ExperimentalLayoutApi::class)
@@ -31,10 +35,14 @@ fun ApiSettingsScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> 
     val clipboard = LocalClipboardManager.current
     var port by remember(settings.port) { mutableStateOf(settings.port.toString()) }
     var apiKey by remember(settings.apiKey) { mutableStateOf(settings.apiKey) }
+    var refreshSkew by remember(settings.refreshSkewSeconds) {
+        mutableStateOf(settings.refreshSkewSeconds.toString())
+    }
+    var maxRotate by remember(settings.maxRotate) { mutableStateOf(settings.maxRotate.toString()) }
 
     PageScaffold(
         title = "接入设置",
-        subtitle = "端口与 API Key",
+        subtitle = "端口、Key 与网关行为",
         leading = { BackButton(onBack) },
     ) {
         SectionCard(enterIndex = 0) {
@@ -111,13 +119,69 @@ fun ApiSettingsScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> 
         }
 
         SectionCard(enterIndex = 4) {
+            SectionLabel("网关行为")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("只看可用模型")
+                    Text(
+                        text = "隐藏上游的非对话内部条目（嵌入、审核类模型），对 /v1/models 与模型页都生效",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = settings.onlyUsableModels,
+                    onCheckedChange = { viewModel.updateSettings(settings.copy(onlyUsableModels = it)) },
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedTextField(
+                    value = refreshSkew,
+                    onValueChange = { refreshSkew = it.filter(Char::isDigit).take(4) },
+                    label = { Text("预刷新窗口（秒）") },
+                    supportingText = { Text("token 临期多久内才刷新，上限 ${GatewaySettings.MAX_REFRESH_SKEW_SECONDS}") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    modifier = Modifier.weight(1f),
+                )
+                OutlinedTextField(
+                    value = maxRotate,
+                    onValueChange = { maxRotate = it.filter(Char::isDigit).take(2) },
+                    label = { Text("最多换号次数") },
+                    supportingText = { Text("单次请求最多换几个账号，1~10") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+
+        SectionCard(enterIndex = 5) {
             OutlineActionButton("保存") {
                 val parsed = port.toIntOrNull()
-                if (parsed == null || parsed !in 1024..65535) {
-                    viewModel.notice("端口需要在 1024~65535 之间")
-                } else {
-                    viewModel.updateSettings(settings.copy(port = parsed, apiKey = apiKey.trim()))
-                    viewModel.notice("已保存；端口改动需重启服务生效")
+                val parsedRotate = maxRotate.toIntOrNull()
+                val parsedSkew = refreshSkew.toLongOrNull()
+                when {
+                    parsed == null || parsed !in 1024..65535 -> viewModel.notice("端口需要在 1024~65535 之间")
+                    parsedSkew == null -> viewModel.notice("预刷新窗口需要填数字（0~3600 秒）")
+                    parsedRotate == null || parsedRotate !in 1..10 -> viewModel.notice("换号次数需要在 1~10 之间")
+                    else -> {
+                        viewModel.updateSettings(
+                            settings.copy(
+                                port = parsed,
+                                apiKey = apiKey.trim(),
+                                refreshSkewSeconds = GatewaySettings.clampRefreshSkew(parsedSkew),
+                                maxRotate = parsedRotate,
+                            ),
+                        )
+                        viewModel.notice("已保存；端口改动需重启服务生效")
+                    }
                 }
             }
         }
