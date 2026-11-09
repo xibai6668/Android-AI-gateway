@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -114,29 +115,72 @@ fun HomeScreen(
 
     val visible = state.homeOrder.filterNot { it in state.homeHidden }
 
+    if (editing) {
+        // 编辑态走自己的骨架：内容区换成 LazyColumn（真正重排列），
+        // 不能挂在 PageScaffold 的 verticalScroll 下（无限高度约束会崩）。
+        HomeEditScaffold(
+            state = state,
+            viewModel = viewModel,
+            onAdd = { adding = true },
+            onExit = { editing = false },
+        ) { widget ->
+            HomeWidgetContent(widget, state, viewModel, ::startWithNotificationPermission, ::copy, openTaskCenter, openLogs, openUsage)
+        }
+        return
+    }
+
     PageScaffold(
         title = "ai-gateway",
-        subtitle = if (editing) "编辑首页组件" else "本地 OpenAI 兼容网关",
+        subtitle = "本地 OpenAI 兼容网关",
         actions = {
-            if (editing && state.homeHidden.isNotEmpty()) {
-                Icon(
-                    Icons.Filled.Add,
-                    contentDescription = "添加组件",
-                    tint = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier
-                        .clickable { adding = true }
-                        .padding(6.dp),
-                )
-            }
-            HomeEditAction(editing) { editing = !editing }
+            HomeEditAction(editing = false) { editing = true }
         },
     ) {
         // 批量进度与结果不属于可摆放组件：它们是动作的反应，必须始终可见
         BatchProgressHost(state.batchProgress)
         BatchOutcomeHost(state.batchOutcome) { viewModel.dismissBatchOutcome() }
 
-        if (editing) {
+        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            visible.forEach { widget ->
+                HomeWidgetContent(widget, state, viewModel, ::startWithNotificationPermission, ::copy, openTaskCenter, openLogs, openUsage)
+            }
+        }
+    }
+}
+
+/** 编辑态的整页骨架：固定页头 + 可拖拽的组件列表。 */
+@Composable
+private fun HomeEditScaffold(
+    state: AppUiState,
+    viewModel: AppViewModel,
+    onAdd: () -> Unit,
+    onExit: () -> Unit,
+    content: @Composable (HomeWidget) -> Unit,
+) {
+    val visible = state.homeOrder.filterNot { it in state.homeHidden }
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        PageHeader(
+            title = "ai-gateway",
+            subtitle = "编辑首页组件",
+            actions = {
+                if (state.homeHidden.isNotEmpty()) {
+                    Icon(
+                        Icons.Filled.Add,
+                        contentDescription = "添加组件",
+                        tint = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier
+                            .clickable(onClick = onAdd)
+                            .padding(6.dp),
+                    )
+                }
+                HomeEditAction(editing = true, onClick = onExit)
+            },
+        )
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
             HomeEditHint(visible.isEmpty())
+        }
+        Spacer(Modifier.height(12.dp))
+        Box(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
             EditableHomeWidgetList(
                 order = state.homeOrder,
                 hidden = state.homeHidden,
@@ -144,15 +188,8 @@ fun HomeScreen(
                 onRemove = { widget ->
                     viewModel.saveHomeLayout(state.homeOrder, state.homeHidden + widget)
                 },
-            ) { widget ->
-                HomeWidgetContent(widget, state, viewModel, ::startWithNotificationPermission, ::copy, openTaskCenter, openLogs, openUsage)
-            }
-        } else {
-            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                visible.forEach { widget ->
-                    HomeWidgetContent(widget, state, viewModel, ::startWithNotificationPermission, ::copy, openTaskCenter, openLogs, openUsage)
-                }
-            }
+                content = content,
+            )
         }
     }
 }
