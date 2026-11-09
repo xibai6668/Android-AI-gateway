@@ -461,6 +461,14 @@ class AppViewModel(
         maybeAutoResume()
         // 自动检查更新：默认开启，每天最多一次，失败静默
         maybeAutoCheckUpdate()
+        // 冷启动也判一次每日签到：被 force-stop 清掉粘性服务时，服务节拍可能整天都没机会跑。
+        // 与 GatewayService 侧的巡检共用同一个引擎实例，CAS + 台账保证不会重复。
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val auto = engine.autoCheckin
+                if (auto.shouldRun()) auto.tick()
+            }
+        }
     }
 
     private fun accountSignature(accounts: List<AccountStatus>): String =
@@ -1399,6 +1407,28 @@ class AppViewModel(
         engine.performActionAll(targets, ACTION_CHECKIN, onProgress = onProgress)
     }
 
+    /** 今日自动签到是否已成功跑完（界面状态展示用）。 */
+    fun autoCheckinDoneToday(): Boolean = engine.autoCheckin.doneToday()
+
+    /**
+     * 试跑一次自动签到（手动验证整条链路，不改变「今天已跑过」的判定依据之外的行为）。
+     *
+     * [force] 绕过日期闸门与失败退避，但**不**绕过并发重入；上游对已签到账号回
+     * 「今日已签到」（ok=true），不会重复领取，因此今天就能安全地验证
+     * 「选目标 → 批量执行 → 逐条回执 → 日志」是否真的接通。
+     *
+     * 结果除顶部提示外还写进请求日志页：日志是可回读的现场证据，提示一闪就没了。
+     */
+    fun runAutoCheckinSelfTest() {
+        viewModelScope.launch {
+            val report = withContext(Dispatchers.IO) { engine.autoCheckin.tick(force = true) }
+            _state.value = _state.value.copy(notice = report.summary())
+            engine.requestLog.info("自动签到试跑：${report.summary()}")
+            report.messages.forEach { engine.requestLog.info("自动签到试跑 · $it") }
+            refresh()
+        }
+    }
+
     /**
      * 对所有支持任务的账号批量执行任务（Loomy 的新手任务、WorkBuddy 成长中心）。
      *
@@ -1430,11 +1460,7 @@ class AppViewModel(
      * 于是这类账号压根不进入流程，而不是跑完再逐条报错。
      */
     private fun batchTargets(action: String, capability: ProviderCapability): List<BatchTarget> =
-        engine.providers()
-            .filter { capability in it.capabilities }
-            .flatMap { info -> engine.accounts(info.id) }
-            .filter { account -> engine.supportsAction(account.providerId, account.uid, action) }
-            .map { BatchTarget(it.providerId, it.uid) }
+        engine.batchTargetsFor(action, capability)
 
     /**
      * 批量动作的可执行目标概览：有哪些供应商、各几个账号会被实际执行。
