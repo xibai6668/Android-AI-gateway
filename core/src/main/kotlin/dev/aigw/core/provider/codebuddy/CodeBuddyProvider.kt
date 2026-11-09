@@ -105,15 +105,27 @@ class CodeBuddyProvider internal constructor(
         return model
     }
 
-    /**
-     * 上游域名后缀（代理分流的判定依据）。
-     *
-     * 注意成长中心分为**插件链路**（`copilot.tencent.com` / `codebuddy.cn`）与
-     * **网页链路**（`workbuddy.cn`），两条路用的是不同身份头，域名都要列上，
-     * 否则代理开关对网页链路不生效。
-     */
+    /** 上游域名后缀（代理分流的判定依据）：国内 + 国际两套站点。 */
     override fun hosts(): List<String> =
-        listOf("copilot.tencent.com", "codebuddy.cn", "workbuddy.cn", "codebuddy.ai", "workbuddy.ai")
+        regionHosts(REGION_CN) + regionHosts(REGION_GLOBAL)
+
+    /**
+     * 按区域分开返回上游域名：国内站与国际站是两套不同站点，代理开关要能分别控制。
+     *
+     * 国内：插件链路（`copilot.tencent.com` / `codebuddy.cn`）与网页链路（`workbuddy.cn`）；
+     * 国际：`workbuddy.ai` / `codebuddy.ai`（旧域名）。
+     */
+    override fun hosts(region: String?): List<String> = when (region) {
+        null -> hosts()
+        REGION_GLOBAL -> regionHosts(REGION_GLOBAL)
+        else -> regionHosts(REGION_CN)
+    }
+
+    private fun regionHosts(region: String): List<String> = if (region == REGION_GLOBAL) {
+        listOf("workbuddy.ai", "codebuddy.ai")
+    } else {
+        listOf("copilot.tencent.com", "codebuddy.cn", "workbuddy.cn")
+    }
 
     // ------------------------------------------------------------------ 对话
 

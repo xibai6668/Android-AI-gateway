@@ -226,8 +226,8 @@ class GatewayEngine(
     private val providerSettingsCache = ConcurrentHashMap<String, ProviderSettings>()
 
     /**
-     * 供应商上游域名表的缓存：`providerHosts()` 被 [GatewayProxySelector] 在每次建连时读取
-     * （仅当配置了 `excludedProviderIds`），原来每次新建一个 Map 并遍历全部 provider。
+     * 供应商上游域名表的缓存：`providerHosts()` 被 [GatewayProxySelector] 在每次建连时读取，
+     * 原来每次新建一个 Map 并遍历全部 provider。
      * providers 注册变更（[reloadCustomProviders]）时失效即可，其余时间复用。
      */
     @Volatile
@@ -392,6 +392,7 @@ class GatewayEngine(
     init {
         registerBuiltinProviders(this)
         reloadCustomProviders()
+        migrateLegacyProxyExclusions()
         installProxy()
         sanitizer.reloadPipeline(securitySettings.extraWords)
         lastAutoPurgeDay = nowMillis() / DAY_MILLIS
@@ -538,20 +539,98 @@ class GatewayEngine(
     fun updateProxySettings(updated: ProxySettings) {
         proxy = updated
         store.write(ProxySettings.STORE_KEY, updated.toJson().toString())
-        log(if (updated.usable) "代理已启用：${updated.host}:${updated.port}" else "代理未启用")
+        val profile = updated.activeProfile
+        log(
+            if (updated.usable && profile != null) {
+                "代理已启用：${profile.name}（${profile.host}:${profile.port}），" +
+                    "走代理的路由 ${if (ProxySettings.ALL_ROUTES in updated.proxiedRoutes) "全部" else "${updated.proxiedRoutes.size} 项"}"
+            } else {
+                "代理未启用（共 ${updated.profiles.size} 套配置）"
+            },
+        )
+    }
+
+    /** 探测一套代理配置的连通性；[id] 不在配置表里时返回失败结果，由调用方原样展示。 */
+    fun probeProxyProfile(id: String, timeoutMs: Int = 8000): ProxyProbeResult {
+        val profile = proxy.profiles.firstOrNull { it.id == id }
+            ?: return ProxyProbeResult(ProxyProbeStatus.UNREACHABLE, message = "没有这套代理配置")
+        return probeProxy(profile, timeoutMs)
     }
 
     /**
-     * 各供应商的上游域名，供代理规则匹配（按供应商开关代理）。
+     * 各上游路由键 → 域名后缀，供代理规则匹配。
+     *
+     * 键的口径与 [ProxySettings.routeKey] 一致：普通供应商为 `id`，区域型供应商拆成
+     * `id/region`。区域型供应商必须拆开：国内站与国际站是不同域名，「国内直连、国外走代理」
+     * 只能用区域级键表达。
      *
      * provider 注册集合只在 [reloadCustomProviders] 改变，故建连热路径（ProxySelector 每次
      * `select`）复用缓存，避免每次都遍历全部 provider 现拼一个 Map。
      */
     fun providerHosts(): Map<String, List<String>> {
         providerHostsCache?.let { return it }
-        val built = registry.all().associate { it.id to it.hosts() }
+        val built = HashMap<String, List<String>>()
+        for (provider in registry.all()) {
+            val regions = (provider as? dev.aigw.core.provider.RegionAwareSupport)?.regions().orEmpty()
+            if (regions.isEmpty()) {
+                built[provider.id] = provider.hosts()
+            } else {
+                for (region in regions) {
+                    built[ProxySettings.routeKey(provider.id, region)] = provider.hosts(region)
+                }
+            }
+        }
         providerHostsCache = built
         return built
+    }
+
+    /**
+     * 代理页的候选项：每个可由用户选择「是否走代理」的路由键。
+     *
+     * 展示名按区域后缀区分（如 `Trae（国内）/trae/cn`），避免同一供应商的国内外版本被合为一谈。
+     */
+    fun proxyTargets(): List<ProxyTarget> = registry.all().flatMap { provider ->
+        val regions = (provider as? dev.aigw.core.provider.RegionAwareSupport)?.regions().orEmpty()
+        if (regions.isEmpty()) {
+            listOf(
+                ProxyTarget(
+                    routeKey = provider.id,
+                    providerId = provider.id,
+                    providerName = provider.displayName,
+                    region = null,
+                    hosts = provider.hosts(),
+                ),
+            )
+        } else {
+            regions.map { region ->
+                ProxyTarget(
+                    routeKey = ProxySettings.routeKey(provider.id, region),
+                    providerId = provider.id,
+                    providerName = provider.displayName,
+                    region = region,
+                    hosts = provider.hosts(region),
+                )
+            }
+        }
+    }
+
+    /**
+     * 旧代理配置的「不走代理的供应商」迁移成具体路由白名单。
+     *
+     * 旧格式只能表达供应商级排除，新格式是白名单；直接当成「全部走代理」会把用户
+     * 特意直连的上游送进代理，所以这里按已有域名表把它转成具体路由键后回写。
+     */
+    private fun migrateLegacyProxyExclusions() {
+        val raw = store.read(ProxySettings.STORE_KEY)
+        val excluded = ProxySettings.legacyExcludedProviderIds(raw)
+        if (excluded.isEmpty() || proxy.activeProfileId.isEmpty()) return
+        val routes = providerHosts().keys.filterNot { key ->
+            excluded.any { id -> key == id || key.startsWith("$id/") }
+        }.toSet()
+        val migrated = proxy.copy(proxiedRoutes = routes)
+        proxy = migrated
+        store.write(ProxySettings.STORE_KEY, migrated.toJson().toString())
+        log("代理配置已迁移：旧配置的 ${excluded.size} 个排除项已转为路由白名单")
     }
 
     /**
@@ -563,7 +642,7 @@ class GatewayEngine(
     private fun installProxy() {
         runCatching {
             java.net.ProxySelector.setDefault(
-                GatewayProxySelector(settings = { proxy }, providerHosts = { providerHosts() }),
+                GatewayProxySelector(settings = { proxy }, routeHosts = { providerHosts() }),
             )
             java.net.Authenticator.setDefault(GatewayProxyAuthenticator { proxy })
         }.onFailure { logWarn("代理设置安装失败：${it.message}") }

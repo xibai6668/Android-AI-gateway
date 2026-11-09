@@ -60,6 +60,21 @@ class TraeRegionTest {
     }
 
     @Test
+    fun `代理域名清单按区域分开返回`() {
+        val provider = TraeProvider(
+            store = InMemoryKeyValueStore(),
+            version = { TraeVersion() },
+            defaultModel = { "glm-5.2" },
+        )
+
+        val cn = provider.hosts(TraeRegion.CN.id)
+        val intl = provider.hosts(TraeRegion.INTL.id)
+        // 国内版不应包含国际版 host：否则「国内直连、国外走代理」无法表达
+        assertEquals(false, cn.contains(TraeRegion.INTL.agentHost.removePrefix("https://")))
+        assertEquals(false, intl.contains(TraeRegion.CN.agentHost.removePrefix("https://")))
+    }
+
+    @Test
     fun `国际版账号不会用国内鉴权 host`() {
         val client = TraeAuthClient(TraeVersion())
         val international = TraeAccount(

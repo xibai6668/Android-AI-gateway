@@ -133,8 +133,12 @@ fun MeScreen(state: AppUiState, viewModel: AppViewModel, open: (SubPage) -> Unit
             EditorialRow(
                 "02.6",
                 "代理设置 · NETWORK PROXY",
-                "境外供应商需要走代理",
-                if (state.proxy.usable) "已启用" else "未启用",
+                "多套配置，按供应商或区域决定是否走代理",
+                when {
+                    state.proxy.profiles.isEmpty() -> "未配置"
+                    state.proxy.usable -> "使用中 ${state.proxy.activeProfile?.name.orEmpty()}"
+                    else -> "${state.proxy.profiles.size} 套配置"
+                },
             ) { open(SubPage.Proxy) }
             EditorialRow(
                 "02.7",

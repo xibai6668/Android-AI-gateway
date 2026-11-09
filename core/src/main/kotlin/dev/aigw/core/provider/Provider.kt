@@ -179,10 +179,18 @@ interface Provider {
     /**
      * 该供应商用到的上游域名后缀（不带子域前缀）。
      *
-     * 代理设置按「供应商」开关，实际判定就是拿目标域名与这里的后缀匹配，
+     * 代理设置按「供应商 / 区域」开关，实际判定就是拿目标域名与这里的后缀匹配，
      * 所以新增供应商时要把它的上游域名补上，否则代理开关对它无效。
      */
     fun hosts(): List<String> = emptyList()
+
+    /**
+     * 指定区域的上游域名后缀；默认忽略区域直接用 [hosts]。
+     *
+     * 区域型供应商必须按区域分开返回：国内站与国际站是不同域名，合成一份会让
+     * 「国内版走代理、国际版直连」这种选择无从表达。
+     */
+    fun hosts(region: String?): List<String> = hosts()
 
     /** provider 专属动作（签到、兑换码等）。默认不支持。 */
     fun performAction(account: ProviderAccount, action: String, payload: JsonObject): ProviderActionResult =

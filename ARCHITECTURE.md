@@ -52,7 +52,7 @@
 └───────────────┬─────────────────────────────────┘
                 ▼
         [ 上游 API ]
-   Google（走代理）/ 腾讯、字节、讯飞、商汤（国内直连）
+   Google / 腾讯、字节、讯飞、商汤 / 其它（走不走代理全部由「代理设置」页勾选决定）
 ```
 
 **核心不变量（所有代码都必须遵守）**：
@@ -81,7 +81,8 @@
 | `gateway/RoutingGroups.kt` | 路由组与规则：`RoutingGroup`（成员 + 策略 ORDER/WEIGHT + 规则）、`GroupRule`（token 阈值/图片/压缩/工作目录/时段/星期，条件为「与」）、`RoutingGroupResolver`（`orderMembers`/`matches`/请求体解析） | 组对客户端就是一个模型 `group/<id>`；规则只在**一轮开始时**判定，工具回调中途不换模型（否则上游缓存整段作废）；停用的组不应用规则 |
 | `gateway/GatewayMiddleware.kt` | 请求改写链：`ModelAliasMiddleware`（别名）、`SystemPromptAppendMiddleware`、`ThinkTagsStripMiddleware`、`MiddlewareChain` | **钩子抛异常就跳过它继续下一个**，改写永远不能让请求失败；空链走零开销路径 |
 | `usage/ModelPricing.kt` | 模型价格表（四单价齐全才有效）与 `costOf` | **算不出价格返回 null，绝不当 0**；缓存读/写是 prompt 的子集，不重复计费 |
-| `gateway/ProxySettings.kt` | 代理开关 + `DOMESTIC_SUFFIXES` 国内域名强制直连白名单 | 白名单优先级 > 一切代理设置 |
+| `gateway/ProxySettings.kt` | 多套代理配置（`ProxyProfile`）+ 按「供应商 / 区域」白名单（`proxiedRoutes`，键 `providerId` 或 `providerId/region`，`*` 表示全部）+ 地址排除规则 | **是否走代理只由用户勾选决定，没有硬编码的强制直连域名**；本机回环与地址排除规则先于白名单判定 |
+| `gateway/ProxyProbe.kt` | 代理连通性探测：HTTP 走 CONNECT 隧道、SOCKS5 走握手 + CONNECT，结果分 OK / TIMEOUT / UNREACHABLE | 只测「端口能连」不算通：授权错、上游不可达也算不可用 |
 | `gateway/ProviderBootstrap.kt` | 内置 Provider 登记处 | 新增供应商在此加一行 |
 | `gateway/LoopbackCallbackServer.kt` | OAuth 登录回调监听（端口/路径由各 provider 声明：Trae 51120 / Antigravity 51121 / ChatGPT 1455） | 临时端口，用完即释放；redirect_uri 是上游注册值，provider 不得随意改 |
 | `gateway/OpenAiApi.kt` | OpenAI 报文拼装（error/modelList） | |
@@ -167,7 +168,7 @@ settings/model_pricing.json        # 模型价格表
 settings/middleware.json           # 请求改写（别名/system 追加/think 标签）
 clientkey/usage|window|cycle/...   # 密钥用量台账与限额窗口
 settings/provider/<id>.json        # 供应商设置（含 region 等 option）
-settings/proxy.json                # 代理设置
+settings/proxy.json                # 代理配置（多套）与分流白名单
 settings/custom.json               # 自定义供应商配置
 call/...                           # 调用日志
 ```

@@ -38,7 +38,10 @@ import dev.aigw.core.gateway.ModelsCatalog
 import dev.aigw.core.gateway.ProviderInfo
 import dev.aigw.core.gateway.ProviderModelsChunk
 import dev.aigw.core.gateway.ProviderSettings
+import dev.aigw.core.gateway.ProxyProfile
+import dev.aigw.core.gateway.ProxyProbeResult
 import dev.aigw.core.gateway.ProxySettings
+import dev.aigw.core.gateway.ProxyTarget
 import dev.aigw.core.pool.AccountStatus
 import dev.aigw.core.pool.PoolSummary
 import dev.aigw.core.provider.ACTION_CHECKIN
@@ -201,6 +204,12 @@ sealed interface ModelTestStatus {
     data class Failed(val reason: String) : ModelTestStatus
 }
 
+/** 代理连通性测试状态（键为配置 id，见 [AppUiState.proxyProbeResults]）。 */
+sealed interface ProxyProbeState {
+    data object Testing : ProxyProbeState
+    data class Done(val result: ProxyProbeResult) : ProxyProbeState
+}
+
 /**
  * 单个供应商模型目录的流式加载状态（键为 providerId，见 [AppUiState.modelLoadStates]）。
  * 模型页可用它画骨架屏/逐组点亮的动画，而不必等全部供应商拉完。
@@ -265,6 +274,10 @@ data class AppUiState(
     val modelLoadStates: Map<String, ModelLoadState> = emptyMap(),
     /** 模型测速状态，键为 `model.fullId`。 */
     val modelTestLatencies: Map<String, ModelTestStatus> = emptyMap(),
+    /** 代理页的候选路由（供应商或供应商×区域），启动与供应商变动后刷新。 */
+    val proxyTargets: List<ProxyTarget> = emptyList(),
+    /** 代理连通性测试结果，键为配置 id。 */
+    val proxyProbeResults: Map<String, ProxyProbeState> = emptyMap(),
     val calls: List<CallRecord> = emptyList(),
     /** 存储中的记录条数（含未载入内存的）。 */
     val storedCalls: Int = 0,
@@ -355,6 +368,7 @@ private class Snapshot(
     val logs: List<LogLine>,
     val settings: GatewaySettings,
     val proxy: ProxySettings,
+    val proxyTargets: List<ProxyTarget>,
     val keepAlive: KeepAliveStatus,
     val security: dev.aigw.core.security.SecuritySettings,
     val evidences: List<dev.aigw.core.security.OutboundEvidence>,
@@ -501,6 +515,7 @@ class AppViewModel(
                     logs = engine.requestLog.lines(),
                     settings = engine.settings(),
                     proxy = engine.proxySettings(),
+                    proxyTargets = engine.proxyTargets(),
                     keepAlive = KeepAlive.status(app),
                     security = engine.securitySettings(),
                     evidences = engine.sanitizer.evidenceList(),
@@ -533,6 +548,7 @@ class AppViewModel(
                 logs = snapshot.logs,
                 settings = snapshot.settings,
                 proxy = snapshot.proxy,
+                proxyTargets = snapshot.proxyTargets,
                 keepAlive = snapshot.keepAlive,
                 security = snapshot.security,
                 evidences = snapshot.evidences,
@@ -1626,6 +1642,59 @@ class AppViewModel(
     fun updateProxySettings(settings: ProxySettings) {
         _state.value = _state.value.copy(proxy = settings)
         viewModelScope.launch { withContext(Dispatchers.IO) { engine.updateProxySettings(settings) } }
+    }
+
+    /** 新增或更新一套代理配置（保存后立即成为当前使用的配置）。 */
+    fun saveProxyProfile(profile: ProxyProfile) {
+        updateProxySettings(_state.value.proxy.upsertProfile(profile))
+    }
+
+    fun removeProxyProfile(id: String) {
+        updateProxySettings(_state.value.proxy.removeProfile(id))
+        val results = _state.value.proxyProbeResults - id
+        _state.value = _state.value.copy(proxyProbeResults = results)
+    }
+
+    fun activateProxyProfile(id: String) {
+        updateProxySettings(_state.value.proxy.copy(activeProfileId = id))
+    }
+
+    /** 勾选/取消某个路由（供应商或供应商×区域）走代理。 */
+    fun toggleProxyRoute(routeKey: String, proxied: Boolean) {
+        val current = _state.value.proxy
+        // 白名单里的 `*` 要先展开成具体路由：否则取消单项后 `*` 仍把它命中，开关看起来没反应
+        val base = if (ProxySettings.ALL_ROUTES in current.proxiedRoutes) {
+            _state.value.proxyTargets.map { it.routeKey }.toSet()
+        } else {
+            current.proxiedRoutes
+        }
+        val routes = if (proxied) base + routeKey else base - routeKey
+        updateProxySettings(current.copy(proxiedRoutes = routes))
+    }
+
+    fun toggleAllProxyRoutes(proxied: Boolean) {
+        val current = _state.value.proxy
+        if (!proxied) {
+            updateProxySettings(current.copy(proxiedRoutes = emptySet()))
+            return
+        }
+        // 全选落到具体路由键，而不是 `*`：之后新增的供应商不应被默默纳入代理
+        val all = current.proxiedRoutes.filterNot { it == ProxySettings.ALL_ROUTES }.toSet() +
+            _state.value.proxyTargets.map { it.routeKey }
+        updateProxySettings(current.copy(proxiedRoutes = all))
+    }
+
+    /** 测试一套代理配置的连通性；结果保留在状态里供页面展示。 */
+    fun testProxyProfile(id: String) {
+        _state.value = _state.value.copy(
+            proxyProbeResults = _state.value.proxyProbeResults + (id to ProxyProbeState.Testing),
+        )
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { engine.probeProxyProfile(id) }
+            _state.value = _state.value.copy(
+                proxyProbeResults = _state.value.proxyProbeResults + (id to ProxyProbeState.Done(result)),
+            )
+        }
     }
 
     // ------------------------------------------------------------------ 额度包

@@ -147,11 +147,19 @@ class TraeProvider(
      *
      * 只列网关自己会出站访问的 host（agent / 额度 / 鉴权）：登录页由系统浏览器打开，不走这里。
      */
-    override fun hosts(): List<String> =
-        TraeRegion.entries
-            .flatMap { listOf(it.agentHost, it.ugHost, it.oauthHost) }
+    override fun hosts(): List<String> = TraeRegion.entries
+        .flatMap { regionHosts(it) }
+        .distinct()
+
+    override fun hosts(region: String?): List<String> {
+        val target = TraeRegion.entries.firstOrNull { it.id.equals(region?.trim(), ignoreCase = true) }
+            ?: return hosts()
+        return regionHosts(target)
+    }
+
+    private fun regionHosts(region: TraeRegion): List<String> =
+        listOf(region.agentHost, region.ugHost, region.oauthHost)
             .map { it.removePrefix("https://") }
-            .distinct()
 
     // ------------------------------------------------------------------ 对话
 
