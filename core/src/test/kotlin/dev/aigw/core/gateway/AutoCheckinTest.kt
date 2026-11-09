@@ -230,30 +230,58 @@ class AutoCheckinTest {
 
     @Test
     fun `并发五个巡检只有一个真正执行`() {
-        val latch = CountDownLatch(1)
-        val rec = Recorder(gate = latch)
+        // 只锁「上游只被打一轮」这个产品语义，不锁线程交错：
+        // 第一个线程跑完后其余线程可能落到 SKIPPED_IN_FLIGHT 或 SKIPPED_ALREADY_DONE，
+        // 两者都是「没重复执行」的正确结果，强行要求 4 个 in-flight 会造出 flaky 夹具。
+        val startGate = CountDownLatch(1)
+        val rec = Recorder()
         val auto = build(clock = { T1 }, execute = rec.execute)
-        val executed = AtomicInteger(0)
-        val skipped = AtomicInteger(0)
+        val outcomes = java.util.Collections.synchronizedList(mutableListOf<AutoCheckinOutcome>())
         val threads = (1..5).map {
             Thread {
-                when (auto.tick().outcome) {
-                    AutoCheckinOutcome.EXECUTED -> executed.incrementAndGet()
-                    AutoCheckinOutcome.SKIPPED_IN_FLIGHT -> skipped.incrementAndGet()
-                    else -> Unit
-                }
+                startGate.await(5, TimeUnit.SECONDS)
+                outcomes.add(auto.tick().outcome)
             }
         }
         threads.forEach { it.start() }
-        // 等第一个真的进入 execute 后再放行，确保重叠窗口成立
-        val deadline = System.currentTimeMillis() + 5_000
-        while (rec.calls.get() == 0 && System.currentTimeMillis() < deadline) Thread.sleep(10)
-        latch.countDown()
+        startGate.countDown()
         threads.forEach { it.join(5_000) }
 
         assertEquals(1, rec.calls.get(), "并发下只能打一轮上游")
-        assertEquals(1, executed.get())
-        assertEquals(4, skipped.get())
+        assertEquals(1, outcomes.count { it == AutoCheckinOutcome.EXECUTED })
+        assertEquals(5, outcomes.size)
+        assertTrue(outcomes.none { it == AutoCheckinOutcome.FAILED })
+        assertTrue(outcomes.all {
+            it == AutoCheckinOutcome.EXECUTED ||
+                it == AutoCheckinOutcome.SKIPPED_IN_FLIGHT ||
+                it == AutoCheckinOutcome.SKIPPED_ALREADY_DONE
+        })
+    }
+
+    @Test
+    fun `执行期间的第二轮巡检被 in-flight 拦下`() {
+        // 确定性重叠：线程 A 卡在 execute 里，主线程等它真的进去后再调一次 tick。
+        // 不依赖 Thread.sleep 猜调度，因此 CI 上不会 flaky。
+        val executeGate = CountDownLatch(1)
+        val rec = Recorder(gate = executeGate)
+        val auto = build(clock = { T1 }, execute = rec.execute)
+        var firstOutcome: AutoCheckinOutcome? = null
+        val worker = Thread { firstOutcome = auto.tick().outcome }
+        worker.start()
+
+        val deadline = System.currentTimeMillis() + 5_000
+        while (rec.calls.get() == 0 && System.currentTimeMillis() < deadline) Thread.sleep(10)
+        assertEquals(1, rec.calls.get(), "第一个线程应已进入 execute")
+        assertEquals(
+            AutoCheckinOutcome.SKIPPED_IN_FLIGHT,
+            auto.tick().outcome,
+            "上一次还没结束时必须被 CAS 拦下",
+        )
+        executeGate.countDown()
+        worker.join(5_000)
+
+        assertEquals(AutoCheckinOutcome.EXECUTED, firstOutcome)
+        assertEquals(1, rec.calls.get())
     }
 
     @Test
