@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.AlertDialog
@@ -37,14 +38,29 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.unit.sp
+import dev.aigw.app.ui.theme.DeepInk
 import dev.aigw.app.ui.theme.LocalAppColors
 import dev.aigw.app.ui.theme.formatHex
 import dev.aigw.core.usage.StorageAudit
 import dev.aigw.core.usage.UsageStats
 import dev.aigw.core.usage.formatMicroUsd
+import dev.aigw.core.util.startOfDay
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
+
+/** 趋势图展示天数。 */
+private const val TREND_DAYS = 14
 
 @Composable
 fun MeScreen(state: AppUiState, viewModel: AppViewModel, open: (SubPage) -> Unit) {
@@ -380,7 +396,7 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
     LaunchedEffect(Unit) { viewModel.refreshStorage() }
     PageScaffold(
         title = "用量统计",
-        subtitle = "累计与今日",
+        subtitle = "今日、趋势与累计",
         leading = {
             Icon(
                 Icons.AutoMirrored.Filled.ArrowBack,
@@ -403,6 +419,11 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
         }
 
         SectionCard(enterIndex = 4) {
+            SectionLabel("近期趋势")
+            TrendSection(state)
+        }
+
+        SectionCard(enterIndex = 5) {
             SectionLabel("累计")
             CacheHitGauge(state.total)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
@@ -414,7 +435,7 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
             CostLine(state.total)
         }
 
-        SectionCard(enterIndex = 5) {
+        SectionCard(enterIndex = 6) {
             SectionLabel("存储")
             Text(
                 text = "调用记录 ${state.storedCalls} 条，占用约 ${StorageAudit.formatSize(state.storage?.totalChars ?: 0L)}",
@@ -424,6 +445,145 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
         }
     }
 }
+
+/**
+ * 近 14 天输入/输出 token 折线。放在用量统计页而不是首页：它是回顾型数据，
+ * 与「今日/累计」同属一处。
+ */
+@Composable
+private fun TrendSection(state: AppUiState) {
+    val trend = remember(state.daily) { state.daily.takeLast(TREND_DAYS) }
+    val drawable = remember(trend) {
+        trend.size >= 2 && trend.any { it.promptTokens > 0 || it.completionTokens > 0 }
+    }
+    if (!drawable) {
+        Text(
+            text = "暂无足够历史，累积几天后显示趋势",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(vertical = 12.dp),
+        )
+        return
+    }
+
+    val gold = LocalAppColors.current.goldStart
+    TrendChart(trend, startOfDay(System.currentTimeMillis()))
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        LegendDot(gold, "输入")
+        LegendDot(DeepInk, "输出")
+        Text(
+            text = "近 ${trend.size} 天",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+            textAlign = TextAlign.End,
+        )
+    }
+}
+
+@Composable
+private fun LegendDot(color: Color, text: String) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Box(Modifier.size(8.dp).clip(CircleShape).background(color))
+        Text(text, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun TrendChart(daily: List<UsageStats>, todayStart: Long) {
+    val gold = LocalAppColors.current.goldStart
+    val gridColor = MaterialTheme.colorScheme.surfaceContainerHighest
+    val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val n = daily.size
+    val maxValue = remember(daily) {
+        daily.maxOf { maxOf(it.promptTokens, it.completionTokens) }.coerceAtLeast(1L)
+    }
+    val labels = remember(daily, todayStart) {
+        List(n) { index -> dayLabel(todayStart - (n - 1 - index) * 86_400_000L) }
+    }
+
+    // 复用同一支画笔：绘制阶段只改对齐方式，不再每次重绘都新建
+    val axisPaint = remember { android.graphics.Paint() }
+    val inFractions = remember(daily, maxValue) {
+        FloatArray(n) { daily[it].promptTokens.toFloat() / maxValue }
+    }
+    val outFractions = remember(daily, maxValue) {
+        FloatArray(n) { daily[it].completionTokens.toFloat() / maxValue }
+    }
+    val xs = remember(n) { FloatArray(n) }
+    val inY = remember(n) { FloatArray(n) }
+    val outY = remember(n) { FloatArray(n) }
+    Canvas(Modifier.fillMaxWidth().height(150.dp)) {
+        val gutterLeft = 40.dp.toPx()
+        val gutterBottom = 22.dp.toPx()
+        val padTop = 6.dp.toPx()
+        val padRight = 6.dp.toPx()
+        val chartWidth = (size.width - gutterLeft - padRight).coerceAtLeast(1f)
+        val chartHeight = (size.height - gutterBottom - padTop).coerceAtLeast(1f)
+        val originY = padTop + chartHeight
+        val stepX = chartWidth / (n - 1)
+        for (i in 0 until n) {
+            xs[i] = gutterLeft + i * stepX
+            inY[i] = originY - inFractions[i] * chartHeight
+            outY[i] = originY - outFractions[i] * chartHeight
+        }
+
+        drawLine(gridColor, Offset(gutterLeft, originY), Offset(gutterLeft + chartWidth, originY), strokeWidth = 1f)
+        drawSeries(xs, inY, originY, gold)
+        drawSeries(xs, outY, originY, DeepInk)
+
+        drawIntoCanvas { canvas ->
+            axisPaint.isAntiAlias = true
+            axisPaint.color = labelColor.toArgb()
+            axisPaint.textSize = 9.sp.toPx()
+            axisPaint.textAlign = android.graphics.Paint.Align.RIGHT
+            canvas.nativeCanvas.drawText(formatAxis(maxValue), gutterLeft - 6.dp.toPx(), originY, axisPaint)
+            axisPaint.textAlign = android.graphics.Paint.Align.CENTER
+            val labelY = originY + 14.dp.toPx()
+            for (index in listOf(0, (n - 1) / 2, n - 1).distinct()) {
+                canvas.nativeCanvas.drawText(labels[index], xs[index], labelY, axisPaint)
+            }
+        }
+    }
+}
+
+/** 一条序列：先画半透明填充，再画主线。 */
+private fun DrawScope.drawSeries(xs: FloatArray, ys: FloatArray, baseline: Float, color: Color) {
+    if (xs.size < 2) return
+    val fillPath = Path().apply {
+        moveTo(xs[0], baseline)
+        for (i in xs.indices) lineTo(xs[i], ys[i])
+        lineTo(xs.last(), baseline)
+        close()
+    }
+    drawPath(fillPath, color = color.copy(alpha = 0.12f))
+    val linePath = Path().apply {
+        moveTo(xs[0], ys[0])
+        for (i in 1 until xs.size) lineTo(xs[i], ys[i])
+    }
+    drawPath(
+        linePath,
+        color = color,
+        style = Stroke(width = 1.6.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
+    )
+}
+
+/** 坐标轴上限缩写：1.2k / 3.4M。 */
+private fun formatAxis(value: Long): String = when {
+    value >= 1_000_000L -> String.format(Locale.US, "%.1fM", value / 1_000_000.0)
+    value >= 1_000L -> String.format(Locale.US, "%.1fk", value / 1_000.0)
+    else -> value.toString()
+}
+
+private val DAY_LABEL_FORMAT = SimpleDateFormat("M/d", Locale.US)
+
+private fun dayLabel(millis: Long): String = DAY_LABEL_FORMAT.format(Date(millis))
 
 /**
  * 费用与重试两行。
