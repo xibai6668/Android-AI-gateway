@@ -105,21 +105,14 @@ fun MeScreen(state: AppUiState, viewModel: AppViewModel, open: (SubPage) -> Unit
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         }
 
-        EditorialGroupHeader("01", "外观风格 · APPEARANCE")
+        EditorialGroupHeader("01", "外观与主题 · APPEARANCE")
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            EditorialSwitchRow(
-                index = "01.1",
-                title = "动态取色 · DYNAMIC COLOR",
-                subtitle = "跟随系统壁纸生成配色（Android 12 及以上）",
-                checked = state.dynamicColor,
-                onCheckedChange = { viewModel.setDynamicColor(it) },
-            )
             EditorialRow(
-                "01.2",
-                "外观主题 · THEME",
-                "明暗模式、配色方案与金色文字",
+                "01",
+                "主题设置",
+                "明暗模式、配色、底栏样式",
                 appearanceMeta(state),
-            ) { open(SubPage.AppearanceTheme) }
+            ) { open(SubPage.ThemeSettings) }
         }
 
         EditorialGroupHeader("02", "核心功能偏好 · CORE FUNCTIONS")
@@ -164,7 +157,7 @@ fun MeScreen(state: AppUiState, viewModel: AppViewModel, open: (SubPage) -> Unit
             ) { open(SubPage.KeepAlive) }
             EditorialSwitchRow(
                 index = "02.8",
-                title = "实时状态 · LIVE STATUS",
+                title = "实时状态通知 · LIVE STATUS",
                 subtitle = "仅网关有请求时显示，点击回到 App",
                 checked = state.liveNotification,
                 onCheckedChange = { viewModel.setLiveNotification(it) },

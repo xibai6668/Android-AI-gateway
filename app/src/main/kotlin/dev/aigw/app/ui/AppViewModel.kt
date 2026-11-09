@@ -135,6 +135,19 @@ class AppearanceStore(private val store: KeyValueStore) {
         store.delete(KEY_BG)
         store.delete(KEY_GOLD_START)
         store.delete(KEY_GOLD_END)
+        store.delete(KEY_FLOATING_NAV)
+    }
+
+    /**
+     * 底部导航悬浮样式开关：默认**关闭**。
+     *
+     * 跟动态取色一样属于主题的一部分，所以放在同页；但默认关：贴边底栏是默认布局，
+     * 悬浮是可选项，不应该因为升级就改变用户已习惯的位置。
+     */
+    fun floatingNavBar(): Boolean = store.read(KEY_FLOATING_NAV) == "1"
+
+    fun setFloatingNavBar(enabled: Boolean) {
+        store.write(KEY_FLOATING_NAV, if (enabled) "1" else "0")
     }
 
     companion object {
@@ -146,6 +159,7 @@ class AppearanceStore(private val store: KeyValueStore) {
         private const val KEY_BG = "settings/appearance.backgroundHex"
         private const val KEY_GOLD_START = "settings/appearance.goldStartHex"
         private const val KEY_GOLD_END = "settings/appearance.goldEndHex"
+        private const val KEY_FLOATING_NAV = "settings/appearance.floatingNavBar"
     }
 }
 
@@ -343,6 +357,12 @@ data class AppUiState(
     val middleware: dev.aigw.core.gateway.MiddlewareSettings = dev.aigw.core.gateway.MiddlewareSettings(),
     /** 各改写中间件最近一次失败原因，键为中间件 id。 */
     val middlewareFailures: Map<String, String> = emptyMap(),
+    /** 首页组件顺序（含被隐藏的项，隐藏态看 [homeHidden]）。 */
+    val homeOrder: List<HomeWidget> = HomeWidget.entries,
+    /** 首页被隐藏的组件。 */
+    val homeHidden: Set<HomeWidget> = emptySet(),
+    /** 底部导航是否悬浮（主题设置里的开关，默认关闭）。 */
+    val floatingNavBar: Boolean = false,
 ) {
     /** 某个供应商的账号。 */
     fun accountsOf(providerId: String): List<AccountStatus> = accounts.filter { it.providerId == providerId }
@@ -390,6 +410,7 @@ class AppViewModel(
 
     private val appearance = AppearanceStore(engine.store())
     private val updateStore = UpdateStore(engine.store())
+    private val homeLayout = HomeLayoutStore(engine.store())
 
     private val _state = MutableStateFlow(
         AppUiState(
@@ -400,6 +421,9 @@ class AppViewModel(
             backgroundOverride = appearance.backgroundHex()?.let { parseHexColor(it) },
             goldStart = parseHexColor(appearance.goldStartHex()) ?: defaultAppColors.goldStart,
             goldEnd = parseHexColor(appearance.goldEndHex()) ?: defaultAppColors.goldEnd,
+            homeOrder = homeLayout.order(),
+            homeHidden = homeLayout.hidden(),
+            floatingNavBar = appearance.floatingNavBar(),
         ),
     )
     val state: StateFlow<AppUiState> = _state.asStateFlow()
@@ -1029,7 +1053,7 @@ class AppViewModel(
         }
     }
 
-    /** 恢复默认外观（明暗模式、页面底色、金色渐变）。 */
+    /** 恢复默认外观（明暗模式、页面底色、金色渐变、悬浮底栏）。 */
     fun resetAppearance() {
         persistAppearanceJob?.cancel()
         _state.value = _state.value.copy(
@@ -1037,10 +1061,33 @@ class AppViewModel(
             backgroundOverride = null,
             goldStart = defaultAppColors.goldStart,
             goldEnd = defaultAppColors.goldEnd,
+            floatingNavBar = false,
         )
         viewModelScope.launch {
             withContext(Dispatchers.IO) { appearance.reset() }
             _state.value = _state.value.copy(notice = "外观主题已恢复默认")
+        }
+    }
+
+    /** 底部导航悬浮开关。 */
+    fun setFloatingNavBar(enabled: Boolean) {
+        _state.value = _state.value.copy(floatingNavBar = enabled)
+        viewModelScope.launch { withContext(Dispatchers.IO) { appearance.setFloatingNavBar(enabled) } }
+    }
+
+    /**
+     * 保存首页布局：顺序与隐藏项一起落盘。
+     *
+     * 编辑模式下每次拖动/删除都调一次（FlClash 也是拖完即落盘），
+     * 这样中途退出或进程被杀都不会丢掉刚才的调整。
+     */
+    fun saveHomeLayout(order: List<HomeWidget>, hidden: Set<HomeWidget>) {
+        _state.value = _state.value.copy(homeOrder = order, homeHidden = hidden)
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                homeLayout.setOrder(order)
+                homeLayout.setHidden(hidden)
+            }
         }
     }
 

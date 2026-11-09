@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -26,7 +27,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -54,10 +58,10 @@ import dev.aigw.core.usage.CallStatus
 import java.util.Locale
 
 /**
- * 首页：只回答「服务是否在跑」与「现在能做什么」。
+ * 首页：服务状态、用量与快捷入口。
  *
- * 数据看板（趋势、缓存命中率、模型分布、按供应商额度）都在各自标签页里，
- * 这里不重复展示同一份数字。
+ * 组件顺序与可见性由用户决定（右上角「编辑」进入编辑态，拖拽排序、移除、添加），
+ * 布局存于 [HomeLayoutStore]。
  */
 @Composable
 fun HomeScreen(
@@ -69,6 +73,8 @@ fun HomeScreen(
 ) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
+    var editing by remember { mutableStateOf(false) }
+    var adding by remember { mutableStateOf(false) }
 
     // Android 13+ 通知权限被拒时前台服务照常跑，但常驻通知会被系统静默隐藏，
     // 用户看起来就是「服务没起来」；启动前先补上授权请求。
@@ -92,31 +98,92 @@ fun HomeScreen(
         Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
     }
 
+    // 编辑态：返回键先退出编辑，而不是直接把页面退出（与 FlClash 一致）
+    BackHandler(enabled = editing) { editing = false }
+
+    if (adding) {
+        AddHomeWidgetDialog(
+            hidden = state.homeHidden,
+            onAdd = { widget ->
+                viewModel.saveHomeLayout(state.homeOrder, state.homeHidden - widget)
+                adding = false
+            },
+            onDismiss = { adding = false },
+        )
+    }
+
+    val visible = state.homeOrder.filterNot { it in state.homeHidden }
+
     PageScaffold(
         title = "ai-gateway",
-        subtitle = "本地 OpenAI 兼容网关",
+        subtitle = if (editing) "编辑首页组件" else "本地 OpenAI 兼容网关",
+        actions = {
+            if (editing && state.homeHidden.isNotEmpty()) {
+                Icon(
+                    Icons.Filled.Add,
+                    contentDescription = "添加组件",
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier
+                        .clickable { adding = true }
+                        .padding(6.dp),
+                )
+            }
+            HomeEditAction(editing) { editing = !editing }
+        },
     ) {
-        GatewayStatusCard(
-            state = state,
-            onStart = { startWithNotificationPermission() },
-            onStop = { viewModel.stopGateway() },
-            onCopy = ::copy,
-        )
-
-        UsageSummaryCard(state, openUsage)
-
-        // 批量动作进行中/结束：签到按钮就在本页，进度与失败原因要在这里可见
+        // 批量进度与结果不属于可摆放组件：它们是动作的反应，必须始终可见
         BatchProgressHost(state.batchProgress)
         BatchOutcomeHost(state.batchOutcome) { viewModel.dismissBatchOutcome() }
-        ActionRow(
+
+        if (editing) {
+            HomeEditHint(visible.isEmpty())
+            EditableHomeWidgetList(
+                order = state.homeOrder,
+                hidden = state.homeHidden,
+                onReorder = { viewModel.saveHomeLayout(it, state.homeHidden) },
+                onRemove = { widget ->
+                    viewModel.saveHomeLayout(state.homeOrder, state.homeHidden + widget)
+                },
+            ) { widget ->
+                HomeWidgetContent(widget, state, viewModel, ::startWithNotificationPermission, ::copy, openTaskCenter, openLogs, openUsage)
+            }
+        } else {
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                visible.forEach { widget ->
+                    HomeWidgetContent(widget, state, viewModel, ::startWithNotificationPermission, ::copy, openTaskCenter, openLogs, openUsage)
+                }
+            }
+        }
+    }
+}
+
+/** 按组件 id 分发内容；新增组件只需在此加一个分支。 */
+@Composable
+private fun HomeWidgetContent(
+    widget: HomeWidget,
+    state: AppUiState,
+    viewModel: AppViewModel,
+    onStart: () -> Unit,
+    onCopy: (String, String) -> Unit,
+    openTaskCenter: () -> Unit,
+    openLogs: () -> Unit,
+    openUsage: () -> Unit,
+) {
+    when (widget) {
+        HomeWidget.STATUS -> GatewayStatusCard(
+            state = state,
+            onStart = onStart,
+            onStop = { viewModel.stopGateway() },
+            onCopy = onCopy,
+        )
+        HomeWidget.SUMMARY -> UsageSummaryCard(state, openUsage)
+        HomeWidget.ACTIONS -> ActionRow(
             onCheckin = { viewModel.checkinAll() },
             onRefreshCredits = { viewModel.refreshAllCredits() },
             onOpenTaskCenter = openTaskCenter,
         )
-
-        RecentCallCard(state, openLogs)
-
-        ContextCapacityCard(state)
+        HomeWidget.LAST_CALL -> RecentCallCard(state, openLogs)
+        HomeWidget.CONTEXT -> ContextCapacityCard(state)
     }
 }
 

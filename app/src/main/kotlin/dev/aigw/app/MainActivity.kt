@@ -11,14 +11,23 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.animation.AnimatedContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -35,8 +44,10 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.ScaffoldDefaults
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -45,7 +56,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
@@ -61,6 +75,7 @@ import dev.aigw.app.ui.AppUiState
 import dev.aigw.app.ui.ApiSettingsScreen
 import dev.aigw.app.ui.AppViewModel
 import dev.aigw.app.ui.AppearanceThemeScreen
+import dev.aigw.app.ui.ThemeSettingsScreen
 import dev.aigw.app.ui.CustomProviderScreen
 import dev.aigw.app.ui.CreditCenterScreen
 import dev.aigw.app.ui.HomeScreen
@@ -171,6 +186,7 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
     BackHandler(enabled = subPage != null) {
         subPage = when (val page = subPage) {
             is SubPage.ProviderCredits -> SubPage.CreditCenter
+            SubPage.AppearanceTheme -> SubPage.ThemeSettings
             is SubPage.CustomProviderEdit ->
                 page.key?.let { SubPage.ProviderDetail(ProviderUiRegistry.CUSTOM_PREFIX + it) }
             else -> null
@@ -180,28 +196,21 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbarHostState) },
+        // 悬浮底栏时让内容铺到屏幕底部，由导航栏自己的半透明卡片层叠在上面
+        contentWindowInsets = if (state.floatingNavBar) WindowInsets(0) else ScaffoldDefaults.contentWindowInsets,
         bottomBar = {
-            val selectedGold = LocalAppColors.current.goldStart
-            NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
-                Tab.entries.forEach { item ->
-                    NavigationBarItem(
-                        selected = subPage == null && tab == item,
-                        onClick = {
-                            subPage = null
-                            tab = item
-                            if (item == Tab.Models) viewModel.ensureModelsLoaded()
-                        },
-                        icon = { Icon(item.icon, contentDescription = item.label) },
-                        label = { Text(item.label) },
-                        colors = NavigationBarItemDefaults.colors(
-                            indicatorColor = Color.Transparent,
-                            selectedIconColor = selectedGold,
-                            selectedTextColor = selectedGold,
-                            unselectedIconColor = Color(0xFF777777),
-                            unselectedTextColor = Color(0xFF777777),
-                        ),
-                    )
-                }
+            if (state.floatingNavBar) {
+                FloatingNavBar(tab, subPage, onSelect = { item ->
+                    subPage = null
+                    tab = item
+                    if (item == Tab.Models) viewModel.ensureModelsLoaded()
+                })
+            } else {
+                DockedNavBar(tab, subPage, onSelect = { item ->
+                    subPage = null
+                    tab = item
+                    if (item == Tab.Models) viewModel.ensureModelsLoaded()
+                })
             }
         },
     ) { insets ->
@@ -263,7 +272,13 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
                 SubPage.ApiSettings -> ApiSettingsScreen(state, viewModel) { subPage = null }
                 SubPage.SecurityProtection -> SecurityProtectionScreen(state, viewModel) { subPage = null }
                 SubPage.Resilience -> ResilienceScreen(state, viewModel) { subPage = null }
-                SubPage.AppearanceTheme -> AppearanceThemeScreen(state, viewModel) { subPage = null }
+                SubPage.AppearanceTheme -> AppearanceThemeScreen(state, viewModel) { subPage = SubPage.ThemeSettings }
+                SubPage.ThemeSettings -> ThemeSettingsScreen(
+                    state = state,
+                    viewModel = viewModel,
+                    onOpenColors = { subPage = SubPage.AppearanceTheme },
+                    onBack = { subPage = null },
+                )
                 SubPage.AccountTransfer -> AccountTransferScreen(state, viewModel) { subPage = null }
                 SubPage.ClientKeys -> ClientKeysScreen(state, viewModel) { subPage = null }
                 SubPage.RoutingGroups -> RoutingGroupsScreen(state, viewModel) { subPage = null }
@@ -388,6 +403,86 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
                 }) { Text("稍后") }
             },
         )
+    }
+}
+
+/** 贴边底栏（默认）。 */
+@Composable
+private fun DockedNavBar(tab: Tab, subPage: SubPage?, onSelect: (Tab) -> Unit) {
+    val selectedGold = LocalAppColors.current.goldStart
+    NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+        Tab.entries.forEach { item ->
+            NavigationBarItem(
+                selected = subPage == null && tab == item,
+                onClick = { onSelect(item) },
+                icon = { Icon(item.icon, contentDescription = item.label) },
+                label = { Text(item.label) },
+                colors = NavigationBarItemDefaults.colors(
+                    indicatorColor = Color.Transparent,
+                    selectedIconColor = selectedGold,
+                    selectedTextColor = selectedGold,
+                    unselectedIconColor = Color(0xFF777777),
+                    unselectedTextColor = Color(0xFF777777),
+                ),
+            )
+        }
+    }
+}
+
+/**
+ * 悬浮底栏：圆角卡片浮在内容之上，四周留边距。
+ *
+ * 选中色与贴边版一致；用 [Surface] 承载阴影，另加一层描边——
+ * 暗色主题下纯阴影在深底上看不出来，会显得卡片与内容糊在一起。
+ */
+@Composable
+private fun FloatingNavBar(tab: Tab, subPage: SubPage?, onSelect: (Tab) -> Unit) {
+    val selectedGold = LocalAppColors.current.goldStart
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+    ) {
+        Surface(
+            shape = RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 3.dp,
+            shadowElevation = 6.dp,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Tab.entries.forEach { item ->
+                    val selected = subPage == null && tab == item
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(14.dp))
+                            .clickable { onSelect(item) }
+                            .padding(vertical = 6.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(3.dp),
+                    ) {
+                        Icon(
+                            imageVector = item.icon,
+                            contentDescription = item.label,
+                            tint = if (selected) selectedGold else Color(0xFF777777),
+                            modifier = Modifier.size(22.dp),
+                        )
+                        Text(
+                            text = item.label,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (selected) selectedGold else Color(0xFF777777),
+                            maxLines = 1,
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
