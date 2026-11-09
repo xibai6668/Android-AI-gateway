@@ -48,7 +48,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.aigw.app.ui.theme.LocalAppColors
 import dev.aigw.app.ui.theme.WarningAmber
-import dev.aigw.core.gateway.ActiveRequest
 import dev.aigw.core.provider.RoutedModel
 import dev.aigw.core.usage.CallRecord
 import dev.aigw.core.usage.CallStatus
@@ -114,8 +113,6 @@ fun HomeScreen(
             onRefreshCredits = { viewModel.refreshAllCredits() },
             onOpenTaskCenter = openTaskCenter,
         )
-
-        LiveActivityCard(state, openLogs)
 
         RecentCallCard(state, openLogs)
 
@@ -296,50 +293,6 @@ private fun ActionButton(
             maxLines = 1,
         )
     }
-}
-
-/** 在途请求；详情与历史在「记录」页。 */
-@Composable
-private fun LiveActivityCard(state: AppUiState, openLogs: () -> Unit) {
-    SectionCard {
-        SectionHeader("实时活动", action = "记录", onAction = openLogs)
-        ActivityRow("在途", activeSummary(state.activeRequests), emphasized = state.activeRequests.isNotEmpty())
-    }
-}
-
-@Composable
-private fun ActivityRow(label: String, detail: String, emphasized: Boolean) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.width(40.dp),
-        )
-        Text(
-            text = detail,
-            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-            color = if (emphasized) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
-        )
-    }
-}
-
-private fun activeSummary(active: List<ActiveRequest>): String {
-    val first = active.firstOrNull() ?: return "空闲"
-    val phase = when (first.phase) {
-        ActiveRequest.Phase.CONNECTING -> "连接上游"
-        ActiveRequest.Phase.UPSTREAM_ANSWERED -> "等待应答"
-        ActiveRequest.Phase.STREAMING -> "输出中"
-    }
-    val head = "${first.clientModel.ifEmpty { "请求" }} → ${first.providerId.uppercase()} · $phase"
-    return if (active.size > 1) "${active.size} 个 · $head" else head
 }
 
 /** 最近一次请求的完整路由流水：模型、去向、结果、token 开销。 */
