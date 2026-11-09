@@ -910,6 +910,16 @@ class CodeBuddyProvider internal constructor(
                 "{}",
                 billingHeaders(credential),
             )
+            val message = extractMessage(text)
+            // 「今天已签到」上游有两种返回形态：HTTP 200 + 业务码，以及 **HTTP 400 + 错误正文**。
+            // 后者过去在 status 分支里直接判失败，导致自动签到把幂等回应当成故障：整批永远
+            // 「部分失败」、不记完成日、每小时重试一次。幂等判定必须在状态检查之前，
+            // 且不能只认 200 —— 对「今天已经做过」这件事，4xx 也是成功。
+            if (message.contains("已签到") || message.contains("already") ||
+                message.contains("明天再来") || message.contains("明日再来")
+            ) {
+                return ProviderActionResult.success("今日已签到")
+            }
             if (status !in 200..299) {
                 return ProviderActionResult.failure(
                     failure("签到", endpoint(credential), "${billingBase(credential)}$PATH_CHECKIN", status, text),
@@ -917,12 +927,7 @@ class CodeBuddyProvider internal constructor(
             }
             val code = runCatching { JsonParser.parseString(text).asJsonObject.get("code")?.asLong }.getOrNull() ?: -1L
             if (code == 0L) return ProviderActionResult.success("签到成功")
-            val message = extractMessage(text)
-            if (message.contains("已签到") || message.contains("already")) {
-                ProviderActionResult.success("今日已签到")
-            } else {
-                ProviderActionResult.failure(message.ifEmpty { "签到失败（code=$code）" })
-            }
+            ProviderActionResult.failure(message.ifEmpty { "签到失败（code=$code）" })
         } catch (e: Exception) {
             ProviderActionResult.failure(e.message ?: "签到失败")
         }
