@@ -49,17 +49,18 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
-import kotlinx.coroutines.launch
 
 /**
  * 首页编辑态的可拖动列表。
  *
- * 行高各不相同（有的是一整张卡片，有的只是三个按钮），所以槽位按实测高度累加得出。
- *
- * 让位动画的做法：条目在 [Column] 里仍按当前顺序占位，顺序一变，占位就瞬间换到新槽位；
- * 这里给每项记一个「视觉补偿量」，在换位瞬间把它设成「旧槽位 − 新槽位」，
- * 再用 spring 收回 0——视觉上就是平滑滑到新位置，而不是瞬移。
- * 被拖的那一项不参与补偿，位移直接跟手。
+ * 让位动画的关键取舍：**不拖动时不做任何位移**。
+ * 早期版本给每项维护「槽位补偿量」并在测量后重算，但实测高度是逐帧变化的，
+ * 动画会被反复重启并永久停在中间值上，表现为组件互相重叠、上方留出大片空白。
+ * 现在的做法是：
+ * - 静态时列表就是普通 [Column]，天然正确；
+ * - 正在拖动时，被拖项跟手（zIndex 置顶 + 放大 + 阴影），
+ *   其余项按「当前槽位 − 拖动项让出的高度」做 spring 补偿，松手后全部归零。
+ * 因为补偿只在拖动期间存在，松手即回落到静态布局，不会留下残影。
  */
 @Composable
 internal fun EditableHomeWidgetList(
@@ -78,46 +79,25 @@ internal fun EditableHomeWidgetList(
     val items = remember(order, hidden) { mutableStateListOf(*visible.toTypedArray()) }
 
     val heights = remember { mutableStateMapOf<HomeWidget, Int>() }
-    val compensations = remember { mutableStateMapOf<HomeWidget, Animatable<Float, AnimationVector1D>>() }
-    val lastSlots = remember { mutableStateMapOf<HomeWidget, Float>() }
+    // 每项的回位动画：拖动期间才使用，松手后 snapTo(0)
+    val shifts = remember { mutableStateMapOf<HomeWidget, Animatable<Float, AnimationVector1D>>() }
 
     var draggingId by remember { mutableStateOf<HomeWidget?>(null) }
     var dragDelta by remember { mutableFloatStateOf(0f) }
     val lift = remember { Animatable(0f) }
-
-    fun slotOf(index: Int): Float {
-        var y = 0f
-        for (i in 0 until index) {
-            y += (heights[items.getOrNull(i)] ?: 0) + spacingPx
-        }
-        return y
-    }
-
-    // 顺序或高度变化后，给除被拖项以外的条目补一段回位动画
-    LaunchedEffect(items.toList(), heights.toMap(), draggingId) {
-        items.forEachIndexed { index, widget ->
-            val target = slotOf(index)
-            val anim = compensations.getOrPut(widget) { Animatable(0f) }
-            val previous = lastSlots[widget]
-            lastSlots[widget] = target
-            when {
-                // 首次测量：直接落位，不做动画
-                previous == null -> anim.snapTo(0f)
-                // 被拖项跟手，不能补偿
-                widget == draggingId -> anim.snapTo(0f)
-                previous != target -> {
-                    anim.snapTo(previous - target)
-                    launch { anim.animateTo(0f, Springs.Snappy) }
-                }
-            }
-        }
-    }
 
     LaunchedEffect(draggingId) {
         lift.animateTo(
             targetValue = if (draggingId != null) 1f else 0f,
             animationSpec = spring(dampingRatio = 0.7f, stiffness = 400f),
         )
+    }
+
+    // 松手后把所有补偿归零：静态布局必须完全依赖 Column 自身的排列
+    LaunchedEffect(draggingId) {
+        if (draggingId == null) {
+            shifts.values.forEach { it.snapTo(0f) }
+        }
     }
 
     val currentItems by rememberUpdatedState(items.toList())
@@ -133,6 +113,24 @@ internal fun EditableHomeWidgetList(
         onReorder(merged)
     }
 
+    /** 拖动项让位后，某一行应该在视觉上偏移多少（像素，负值向上）。 */
+    fun shiftTargetOf(index: Int): Float {
+        val dragged = draggingId ?: return 0f
+        val from = items.indexOf(dragged)
+        val to = index
+        if (from < 0) return 0f
+        // 被拖项自身不偏移（它跟手）
+        if (items.getOrNull(index) == dragged) return 0f
+        val draggedHeight = (heights[dragged] ?: 0) + spacingPx
+        return when {
+            // 拖动项往下移：它经过的行整体上移一行
+            from < to && index <= to -> -draggedHeight
+            // 拖动项往上移：被经过的行整体下移一行
+            from > to && index >= to -> draggedHeight
+            else -> 0f
+        }
+    }
+
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(ItemSpacing),
@@ -141,15 +139,25 @@ internal fun EditableHomeWidgetList(
             val index = items.indexOf(widget)
             if (index < 0) return@forEach
             val isDragging = draggingId == widget
-            val compensation = compensations[widget]?.value ?: 0f
+            val shiftAnim = shifts.getOrPut(widget) { Animatable(0f) }
+
+            // 拖动进行中才驱动补偿动画；静态时保持 0
+            LaunchedEffect(draggingId, index, items.toList()) {
+                if (draggingId != null && !isDragging) {
+                    shiftAnim.animateTo(shiftTargetOf(index), Springs.Snappy)
+                } else if (draggingId == null) {
+                    shiftAnim.snapTo(0f)
+                } else {
+                    shiftAnim.snapTo(0f)
+                }
+            }
 
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .zIndex(if (isDragging) 1f else 0f)
                     .graphicsLayer {
-                        // 被拖项：槽位 + 手指位移；其余项：槽位 + 回位补偿
-                        translationY = if (isDragging) dragDelta else compensation
+                        translationY = if (isDragging) dragDelta else shiftAnim.value
                         val scale = 1f + LiftScale * lift.value
                         scaleX = scale
                         scaleY = scale
