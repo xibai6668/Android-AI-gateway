@@ -400,6 +400,11 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
         },
     ) {
         SectionCard(enterIndex = 3) {
+            SectionLabel("近期趋势")
+            TrendSection(state)
+        }
+
+        SectionCard(enterIndex = 4) {
             SectionLabel("今日")
             CacheHitGauge(state.today)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
@@ -409,11 +414,6 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
                 StatCell(formatCount(state.today.aborted), "中断")
             }
             CostLine(state.today)
-        }
-
-        SectionCard(enterIndex = 4) {
-            SectionLabel("近期趋势")
-            TrendSection(state)
         }
 
         SectionCard(enterIndex = 5) {

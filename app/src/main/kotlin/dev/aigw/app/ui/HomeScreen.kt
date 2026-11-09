@@ -184,6 +184,9 @@ private fun HomeWidgetContent(
         )
         HomeWidget.LAST_CALL -> RecentCallCard(state, openLogs)
         HomeWidget.CONTEXT -> ContextCapacityCard(state)
+        HomeWidget.TOPOLOGY -> HomeTopologyWidget(state)
+        HomeWidget.METRICS -> HomeMetricsWidget(state)
+        HomeWidget.TREND -> HomeTrendWidget(state)
     }
 }
 

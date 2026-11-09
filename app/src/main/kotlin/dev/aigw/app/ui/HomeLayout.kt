@@ -23,6 +23,15 @@ enum class HomeWidget(val title: String) {
 
     /** 上下文容量与按模型的 token 分布。 */
     CONTEXT("上下文容量"),
+
+    /** 供应商分发拓扑（改版前的板块，默认隐藏）。 */
+    TOPOLOGY("调度拓扑"),
+
+    /** 账号就绪、模型数等 2×3 网格（改版前的板块，默认隐藏）。 */
+    METRICS("指标网格"),
+
+    /** 近 14 天消耗趋势（改版前的板块，默认隐藏）。 */
+    TREND("消耗趋势"),
 }
 
 /**
@@ -47,17 +56,25 @@ class HomeLayoutStore(private val store: KeyValueStore) {
         store.write(KEY_ORDER, order.joinToString(",") { it.name })
     }
 
-    fun hidden(): Set<HomeWidget> = store.read(KEY_HIDDEN).orEmpty()
-        .split(',')
-        .mapNotNull { name -> HomeWidget.entries.firstOrNull { it.name == name } }
-        .toSet()
+    fun hidden(): Set<HomeWidget> {
+        // 键从未写过时，把改版前的三块默认隐藏：老用户升级后首页不应该被突然塞满，
+        // 需要的自己去「+」里加。用户一旦动过这个键（哪怕是清空），就服从存储。
+        val raw = store.read(KEY_HIDDEN) ?: return DEFAULT_HIDDEN
+        return raw.split(',')
+            .mapNotNull { name -> HomeWidget.entries.firstOrNull { it.name == name } }
+            .toSet()
+    }
 
     fun setHidden(hidden: Set<HomeWidget>) {
-        if (hidden.isEmpty()) store.delete(KEY_HIDDEN) else store.write(KEY_HIDDEN, hidden.joinToString(",") { it.name })
+        // 清空时也写入空串而不是删键：删键会让上面的「从未写过」重归于默认隐藏，
+        // 用户明明把组件都加回来了，下次启动又消失。
+        store.write(KEY_HIDDEN, hidden.joinToString(",") { it.name })
     }
 
     private companion object {
         const val KEY_ORDER = "settings/home.order"
         const val KEY_HIDDEN = "settings/home.hidden"
+
+        val DEFAULT_HIDDEN = setOf(HomeWidget.TOPOLOGY, HomeWidget.METRICS, HomeWidget.TREND)
     }
 }
