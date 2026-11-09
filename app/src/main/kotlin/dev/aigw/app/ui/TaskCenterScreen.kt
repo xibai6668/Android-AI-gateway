@@ -93,6 +93,24 @@ fun TaskCenterScreen(
                 Text("刷新全部额度")
             }
 
+            SectionLabel("自动签到")
+            Text(
+                text = if (viewModel.autoCheckinDoneToday()) "今日已自动签到完成" else "今日尚未自动签到",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = "网关服务运行时每天首次巡检自动签到（全部成功当天不再跑，部分失败 1 小时后重试）；试跑会立即走一遍完整链路，结果写进日志页。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedButton(
+                onClick = { viewModel.runAutoCheckinSelfTest() },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("试跑一次自动签到（今天已签到也安全）")
+            }
+
             // 把「哪些供应商会被执行」写清楚：没接口的供应商不会进流程，
             // 用户也不会因为按钮点了没反应而困惑
             Text(

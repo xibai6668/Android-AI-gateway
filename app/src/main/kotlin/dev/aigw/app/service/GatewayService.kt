@@ -92,6 +92,10 @@ class GatewayService : Service() {
                 if (!foreground && active) {
                     promoteForeground(applicationContext.gatewayEngine.settings().port)
                 }
+                // 蹭看门狗的 30 秒节拍做每日签到：不新建 WorkManager / 闹钟，也就不需要新权限。
+                // shouldRun 是纯内存快路径（读台账 + 比日期），绝大多数轮次在这里就返回，
+                // 连线程都不必起；真要执行时另起线程，绝不占住探活线程去等上游。
+                maybeRunAutoCheckin()
                 probing = false
                 watchdogHandler.post {
                     if (active && !watchdog.gaveUp) scheduleNextTick()
@@ -211,10 +215,27 @@ class GatewayService : Service() {
         return false
     }
 
+    /**
+     * 每日自动签到：在服务启动时与每轮看门狗后各判一次。
+     *
+     * 判定本身是纯内存快路径；真要执行时另起线程，绝不占住探活线程去等上游。
+     * [dev.aigw.core.gateway.AutoCheckin] 内部用 CAS 防并发重入，因此两处调用可以并存。
+     */
+    private fun maybeRunAutoCheckin() {
+        runCatching {
+            val auto = applicationContext.gatewayEngine.autoCheckin
+            if (!auto.shouldRun()) return
+            Thread({
+                runCatching { auto.tick() }.onFailure { Log.w(TAG, "自动签到巡检异常：${it.message}") }
+            }, "gateway-auto-checkin").start()
+        }.onFailure { Log.w(TAG, "自动签到闸门异常：${it.message}") }
+    }
+
     private fun startWatchdog() {
         if (active) return
         active = true
         watchdogHandler.removeCallbacks(watchdogTick)
+        maybeRunAutoCheckin()
         watchdogHandler.postDelayed(watchdogTick, WATCHDOG_INTERVAL_MS)
     }
 

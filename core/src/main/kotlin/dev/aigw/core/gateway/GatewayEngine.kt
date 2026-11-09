@@ -1020,6 +1020,36 @@ class GatewayEngine(
     }
 
     /**
+     * 选出可批量执行某动作的目标：供应商声明支持该能力，且**这个账号**适用该动作。
+     *
+     * 放在引擎里是为了让「一键签到」「批量任务」与自动签到共用同一份判据 ——
+     * 自动签到若另写一份过滤，迟早会漏掉「国际版本来没有签到制度」这类账号级排除。
+     */
+    fun batchTargetsFor(action: String, capability: ProviderCapability): List<BatchTarget> =
+        providers()
+            .filter { capability in it.capabilities }
+            .flatMap { info -> accounts(info.id) }
+            .filter { account -> supportsAction(account.providerId, account.uid, action) }
+            .map { BatchTarget(it.providerId, it.uid) }
+
+    /** 每日自动签到的闸门。整个引擎只有这一个实例：服务节拍与冷启动共用，CAS 防重入。 */
+    val autoCheckin = AutoCheckin(
+        store = store,
+        nowMillis = nowMillis,
+        selectTargets = { batchTargetsFor(ACTION_CHECKIN, ProviderCapability.CHECKIN) },
+        execute = { targets ->
+            performActionAll(targets, ACTION_CHECKIN).map { result ->
+                AutoCheckinResult(
+                    label = result.nickname.ifEmpty { result.uid },
+                    ok = result.ok,
+                    message = result.message,
+                )
+            }
+        },
+        log = { log(it) },
+    )
+
+    /**
      * 这个账号是否适用该批量动作（供应商自报，默认适用）。
      *
      * 供批量选目标时调用：区域型供应商的国际版、企业账号本就没有签到/成长中心，
