@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -69,7 +70,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -451,66 +452,65 @@ private fun DockedNavBar(tab: Tab, subPage: SubPage?, onSelect: (Tab) -> Unit) {
     }
 }
 /**
- * 悬浮底栏：iOS 26 风格的液态玻璃。
+ * 悬浮底栏：iOS 26 液态玻璃胶囊。
  *
- * 真玻璃必须“看得到背景”：这里通过 Haze 把内容层当作采样源，做了背景模糊 + 饱和度提升 + 色调叠加，
- * 再自己画顶部高光、内描边与外阴影（高光是玻璃的关键，没有它只是一块毛玻璃）。
- * 低版本系统上 Haze 会自动降级为半透明遮罩，形状与层次保持一致。
+ * 形状是**胶囊**（Pill）：圆角半径 = 高度的一半，所以不写固定 dp，而是用 [CircleShape]；
+ * 宽度也不铺满，而是按内容收缩后居中——iOS 的悬浮栏就是一条“分频团”，
+ * 铺满整屏再加圆角矩形看起来完全不是那个东西。
  */
 @Composable
 private fun FloatingNavBar(tab: Tab, subPage: SubPage?, haze: HazeState, onSelect: (Tab) -> Unit) {
     val selectedGold = LocalAppColors.current.goldStart
-    val glassShape = RoundedCornerShape(28.dp)
-    // 深色/浅色主题下玻璃的着色与描边强度不同：浅色需要更明显的边框才看得出轮廓
     val isLight = MaterialTheme.colorScheme.background.luminance() > 0.5f
 
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxWidth()
             .navigationBarsPadding()
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        contentAlignment = Alignment.BottomCenter,
     ) {
         Box(
             modifier = Modifier
-                .fillMaxWidth()
+                .width(IntrinsicSize.Max)
                 .shadow(
-                    elevation = 18.dp,
-                    shape = glassShape,
-                    ambientColor = Color.Black.copy(alpha = 0.35f),
-                    spotColor = Color.Black.copy(alpha = 0.45f),
+                    elevation = 16.dp,
+                    shape = CircleShape,
+                    ambientColor = Color.Black.copy(alpha = 0.30f),
+                    spotColor = Color.Black.copy(alpha = 0.40f),
                 )
-                .clip(glassShape)
-                // 玻璃本体：模糊背景 + 提亮饱和 + 极浅的色调
+                .clip(CircleShape)
+                // 玻璃本体：背景模糊 + 极浅的色调
                 .hazeEffect(
                     state = haze,
                     style = HazeStyle(
-                        backgroundColor = MaterialTheme.colorScheme.surface.copy(alpha = if (isLight) 0.45f else 0.28f),
+                        backgroundColor = MaterialTheme.colorScheme.surface.copy(alpha = if (isLight) 0.40f else 0.24f),
                         tints = listOf(
                             HazeTint(
-                                color = MaterialTheme.colorScheme.surface.copy(alpha = if (isLight) 0.30f else 0.22f),
+                                color = MaterialTheme.colorScheme.surface.copy(alpha = if (isLight) 0.26f else 0.18f),
                             ),
                         ),
-                        blurRadius = 24.dp,
-                        noiseFactor = 0.06f,
+                        blurRadius = 28.dp,
+                        noiseFactor = 0.05f,
                     ),
                 )
                 .drawWithContent {
                     drawContent()
+                    // 胶囊内描边：玻璃边缘的一圈亮线
                     val border = 1.dp.toPx()
-                    // 内描边：玻璃边缘的一圈亮线
                     drawRoundRect(
-                        color = Color.White.copy(alpha = if (isLight) 0.55f else 0.22f),
+                        color = Color.White.copy(alpha = if (isLight) 0.60f else 0.20f),
                         topLeft = Offset(border / 2f, border / 2f),
                         size = Size(size.width - border, size.height - border),
-                        cornerRadius = CornerRadius(28.dp.toPx()),
+                        cornerRadius = CornerRadius(size.height / 2f),
                         style = Stroke(width = border),
                     )
-                    // 顶部高光：模拟光从上方洒在玻璃上表面
-                    val highlightHeight = size.height * 0.42f
+                    // 顶部高光：胶囊上半部分被照亮，且只在水平方向也渐变，不糊满整条
+                    val highlightHeight = size.height * 0.55f
                     drawRect(
                         brush = Brush.verticalGradient(
                             colors = listOf(
-                                Color.White.copy(alpha = if (isLight) 0.50f else 0.16f),
+                                Color.White.copy(alpha = if (isLight) 0.55f else 0.18f),
                                 Color.Transparent,
                             ),
                             startY = 0f,
@@ -521,33 +521,43 @@ private fun FloatingNavBar(tab: Tab, subPage: SubPage?, haze: HazeState, onSelec
                 },
         ) {
             Row(
-                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Tab.entries.forEach { item ->
                     val selected = subPage == null && tab == item
-                    Column(
+                    Row(
                         modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(18.dp))
+                            .clip(CircleShape)
+                            // 选中项用一层极淡的亮色“胶囊内胶囊”，而不是改文字颜色
+                            .background(
+                                if (selected) {
+                                    LocalAppColors.current.goldStart.copy(alpha = if (isLight) 0.16f else 0.20f)
+                                } else {
+                                    Color.Transparent
+                                },
+                            )
                             .clickable { onSelect(item) }
-                            .padding(vertical = 5.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(3.dp),
+                            .padding(horizontal = 14.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         Icon(
                             imageVector = item.icon,
                             contentDescription = item.label,
                             tint = if (selected) selectedGold else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(22.dp),
+                            modifier = Modifier.size(19.dp),
                         )
-                        Text(
-                            text = item.label,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (selected) selectedGold else MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                        )
+                        // 只给选中项显示文字，未选中只留图标：这才是 iOS 胶囊栏的形态
+                        if (selected) {
+                            Text(
+                                text = item.label,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = selectedGold,
+                                maxLines = 1,
+                            )
+                        }
                     }
                 }
             }
