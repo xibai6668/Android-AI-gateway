@@ -65,6 +65,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -85,6 +86,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.aigw.app.service.GatewayTileService
 import dev.aigw.app.ui.pushPopSpec
 import dev.aigw.app.ui.tabContentSpec
+import dev.aigw.app.ui.LocalBottomContentPadding
 import dev.aigw.app.ui.AppUiState
 import dev.aigw.app.ui.ApiSettingsScreen
 import dev.aigw.app.ui.AppViewModel
@@ -174,7 +176,7 @@ class MainActivity : ComponentActivity() {
 
 private enum class Tab(val label: String, val icon: ImageVector) {
     Home("首页", Icons.Filled.Home),
-    Providers("供应商", Icons.Filled.Person),
+    Providers("供应", Icons.Filled.Person),
     Models("模型", Icons.Filled.Storage),
     Logs("记录", Icons.Filled.History),
     Me("我的", Icons.Filled.Settings),
@@ -209,6 +211,7 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
         }
     }
 
+    CompositionLocalProvider(LocalBottomContentPadding provides if (state.floatingNavBar) 78.dp else 0.dp) {
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -234,9 +237,15 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
         Box(
             Modifier
                 .fillMaxSize()
-                .padding(bottom = insets.calculateBottomPadding())
-                // 内容层作为玻璃的采样源：底栏折射的就是这一层实际画出的像素
-                .then(if (state.floatingNavBar) Modifier.hazeSource(hazeState) else Modifier),
+                // 悬浮底栏时内容**铺满全屏**，不因 insets 向上抬：
+                // 否则底栏背后是一片空白背景，玻璃无像素可采样，看起来就是完全没模糊。
+                .then(
+                    if (state.floatingNavBar) {
+                        Modifier.hazeSource(hazeState)
+                    } else {
+                        Modifier.padding(bottom = insets.calculateBottomPadding())
+                    },
+                ),
         ) {
             // 二级页推拉过渡：推入从右滑入，返回向右滑出
             AnimatedContent(
@@ -321,6 +330,7 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
                 }
             }
         }
+    }
     }
 
     // 「稍后」只在本次会话内生效：关掉后仍可用「检查更新」重新拉出更新弹窗
@@ -480,18 +490,19 @@ private fun FloatingNavBar(tab: Tab, subPage: SubPage?, haze: HazeState, onSelec
                     spotColor = Color.Black.copy(alpha = 0.40f),
                 )
                 .clip(CircleShape)
-                // 玻璃本体：背景模糊 + 极浅的色调
+                // 玻璃本体：模糊背景 + 极浅色调。不透明度必须低，
+                // 否则实色会把模糊盖住，看上去就是一块普通半透明底。
                 .hazeEffect(
                     state = haze,
                     style = HazeStyle(
-                        backgroundColor = MaterialTheme.colorScheme.surface.copy(alpha = if (isLight) 0.40f else 0.24f),
+                        backgroundColor = Color.Transparent,
                         tints = listOf(
                             HazeTint(
-                                color = MaterialTheme.colorScheme.surface.copy(alpha = if (isLight) 0.26f else 0.18f),
+                                color = MaterialTheme.colorScheme.surface.copy(alpha = if (isLight) 0.18f else 0.14f),
                             ),
                         ),
-                        blurRadius = 28.dp,
-                        noiseFactor = 0.05f,
+                        blurRadius = 40.dp,
+                        noiseFactor = 0.04f,
                     ),
                 )
                 .drawWithContent {
@@ -521,7 +532,7 @@ private fun FloatingNavBar(tab: Tab, subPage: SubPage?, haze: HazeState, onSelec
                 },
         ) {
             Row(
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -539,7 +550,7 @@ private fun FloatingNavBar(tab: Tab, subPage: SubPage?, haze: HazeState, onSelec
                                 },
                             )
                             .clickable { onSelect(item) }
-                            .padding(horizontal = 14.dp, vertical = 9.dp),
+                            .padding(horizontal = 14.dp, vertical = 11.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
@@ -547,7 +558,7 @@ private fun FloatingNavBar(tab: Tab, subPage: SubPage?, haze: HazeState, onSelec
                             imageVector = item.icon,
                             contentDescription = item.label,
                             tint = if (selected) selectedGold else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(19.dp),
+                            modifier = Modifier.size(22.dp),
                         )
                         // 只给选中项显示文字，未选中只留图标：这才是 iOS 胶囊栏的形态
                         if (selected) {

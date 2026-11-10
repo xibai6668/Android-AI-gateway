@@ -39,6 +39,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -124,6 +125,14 @@ fun PageHeader(
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 }
 
+/**
+ * 悬浮底栏占用的底部高度。
+ *
+ * 内容层铺满全屏（让玻璃有像素可采样），避让只能由内容自己让出来；
+ * 用 CompositionLocal 传，避免给上百处 PageScaffold 调用加参数。
+ */
+val LocalBottomContentPadding = staticCompositionLocalOf<Dp> { 0.dp }
+
 /** 统一页面骨架：页头 + 可滚动内容区。 */
 @Composable
 fun PageScaffold(
@@ -134,6 +143,9 @@ fun PageScaffold(
     onTitleClick: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    // 悬浮底栏浮在内容之上，内容需要自己让出底部空间，否则最后一项会被玻璃盖住。
+    // 用 CompositionLocal 而不是参数：页面上百处调用，不必逐个传。
+    val bottomInset = LocalBottomContentPadding.current
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         PageHeader(title, subtitle, leading, actions, onTitleClick)
         Column(
@@ -143,7 +155,8 @@ fun PageScaffold(
                 // 用背景色渐隐过渡（Motion.scrollFade），让长页面有「还能滚」的提示
                 .scrollFade()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 14.dp),
+                .padding(horizontal = 16.dp)
+                .padding(top = 14.dp, bottom = 14.dp + bottomInset),
             verticalArrangement = Arrangement.spacedBy(14.dp),
             content = content,
         )
