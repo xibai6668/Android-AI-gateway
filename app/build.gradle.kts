@@ -48,8 +48,8 @@ android {
         applicationId = "dev.aigw.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 220
-        versionName = "2.35.4"
+        versionCode = 221
+        versionName = "2.35.5"
     }
 
     buildFeatures {
@@ -142,6 +142,10 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
+    // 首页编辑态的拖拽排序：自己写的手势在 LazyColumn 里反复被滚动抢手势、
+    // 重排动画与跟手位移双重叠加，换成这个库（基于官方 animateItem）。
+    implementation("sh.calvin.reorderable:reorderable:3.1.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
