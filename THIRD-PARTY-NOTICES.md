@@ -204,6 +204,17 @@
   按许可证要求在分发时保留版权声明。完整许可证文本见：
   https://github.com/Calvin-LL/Reorderable/blob/main/LICENSE
 
+### 12. Haze
+
+- 地址：https://github.com/chrisbanes/haze
+- 作者：Chris Banes
+- 许可证：Apache-2.0
+- 使用方式：**直接依赖发行版构件**，未修改其源码
+  - 构建依赖：`dev.chrisbanes.haze:haze:1.6.10`（mavenCentral）
+  - 用途：悬浮底栏的液态玻璃背景模糊（`app/.../MainActivity.kt` 的 `FloatingNavBar`）
+- 选版说明：2.x 需要 Kotlin 2.4 / Compose 1.12，1.6.10 是最后一个用 Kotlin 2.1.0 构建的版本，
+  与本项目编译器一致；其 API 差异（`HazeStyle` 而非 `HazeMaterials`）已按实际构件确认。
+
 ## 二、官方文档与官方客户端（非代码借鉴）
 
 | 来源 | 用途 | 位置 |

@@ -30,6 +30,19 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.luminance
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.HazeStyle
+import dev.chrisbanes.haze.HazeTint
+import dev.chrisbanes.haze.hazeEffect
+import dev.chrisbanes.haze.hazeSource
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
@@ -172,6 +185,8 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
     var subPage by remember { mutableStateOf<SubPage?>(null) }
 
     val snackbarHostState = remember { SnackbarHostState() }
+    // 玻璃采样状态：内容层写入，底栏读取
+    val hazeState = remember { HazeState() }
     LaunchedEffect(state.notice) {
         if (state.notice.isNotEmpty()) {
             snackbarHostState.showSnackbar(state.notice)
@@ -196,11 +211,12 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbarHostState) },
-        // 悬浮底栏时让内容铺到屏幕底部，由导航栏自己的半透明卡片层叠在上面
+        // 悬浮底栏时让内容铺到屏幕底部，由导航栏自己层叠在上面；
+        // 同时给内容区留出底栏高度，避免最后一屏内容被玻璃盖住。
         contentWindowInsets = if (state.floatingNavBar) WindowInsets(0) else ScaffoldDefaults.contentWindowInsets,
         bottomBar = {
             if (state.floatingNavBar) {
-                FloatingNavBar(tab, subPage, onSelect = { item ->
+                FloatingNavBar(tab, subPage, hazeState, onSelect = { item ->
                     subPage = null
                     tab = item
                     if (item == Tab.Models) viewModel.ensureModelsLoaded()
@@ -214,7 +230,13 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
             }
         },
     ) { insets ->
-        Box(Modifier.fillMaxSize().padding(bottom = insets.calculateBottomPadding())) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .padding(bottom = insets.calculateBottomPadding())
+                // 内容层作为玻璃的采样源：底栏折射的就是这一层实际画出的像素
+                .then(if (state.floatingNavBar) Modifier.hazeSource(hazeState) else Modifier),
+        ) {
             // 二级页推拉过渡：推入从右滑入，返回向右滑出
             AnimatedContent(
                 targetState = subPage,
@@ -428,31 +450,78 @@ private fun DockedNavBar(tab: Tab, subPage: SubPage?, onSelect: (Tab) -> Unit) {
         }
     }
 }
-
 /**
- * 悬浮底栏：圆角卡片浮在内容之上，四周留边距。
+ * 悬浮底栏：iOS 26 风格的液态玻璃。
  *
- * 选中色与贴边版一致；用 [Surface] 承载阴影，另加一层描边——
- * 暗色主题下纯阴影在深底上看不出来，会显得卡片与内容糊在一起。
+ * 真玻璃必须“看得到背景”：这里通过 Haze 把内容层当作采样源，做了背景模糊 + 饱和度提升 + 色调叠加，
+ * 再自己画顶部高光、内描边与外阴影（高光是玻璃的关键，没有它只是一块毛玻璃）。
+ * 低版本系统上 Haze 会自动降级为半透明遮罩，形状与层次保持一致。
  */
 @Composable
-private fun FloatingNavBar(tab: Tab, subPage: SubPage?, onSelect: (Tab) -> Unit) {
+private fun FloatingNavBar(tab: Tab, subPage: SubPage?, haze: HazeState, onSelect: (Tab) -> Unit) {
     val selectedGold = LocalAppColors.current.goldStart
+    val glassShape = RoundedCornerShape(28.dp)
+    // 深色/浅色主题下玻璃的着色与描边强度不同：浅色需要更明显的边框才看得出轮廓
+    val isLight = MaterialTheme.colorScheme.background.luminance() > 0.5f
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .navigationBarsPadding()
             .padding(horizontal = 16.dp, vertical = 10.dp),
     ) {
-        Surface(
-            shape = RoundedCornerShape(20.dp),
-            color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 3.dp,
-            shadowElevation = 6.dp,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .shadow(
+                    elevation = 18.dp,
+                    shape = glassShape,
+                    ambientColor = Color.Black.copy(alpha = 0.35f),
+                    spotColor = Color.Black.copy(alpha = 0.45f),
+                )
+                .clip(glassShape)
+                // 玻璃本体：模糊背景 + 提亮饱和 + 极浅的色调
+                .hazeEffect(
+                    state = haze,
+                    style = HazeStyle(
+                        backgroundColor = MaterialTheme.colorScheme.surface.copy(alpha = if (isLight) 0.45f else 0.28f),
+                        tints = listOf(
+                            HazeTint(
+                                color = MaterialTheme.colorScheme.surface.copy(alpha = if (isLight) 0.30f else 0.22f),
+                            ),
+                        ),
+                        blurRadius = 24.dp,
+                        noiseFactor = 0.06f,
+                    ),
+                )
+                .drawWithContent {
+                    drawContent()
+                    val border = 1.dp.toPx()
+                    // 内描边：玻璃边缘的一圈亮线
+                    drawRoundRect(
+                        color = Color.White.copy(alpha = if (isLight) 0.55f else 0.22f),
+                        topLeft = Offset(border / 2f, border / 2f),
+                        size = Size(size.width - border, size.height - border),
+                        cornerRadius = CornerRadius(28.dp.toPx()),
+                        style = Stroke(width = border),
+                    )
+                    // 顶部高光：模拟光从上方洒在玻璃上表面
+                    val highlightHeight = size.height * 0.42f
+                    drawRect(
+                        brush = Brush.verticalGradient(
+                            colors = listOf(
+                                Color.White.copy(alpha = if (isLight) 0.50f else 0.16f),
+                                Color.Transparent,
+                            ),
+                            startY = 0f,
+                            endY = highlightHeight,
+                        ),
+                        size = Size(size.width, highlightHeight),
+                    )
+                },
         ) {
             Row(
-                modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -461,22 +530,22 @@ private fun FloatingNavBar(tab: Tab, subPage: SubPage?, onSelect: (Tab) -> Unit)
                     Column(
                         modifier = Modifier
                             .weight(1f)
-                            .clip(RoundedCornerShape(14.dp))
+                            .clip(RoundedCornerShape(18.dp))
                             .clickable { onSelect(item) }
-                            .padding(vertical = 6.dp),
+                            .padding(vertical = 5.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(3.dp),
                     ) {
                         Icon(
                             imageVector = item.icon,
                             contentDescription = item.label,
-                            tint = if (selected) selectedGold else Color(0xFF777777),
+                            tint = if (selected) selectedGold else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(22.dp),
                         )
                         Text(
                             text = item.label,
                             style = MaterialTheme.typography.labelSmall,
-                            color = if (selected) selectedGold else Color(0xFF777777),
+                            color = if (selected) selectedGold else MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
                         )
                     }

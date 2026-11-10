@@ -48,8 +48,8 @@ android {
         applicationId = "dev.aigw.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 222
-        versionName = "2.36.0"
+        versionCode = 223
+        versionName = "2.36.1"
     }
 
     buildFeatures {
@@ -146,6 +146,10 @@ dependencies {
     // 首页编辑态的拖拽排序：自己写的手势在 LazyColumn 里反复被滚动抢手势、
     // 重排动画与跟手位移双重叠加，换成这个库（基于官方 animateItem）。
     implementation("sh.calvin.reorderable:reorderable:3.1.0")
+
+    // 液态玻璃底栏：真正的背景模糊（backdrop blur）。Compose 原生做不到，
+    // 1.6.10 是最后一个用 Kotlin 2.1.0 构建的版本，与本项目编译器一致。
+    implementation("dev.chrisbanes.haze:haze:1.6.10")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
