@@ -32,6 +32,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
@@ -883,3 +884,48 @@ private fun formatHomeAxis(value: Long): String = when {
 private val HOME_DAY_LABEL_FORMAT = SimpleDateFormat("M/d", Locale.US)
 
 private fun homeDayLabel(millis: Long): String = HOME_DAY_LABEL_FORMAT.format(Date(millis))
+
+// ---------------------------------------------------------------------- 上游配额池
+
+/**
+ * 账号的额度包窗口（每个包一条进度条）。
+ *
+ * 进入首页拉一次；账号集合变化时重拉。额度中心与供应商详情页拉的是同一份数据，
+ * 这里只在组件被添加到首页时才会发生。
+ */
+@Composable
+internal fun HomeQuotaWidget(state: AppUiState, viewModel: AppViewModel) {
+    val accounts = state.accountsOf("antigravity")
+    if (accounts.isEmpty()) return
+
+    LaunchedEffect(accounts.map { it.uid }) {
+        accounts.forEach { viewModel.loadCreditPacks("antigravity", it.uid) }
+    }
+
+    SectionCard {
+        SectionHeader("上游配额池")
+        for (account in accounts) {
+            val packs = state.creditPacks["antigravity/${account.uid}"].orEmpty()
+            if (accounts.size > 1) {
+                Text(
+                    text = account.nickname.ifEmpty { account.uid },
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+            if (packs.isEmpty()) {
+                Text(
+                    text = if (account.detail.isNotEmpty()) account.detail else "尚未拉取配额",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    for (pack in packs) {
+                        QuotaPackBar(pack)
+                    }
+                }
+            }
+        }
+    }
+}

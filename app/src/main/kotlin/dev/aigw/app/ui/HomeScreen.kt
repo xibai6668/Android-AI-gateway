@@ -224,6 +224,7 @@ private fun HomeWidgetContent(
         HomeWidget.TOPOLOGY -> HomeTopologyWidget(state)
         HomeWidget.METRICS -> HomeMetricsWidget(state)
         HomeWidget.TREND -> HomeTrendWidget(state)
+        HomeWidget.ANTIGRAVITY -> HomeQuotaWidget(state, viewModel)
     }
 }
 
