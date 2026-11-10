@@ -48,7 +48,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.aigw.app.ui.theme.DeepInk
 import dev.aigw.app.ui.theme.LocalAppColors
-import dev.aigw.app.ui.theme.ThemeMode
 import dev.aigw.app.ui.theme.formatHex
 import dev.aigw.app.ui.theme.parseHexColor
 import kotlin.math.atan2
@@ -79,28 +78,12 @@ fun AppearanceThemeScreen(state: AppUiState, viewModel: AppViewModel, onBack: ()
 
     PageScaffold(
         title = "外观主题",
-        subtitle = "明暗模式 · 配色方案 · 金色文字",
+        subtitle = "页面底色 · 金色渐变",
         leading = { BackButton(onBack) },
     ) {
-        // ---------------------------------------------------------- 01 明暗模式
-        EditorialGroupHeader("01", "明暗模式 · DISPLAY MODE", meta = "RADIO LIST")
+        // ---------------------------------------------------------- 01 页面底色
+        EditorialGroupHeader("01", "页面底色 · BACKGROUND", meta = "CAPSULE CHIPS")
         SectionCard(enterIndex = 0) {
-            ModeRow("自动 · 跟随系统", "跟随 Android 系统的深浅色设置自适应切换", state.themeMode == ThemeMode.System) {
-                viewModel.setThemeMode(ThemeMode.System)
-            }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            ModeRow("深色模式", "经典黑金暗色调，适合弱光与长时夜间使用", state.themeMode == ThemeMode.Dark) {
-                viewModel.setThemeMode(ThemeMode.Dark)
-            }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            ModeRow("浅色模式", "极简明亮排版，高对比度呈现黑金理性层次", state.themeMode == ThemeMode.Light) {
-                viewModel.setThemeMode(ThemeMode.Light)
-            }
-        }
-
-        // ---------------------------------------------------------- 02 配色方案
-        EditorialGroupHeader("02", "配色方案 · COLOR PRESETS", meta = "CAPSULE CHIPS")
-        SectionCard(enterIndex = 1) {
             Text(
                 text = "预设黑金系调色基调，切换后仅替换页面底色（卡片/表面色不变）：",
                 style = MaterialTheme.typography.bodySmall,
@@ -133,9 +116,9 @@ fun AppearanceThemeScreen(state: AppUiState, viewModel: AppViewModel, onBack: ()
             )
         }
 
-        // ---------------------------------------------------------- 03 金色文字
-        EditorialGroupHeader("03", "金色文字 · GOLD GRADIENT ACCENT", meta = "DUAL HUE WHEELS")
-        SectionCard(enterIndex = 2) {
+        // ---------------------------------------------------------- 02 金色文字
+        EditorialGroupHeader("02", "金色文字 · GOLD GRADIENT ACCENT", meta = "DUAL HUE WHEELS")
+        SectionCard(enterIndex = 1) {
             Text(
                 text = "应用主色渐变由起始色与结束色插值生成，可拖动色相环或直接输入代码：",
                 style = MaterialTheme.typography.bodySmall,
@@ -178,49 +161,6 @@ fun AppearanceThemeScreen(state: AppUiState, viewModel: AppViewModel, onBack: ()
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface,
             )
-        }
-    }
-}
-
-/** 单选行：选中=金色文字 + 金色对勾；未选中=黑色文字 + 空心圈。 */
-@Composable
-private fun ModeRow(title: String, subtitle: String, selected: Boolean, onClick: () -> Unit) {
-    val gold = LocalAppColors.current.goldStart
-    val goldText = LocalAppColors.current.goldText
-    Row(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                color = if (selected) goldText else MaterialTheme.colorScheme.onSurface,
-            )
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Box(Modifier.size(22.dp), contentAlignment = Alignment.Center) {
-            if (selected) {
-                Box(
-                    modifier = Modifier.size(22.dp).clip(CircleShape).background(gold),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        Icons.Filled.Check,
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(14.dp),
-                    )
-                }
-            } else {
-                Box(Modifier.size(18.dp).clip(CircleShape).border(1.5.dp, MaterialTheme.colorScheme.outline, CircleShape))
-            }
         }
     }
 }
