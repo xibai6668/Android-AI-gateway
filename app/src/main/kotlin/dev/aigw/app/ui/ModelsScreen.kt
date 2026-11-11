@@ -175,7 +175,12 @@ fun ModelsScreen(state: AppUiState, viewModel: AppViewModel) {
 
         LazyColumn(
             modifier = Modifier.weight(1f).fillMaxWidth(),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 20.dp),
+            // 悬浮底栏浮在内容之上：底部要额外让出底栏高度，否则最后一项被完全盖住
+            contentPadding = PaddingValues(
+                start = 16.dp,
+                end = 16.dp,
+                bottom = 20.dp + LocalBottomContentPadding.current,
+            ),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             if (grouped.isEmpty()) {

@@ -77,7 +77,8 @@ internal fun EditableHomeWidgetList(
         state = lazyListState,
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(ItemSpacing),
-        contentPadding = PaddingValues(bottom = 24.dp),
+        // 悬浮底栏浮在内容之上：最后一项被盖住后无法拖到正确位置
+        contentPadding = PaddingValues(bottom = 24.dp + LocalBottomContentPadding.current),
     ) {
         items(items, key = { it }) { widget ->
             ReorderableItem(reorderState, key = widget) { isDragging ->
