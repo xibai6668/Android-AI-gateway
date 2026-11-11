@@ -106,6 +106,42 @@ class TraeRegionTest {
         )
     }
 
+    @Test
+    fun `登录时选国际版，回调不带 loginHost 也按国际版处理`() {
+        // 回归背景（issue #14）：completeWebLogin 只根据回调参数猜区域，
+        // 回调不带 loginHost 时会被默认判成国内版，接着把换 token 的请求发到 api.trae.com.cn，
+        // 国际版账号因此一直「登录失败」。区域必须以用户点登录时选的那个为准。
+        val provider = TraeProvider(
+            store = InMemoryKeyValueStore(),
+            version = { TraeVersion() },
+            defaultModel = { "glm-5.2" },
+        )
+        val ticket = provider.beginWebLogin("http://127.0.0.1:51120/authorize", TraeRegion.INTL.id)
+        assertEquals(true, ticket.loginUrl.startsWith(TraeRegion.INTL.consoleHost))
+
+        // 回调只带 traceId，不带任何主机信息：仍应回到国际版
+        val callback = "http://127.0.0.1:51120/authorize?loginTraceID=${ticket.id}"
+        assertEquals(TraeRegion.INTL, provider.resolveCallbackRegion(callback))
+    }
+
+    @Test
+    fun `没有登录记录时按回调里的主机判区域`() {
+        val provider = TraeProvider(
+            store = InMemoryKeyValueStore(),
+            version = { TraeVersion() },
+            defaultModel = { "glm-5.2" },
+        )
+        // 进程被杀、pending 丢失的兼容路径：只能靠回调参数
+        assertEquals(
+            TraeRegion.INTL,
+            provider.resolveCallbackRegion("http://127.0.0.1:51120/authorize?loginHost=www.trae.ai"),
+        )
+        assertEquals(
+            TraeRegion.CN,
+            provider.resolveCallbackRegion("http://127.0.0.1:51120/authorize?loginHost=www.trae.cn"),
+        )
+    }
+
     private fun accountWith(apiHost: String): ProviderAccount {
         val secret = """
             {"auth":{"accessToken":"at","refreshToken":"rt","expiresAt":0,"apiHost":"$apiHost",

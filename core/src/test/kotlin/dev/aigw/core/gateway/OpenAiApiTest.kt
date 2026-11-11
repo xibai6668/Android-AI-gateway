@@ -36,6 +36,35 @@ class OpenAiApiTest {
     }
 
     @Test
+    fun `能力标记兼容 1 与 true 两种写法`() {
+        // 目录写入方口径不一：Trae/Loomy 写 "1"，WorkBuddy 写 "true"。
+        // 只认一种时另一家的模型能力全为 false，客户端因此根本不发 tools。
+        val list = listOf(
+            RoutedModel(
+                "trae", "trae",
+                ProviderModel(id = "m1", name = "m1", extra = mapOf("tools" to "1", "reasoning" to "1")),
+            ),
+            RoutedModel(
+                "codebuddy", "codebuddy",
+                ProviderModel(id = "m2", name = "m2", extra = mapOf("tools" to "true", "vision" to "true")),
+            ),
+            RoutedModel("loomy", "loomy", ProviderModel(id = "m3", name = "m3")),
+        )
+        val data = JsonParser.parseString(OpenAiApi.modelList(list)).asJsonObject.getAsJsonArray("data")
+
+        val trae = data[0].asJsonObject
+        assertTrue(trae.get("supports_tools").asBoolean)
+        assertTrue(trae.get("supports_reasoning").asBoolean)
+
+        val codebuddy = data[1].asJsonObject
+        assertTrue(codebuddy.get("supports_tools").asBoolean, "true 写法也必须被认")
+        assertTrue(codebuddy.get("supports_vision").asBoolean)
+
+        val loomy = data[2].asJsonObject
+        assertTrue(!loomy.get("supports_tools").asBoolean, "未声明就是 false，不能编造能力")
+    }
+
+    @Test
     fun `错误体是 OpenAI 结构`() {
         val body = JsonParser.parseString(OpenAiApi.errorBody("invalid_api_key", "缺少 Key")).asJsonObject
         val error = body.getAsJsonObject("error")

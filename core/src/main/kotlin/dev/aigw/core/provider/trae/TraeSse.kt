@@ -120,6 +120,8 @@ class OpenAiSseTranslator(
 ) {
     private var done = false
     private var pendingUsage: JsonObject? = null
+    /** 本轮是否转发过工具调用：上游 `done` 不带 OpenAI 语义的终止原因，不自己修正会得到「stop 却带 tool_calls」。 */
+    private var sawToolCalls = false
     private val gson = Gson()
 
     fun translate(event: SoloEvent): List<String> = when (event) {
@@ -127,7 +129,10 @@ class OpenAiSseTranslator(
             val delta = JsonObject()
             if (event.response.isNotEmpty()) delta.addProperty("content", event.response)
             if (event.reasoning.isNotEmpty()) delta.addProperty("reasoning_content", event.reasoning)
-            toOpenAiToolCalls(event.toolCalls)?.let { delta.add("tool_calls", it) }
+            toOpenAiToolCalls(event.toolCalls)?.let {
+                sawToolCalls = true
+                delta.add("tool_calls", it)
+            }
             if (delta.size() == 0) emptyList() else listOf(chunk(delta, null))
         }
 
@@ -140,7 +145,7 @@ class OpenAiSseTranslator(
 
         is SoloEvent.Done -> {
             done = true
-            listOf(chunk(JsonObject(), event.finishReason.ifEmpty { "stop" }), SSE_DONE)
+            listOf(chunk(JsonObject(), effectiveFinishReason(event.finishReason)), SSE_DONE)
         }
         is SoloEvent.Failure -> {
             done = true
@@ -166,6 +171,16 @@ class OpenAiSseTranslator(
     }
 
     fun close(): List<String> = if (done) emptyList() else listOf(SSE_DONE)
+
+    /**
+     * 终止原因以「本轮实际发生了什么」为准。
+     *
+     * SOLO 没有 OpenAI 的 finish_reason 概念，`done` 常给空串或恒为 stop；
+     * 只要本轮出现过工具调用，就必须报 tool_calls，否则按规范校验的客户端会丢弃整批调用。
+     */
+    private fun effectiveFinishReason(upstream: String): String =
+        if (sawToolCalls) "tool_calls" else upstream.ifEmpty { "stop" }
+
     private fun chunk(delta: JsonObject, finishReason: String?): String {
         val choice = JsonObject().apply {
             addProperty("index", 0)
@@ -224,7 +239,6 @@ class OpenAiAggregator(
     private val toolCalls = LinkedHashMap<Int, JsonObject>()
     private var finishReason = "stop"
     private var usage: JsonObject? = null
-
     /** 流内业务错误，非 null 时调用方应换号或切换供应商。 */
     var failure: SoloStreamError? = null
         private set
@@ -263,7 +277,8 @@ class OpenAiAggregator(
         val choice = JsonObject().apply {
             addProperty("index", 0)
             add("message", message)
-            addProperty("finish_reason", finishReason)
+            // 有 tool_calls 就必须报 tool_calls：上游的 done 事件不携带 OpenAI 语义的终止原因
+            addProperty("finish_reason", if (toolCalls.isNotEmpty()) "tool_calls" else finishReason)
         }
 
         return JsonObject().apply {
