@@ -153,7 +153,6 @@ data class CustomProviderConfig(
     val protocol: String = PROTOCOL_OPENAI,
     /** 手填或从 `/v1/models` 拉取的模型名列表。 */
     val models: List<String> = emptyList(),
-    val enabled: Boolean = true,
 ) {
     val providerId: String get() = "custom:$key"
 
@@ -164,7 +163,6 @@ data class CustomProviderConfig(
         add("apiKeys", JsonArray().apply { apiKeys.forEach { add(it) } })
         addProperty("protocol", protocol)
         add("models", JsonArray().apply { models.forEach { add(it) } })
-        addProperty("enabled", enabled)
     }
 
     companion object {
@@ -183,9 +181,21 @@ data class CustomProviderConfig(
                 apiKeys = keys,
                 protocol = obj.get("protocol")?.asString.orEmpty().ifEmpty { PROTOCOL_OPENAI },
                 models = models,
-                enabled = obj.get("enabled")?.asBoolean ?: true,
             )
         }
+
+        /**
+         * 把用户填的短名整理成模型前缀可用的形式。
+         *
+         * 模型 id 是 `custom:<短名>/<模型名>`，短名里带空格或斜杠会让路由解析混乱；
+         * 留空则供应商存得住但活不过重启（`fromJson` 会把它当无效项丢掉）。
+         */
+        fun normalizeKey(raw: String): String = raw.trim().lowercase()
+            .replace(Regex("[^a-z0-9_-]+"), "-")
+            .trim('-', '_')
+
+        /** 由显示名称派生一个可用的短名，用于表单预填。 */
+        fun deriveKey(name: String): String = normalizeKey(name)
     }
 }
 

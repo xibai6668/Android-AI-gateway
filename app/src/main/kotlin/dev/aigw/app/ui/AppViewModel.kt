@@ -1249,13 +1249,7 @@ class AppViewModel(
             }
             _state.value = _state.value.copy(busy = "")
             result.fold(
-                onSuccess = { models ->
-                    if (models.isEmpty()) {
-                        onResult(emptyList(), "没有拉到模型，检查接口地址与 API Key")
-                    } else {
-                        onResult(models, "")
-                    }
-                },
+                onSuccess = { fetched -> onResult(fetched.models, fetched.error) },
                 onFailure = { onResult(emptyList(), it.message ?: "拉取失败") },
             )
         }
@@ -1663,13 +1657,40 @@ class AppViewModel(
 
     // ------------------------------------------------------------------ 自定义供应商
 
+    /**
+     * 新建或编辑自定义供应商：配置、首个账号的多个 Key、模型列表一次写完。
+     *
+     * 以前分两步（先存基本信息，再进详情页添加账号），用户按直觉填完保存得到的是一个
+     * 0 账号、不可用的供应商。校验失败直接抛异常，`action` 会把原文弹出来。
+     */
     fun saveCustomProvider(config: CustomProviderConfig) = action {
-        val list = engine.settingsRepository.loadCustomProviders().toMutableList()
-        val index = list.indexOfFirst { it.key == config.key }
-        if (index >= 0) list[index] = config else list.add(config)
-        engine.settingsRepository.saveCustomProviders(list)
+        val key = CustomProviderConfig.normalizeKey(config.key)
+        if (key.isEmpty()) throw IllegalStateException("短名不能为空")
+        val baseUrl = CustomProvider.normalizeBaseUrl(config.baseUrl)
+        if (baseUrl.isEmpty()) throw IllegalStateException("请填写接口地址")
+        val keys = config.apiKeys.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+
+        val repository = engine.settingsRepository
+        val list = repository.loadCustomProviders()
+        if (list.any { it.key == key && it.providerId != config.providerId }) {
+            throw IllegalStateException("短名「$key」已经被另一个供应商使用")
+        }
+        // 改短名会把 providerId 一起改掉，旧 id 下的账号就成孤儿：先拦下来
+        val renaming = config.providerId != "custom:$key"
+        if (renaming && engine.accounts(config.providerId).isNotEmpty()) {
+            throw IllegalStateException("已有账号的供应商不能改短名，先删掉账号或重建供应商")
+        }
+
+        val saved = config.copy(key = key, baseUrl = baseUrl, apiKeys = keys)
+        val updated = list.toMutableList()
+        val index = updated.indexOfFirst { it.key == key }
+        if (index >= 0) updated[index] = saved else updated.add(saved)
+        repository.saveCustomProviders(updated)
         engine.reloadCustomProviders()
-        engine.syncCustomAccounts(config)
+        engine.syncCustomAccounts(saved)
+
+        // 账号可能变了（新增 Key / 删除 Key），模型目录跟着重拉一遍
+        if (keys.isNotEmpty()) refreshModels(silent = true)
         "供应商已保存"
     }
 

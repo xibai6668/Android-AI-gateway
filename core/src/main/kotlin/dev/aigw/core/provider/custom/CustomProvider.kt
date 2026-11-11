@@ -256,31 +256,82 @@ class CustomProvider(
         const val KEY_PREFIX = "key-"
 
         /**
+         * 把用户填的接口地址规范成「根地址 + 版本段」。
+         *
+         * 用户抄来的地址五花八门：只填域名、填到 `/v1`、直接贴 `/v1/chat/completions`。
+         * 不规范化时 `https://api.x.com` 会被拼成 `https://api.x.com/chat/completions`（缺 `/v1`，必 404），
+         * 而界面上看不出问题。规则：去掉对话/模型端点尾巴，末尾不是版本段（`/v1`、`/api/v4`）就补 `/v1`。
+         */
+        fun normalizeBaseUrl(raw: String): String {
+            var base = raw.trim().trimEnd('/')
+            if (base.isEmpty()) return ""
+            for (suffix in listOf("/chat/completions", "/audio/transcriptions", "/models")) {
+                if (base.length > suffix.length && base.endsWith(suffix, ignoreCase = true)) {
+                    base = base.substring(0, base.length - suffix.length).trimEnd('/')
+                }
+            }
+            if (base.isEmpty()) return ""
+            val path = runCatching { java.net.URI(base).path.orEmpty() }.getOrDefault("")
+            val hasVersion = VERSION_SUFFIX.containsMatchIn(path)
+            return if (hasVersion) base else "$base/v1"
+        }
+
+        /** 实际会请求的对话地址，给界面做预览用。 */
+        fun chatEndpointOf(baseUrl: String): String = chatUrl(baseUrl)
+
+        /** 实际会请求的模型目录地址，给界面做预览用。 */
+        fun modelsEndpointOf(baseUrl: String): String = modelsUrl(baseUrl)
+
+        /**
          * 用给定的 baseUrl 与 key 拉模型列表。
          *
          * 不依赖已保存的配置：新建供应商时用户还没保存，也要能先拉一次看看有哪些模型。
+         * 失败原因必须原样带回：所有错误都压成「空列表」时，界面只能笼统地说
+         * 「检查地址与 Key」，用户无从判断是 401、404 还是网络不通。
          */
-        fun fetchModels(baseUrl: String, apiKey: String): List<String> {
-            if (baseUrl.isBlank()) return emptyList()
+        fun fetchModels(baseUrl: String, apiKey: String): ModelFetchResult {
+            if (baseUrl.isBlank()) return ModelFetchResult(emptyList(), "先填写接口地址")
             val conn = try {
                 openConnection(modelsUrl(baseUrl), apiKey, null, "GET")
-            } catch (_: Exception) {
-                return emptyList()
+            } catch (e: Exception) {
+                return ModelFetchResult(emptyList(), "连接失败：${e.message ?: "未知错误"}")
             }
             return try {
-                if (conn.responseCode !in 200..299) return emptyList()
+                val status = conn.responseCode
+                if (status !in 200..299) {
+                    val body = runCatching { HttpSupport.readLimited(conn.errorStream) }.getOrDefault("")
+                    return ModelFetchResult(emptyList(), describeModelFetchFailure(status, baseUrl, body))
+                }
                 val text = HttpSupport.readLimited(conn.inputStream)
                 val obj = runCatching { JsonParser.parseString(text).asJsonObject }.getOrNull()
-                    ?: return emptyList()
-                val data = obj.arrayOrNull("data") ?: return emptyList()
-                data.mapNotNull { element ->
+                    ?: return ModelFetchResult(emptyList(), "返回的不是模型列表（可能不是 OpenAI 兼容接口）")
+                val data = obj.arrayOrNull("data")
+                    ?: return ModelFetchResult(emptyList(), "返回里没有 data 字段（可能不是 OpenAI 兼容接口）")
+                val models = data.mapNotNull { element ->
                     val item = runCatching { element.asJsonObject }.getOrNull() ?: return@mapNotNull null
                     item.get("id")?.asString?.takeIf { it.isNotEmpty() }
                 }
-            } catch (_: Exception) {
-                emptyList()
+                if (models.isEmpty()) {
+                    ModelFetchResult(emptyList(), "上游没有返回任何模型，换一个 Key 或手动填写模型 id")
+                } else {
+                    ModelFetchResult(models, "")
+                }
+            } catch (e: Exception) {
+                ModelFetchResult(emptyList(), "拉取失败：${e.message ?: "未知错误"}")
             } finally {
                 conn.disconnect()
+            }
+        }
+
+        /** 把 HTTP 状态翻译成用户能照着修的一句话。 */
+        private fun describeModelFetchFailure(status: Int, baseUrl: String, body: String): String {
+            val snippet = body.trim().take(160).ifEmpty { "（空）" }
+            return when (status) {
+                401, 403 -> "HTTP $status：Key 无效，或这个 Key 没有查看模型的权限。原始返回：$snippet"
+                404 -> "HTTP 404：接口地址不对，已按 ${modelsUrl(baseUrl)} 请求。原始返回：$snippet"
+                429 -> "HTTP 429：请求太频繁或额度用尽，稍后再试"
+                in 500..599 -> "HTTP $status：上游服务异常，稍后再试"
+                else -> "HTTP $status：$snippet"
             }
         }
 
@@ -328,30 +379,11 @@ class CustomProvider(
         }
 
         /** 转写端点：去掉 baseUrl 尾部的对话/模型路径后挂 `/audio/transcriptions`。 */
-        private fun audioUrl(baseUrl: String): String {
-            val base = baseUrl.trim().trimEnd('/')
-            val root = when {
-                base.endsWith("/chat/completions") -> base.removeSuffix("/chat/completions")
-                base.endsWith("/models") -> base.removeSuffix("/models")
-                else -> base
-            }
-            return "$root/audio/transcriptions"
-        }
+        private fun audioUrl(baseUrl: String): String = "${normalizeBaseUrl(baseUrl)}/audio/transcriptions"
 
-        private fun chatUrl(baseUrl: String): String {
-            val base = baseUrl.trim().trimEnd('/')
-            return if (base.endsWith("/chat/completions")) base else "$base/chat/completions"
-        }
+        private fun chatUrl(baseUrl: String): String = "${normalizeBaseUrl(baseUrl)}/chat/completions"
 
-        private fun modelsUrl(baseUrl: String): String {
-            val base = baseUrl.trim().trimEnd('/')
-            val root = when {
-                base.endsWith("/chat/completions") -> base.removeSuffix("/chat/completions")
-                base.endsWith("/models") -> base.removeSuffix("/models")
-                else -> base
-            }
-            return "$root/models"
-        }
+        private fun modelsUrl(baseUrl: String): String = "${normalizeBaseUrl(baseUrl)}/models"
 
         /** 自定义供应商的账号 uid 由 key 派生（只用于区分账号，不泄露完整 key）。 */
         fun uidOf(apiKey: String): String =
@@ -362,5 +394,14 @@ class CustomProvider(
 
         private const val CONNECT_TIMEOUT_MS = 30_000
         private const val READ_TIMEOUT_MS = 300_000
+
+        /** 路径末尾的版本段：`/v1`、`/v1beta`、`/api/v4` 这类都算已经带了版本。 */
+        private val VERSION_SUFFIX = Regex("/v\\d+[a-z0-9]*$", RegexOption.IGNORE_CASE)
     }
 }
+
+/** 拉模型的结果：要么有模型，要么有一条能照着修的错误说明。 */
+data class ModelFetchResult(
+    val models: List<String>,
+    val error: String = "",
+)

@@ -262,8 +262,13 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
                     onEditCustom = { subPage = SubPage.CustomProviderEdit(it.removePrefix("custom:")) },
                 )
 
-                                is SubPage.CustomProviderEdit -> CustomProviderScreen(
+                is SubPage.CustomProviderEdit -> CustomProviderScreen(
                     existing = state.customProviders.firstOrNull { it.key == page.key },
+                    existingKeys = page.key
+                        ?.let { key -> state.accountsOf("${ProviderUiRegistry.CUSTOM_PREFIX}$key") }
+                        ?.map { viewModel.accountApiKey("${ProviderUiRegistry.CUSTOM_PREFIX}${page.key}", it.uid) }
+                        ?.filter { it.isNotEmpty() }
+                        .orEmpty(),
                     onSave = {
                         viewModel.saveCustomProvider(it)
                         subPage = SubPage.ProviderDetail(it.providerId)
@@ -271,6 +276,9 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
                     onDelete = {
                         viewModel.removeCustomProvider(it)
                         subPage = null
+                    },
+                    onFetchModels = { baseUrl, apiKey, onResult ->
+                        viewModel.fetchCustomModels(baseUrl, apiKey, onResult)
                     },
                     onBack = {
                         subPage = page.key?.let { SubPage.ProviderDetail(ProviderUiRegistry.CUSTOM_PREFIX + it) }

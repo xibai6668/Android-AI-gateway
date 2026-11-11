@@ -59,12 +59,24 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.aigw.app.ui.theme.LocalAppColors
 import dev.aigw.core.pool.AccountStatus
+import dev.aigw.core.provider.CreditUnit
 
 /** 账号状态文案：只有凭证失效与手动停用两种异常态，正常即「可用」。 */
 fun accountStatusText(account: AccountStatus): String = when {
     account.disabled -> "凭证失效，需重新登录"
     !account.enabled -> "已停用"
     else -> "可用"
+}
+
+/**
+ * 账号额度文案：未知时为「—」，百分比口径带 %，积分口径带千分位。
+ *
+ * 两种口径不能混着看：87 与 87% 差 100 倍，直接把数字砸在界面上会让人以为余额爆了。
+ */
+fun accountCreditsText(account: AccountStatus): String = when {
+    !account.creditsKnown -> "—"
+    account.creditUnit == CreditUnit.PERCENT -> "${account.credits}%"
+    else -> formatCount(account.credits)
 }
 
 /** 编辑式页头：左侧大标题 + 副标题 + 金色短下划线，右侧动作；[leading]（二级页返回）在标题行左侧。 */

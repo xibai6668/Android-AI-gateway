@@ -1,5 +1,6 @@
 package dev.aigw.app.ui
 
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
@@ -13,6 +14,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.Icon
@@ -24,11 +27,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.aigw.app.ui.providers.ProviderUiActions
 import dev.aigw.core.pool.AccountStatus
@@ -178,13 +183,15 @@ fun AccountDeleteChipRow(
 }
 
 /**
- * 统一账号卡片外壳：
- * 头部标题行（昵称 + 状态 + [trailing] 开关）+ [extra] 供应商专属信息区 + [footer] 删除行。
+ * 统一账号卡片外壳。
+ *
+ * 默认收起：一行只显示 账号名 + 额度（+ 状态异常时的文案），点那一行才展开优先级、开关、
+ * 供应商专属区与删除按钮。账号多了以后每张卡都把开关和专属区铺开，列表就没法扫视了。
  *
  * - [ProviderDetailScreen]、[TraeUi]、[CodeBuddyUi] 的账号项均基于此外壳实现。
- * - [trailing] 默认为 [AccountEnableSwitch]，可传入展开图标等自定义内容；为 null 时使用默认开关。
- * - [extra] 对应各供应商自有的专属信息（额度行、detail 文案、签到/任务入口等）。
- * - [footer] 默认为 [AccountDeleteChipRow]；传 null 时隐藏；ProviderDetailScreen 可传自定义 LinkText 文本。
+ * - [trailing] 展开后右侧的控件，默认为优先级箭头 + 启用开关。
+ * - [extra] 各供应商自有的专属信息（额度明细、设备指纹、签到入口等），收起时一律隐藏。
+ * - [footer] 默认为 [AccountDeleteChipRow]；传 null 时隐藏。
  */
 @Composable
 fun AccountCardShell(
@@ -198,29 +205,67 @@ fun AccountCardShell(
         AccountDeleteChipRow(onRemove = { actions.onRemoveAccount(providerId, account.uid) })
     },
 ) {
+    var expanded by rememberSaveable(account.uid) { mutableStateOf(false) }
     Column(
-        modifier = modifier,
+        modifier = modifier.animateContentSize(),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        AccountTitleRow(
-            account = account,
-            trailing = trailing ?: {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    AccountPriorityArrows(
-                        account = account,
-                        providerId = providerId,
-                        actions = actions,
-                    )
-                    AccountEnableSwitch(
-                        account = account,
-                        providerId = providerId,
-                        actions = actions,
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { expanded = !expanded },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = account.nickname.ifEmpty { account.uid },
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                // 正常账号不占一行副标题：列表要能一眼扫完，异常才需要额外解释
+                if (!account.usable) {
+                    Text(
+                        text = accountStatusText(account),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-            },
-        )
-        extra()
-        footer?.invoke()
+            }
+            Text(
+                text = accountCreditsText(account),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Icon(
+                if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                contentDescription = if (expanded) "收起" else "展开",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 6.dp),
+            )
+        }
+        if (expanded) {
+            AccountTitleRow(
+                account = account,
+                trailing = trailing ?: {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        AccountPriorityArrows(
+                            account = account,
+                            providerId = providerId,
+                            actions = actions,
+                        )
+                        AccountEnableSwitch(
+                            account = account,
+                            providerId = providerId,
+                            actions = actions,
+                        )
+                    }
+                },
+            )
+            extra()
+            footer?.invoke()
+        }
     }
 }
 

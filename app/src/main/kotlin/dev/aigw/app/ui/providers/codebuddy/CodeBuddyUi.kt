@@ -175,14 +175,6 @@ object CodeBuddyUi : ProviderUi {
             providerId = id,
             actions = actions,
             extra = {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text("额度", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-                    Text(
-                        text = if (status.creditsKnown) status.credits.toString() else "—",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                }
                 if (status.detail.isNotEmpty()) {
                     Text(
                         text = status.detail,

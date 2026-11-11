@@ -38,9 +38,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import dev.aigw.app.ui.AccountDeleteChipRow
-import dev.aigw.app.ui.AccountEnableSwitch
-import dev.aigw.app.ui.AccountTitleRow
+import dev.aigw.app.ui.AccountCardShell
 import dev.aigw.app.ui.ChoiceChip
 import dev.aigw.app.ui.EmptyHint
 import dev.aigw.app.ui.OutlineActionButton
@@ -51,6 +49,7 @@ import dev.aigw.app.ui.accountStatusText
 import dev.aigw.app.ui.providers.ProviderUi
 import dev.aigw.app.ui.providers.ProviderUiActions
 import dev.aigw.core.pool.AccountStatus
+import dev.aigw.core.provider.custom.CustomProvider
 
 class CustomUi(override val id: String) : ProviderUi {
 
@@ -302,25 +301,16 @@ class CustomUi(override val id: String) : ProviderUi {
         }
     }
 
-    /** 账号卡片：点击展开详情（名称编辑、启用开关、删除），展开收起带高度过渡。 */
+    /** 账号卡片：外层统一折叠外壳，只有一行账号名与额度，展开后才能改名、切换启用、删除。 */
     @Composable
     private fun AccountDetailCard(account: AccountStatus, actions: ProviderUiActions) {
-        var expanded by rememberSaveable(account.uid) { mutableStateOf(false) }
-        SectionCard(modifier = Modifier.animateContentSize()) {
-            AccountTitleRow(
+        SectionCard {
+            AccountCardShell(
                 account = account,
-                modifier = Modifier.clickable { expanded = !expanded },
-                trailing = {
-                    Icon(
-                        if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                        contentDescription = if (expanded) "收起" else "展开",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                },
+                providerId = id,
+                actions = actions,
+                extra = { AccountDetailBody(account, actions) },
             )
-            if (expanded) {
-                AccountDetailBody(account, actions)
-            }
         }
     }
 
@@ -339,23 +329,6 @@ class CustomUi(override val id: String) : ProviderUi {
             OutlineActionButton("保存名称") {
                 actions.onRenameAccount(id, account.uid, nickname)
             }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("启用", modifier = Modifier.weight(1f))
-                AccountEnableSwitch(
-                    account = account,
-                    providerId = id,
-                    actions = actions,
-                )
-            }
-            Text(
-                text = "额度 ${if (account.creditsKnown) account.credits.toString() else "—"}",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.primary,
-            )
             if (account.detail.isNotEmpty()) {
                 Text(
                     text = account.detail,
@@ -363,7 +336,6 @@ class CustomUi(override val id: String) : ProviderUi {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            AccountDeleteChipRow(onRemove = { actions.onRemoveAccount(id, account.uid) })
         }
     }
 }

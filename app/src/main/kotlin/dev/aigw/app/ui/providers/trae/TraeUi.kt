@@ -180,11 +180,6 @@ object TraeUi : ProviderUi {
         var manual by remember(status.uid) { mutableStateOf("") }
 
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("额度", style = MaterialTheme.typography.titleSmall)
-            Text(
-                text = if (status.creditsKnown) status.credits.toString() else "—",
-                style = MaterialTheme.typography.bodyMedium,
-            )
             if (status.detail.isNotEmpty()) {
                 Text(
                     text = status.detail,
