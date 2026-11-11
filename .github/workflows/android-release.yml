@@ -65,10 +65,11 @@ jobs:
         id: changelog
         run: |
           # 只汇总影响应用的改动（app/ 与 core/），CI、脚本、文档等非应用变化不进日志。
+          # 版本号提交（chore(release)）只改 build.gradle.kts，不属于可感知的功能变化，单独排除。
           PREV_TAG=$(git tag --sort=-v:refname | grep -v "^v${{ steps.version.outputs.version }}$" | head -n1)
           RANGE="HEAD"
           [ -n "$PREV_TAG" ] && RANGE="$PREV_TAG..HEAD"
-          LOG=$(git log $RANGE --no-merges --pretty='- %s' -- app core)
+          LOG=$(git log $RANGE --no-merges --invert-grep --grep='^chore(release)' --pretty='- %s' -- app core)
           [ -n "$LOG" ] || LOG="- 无应用相关变化"
           {
             echo "body<<CHANGELOG_EOF"
