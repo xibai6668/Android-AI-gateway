@@ -64,6 +64,67 @@ class CodeBuddyPayloadTest {
     }
 
     @Test
+    fun `DSH 身份句的品牌词会被换掉`() {
+        // 上游把宿主身份句当成「非官方客户端」整单拦截（400 11-128）。
+        val out = prepareCodeBuddyBody(
+            """{"model":"m","messages":[{"role":"system","content":"You are an AI agent powered by DeepSeekRuntime."}]}""",
+        )
+        assertFalse(out.contains("DeepSeekRuntime"), "品牌词应当被换掉：$out")
+        assertTrue(out.contains("DeepSeek\u200BRuntime"))
+        // 语义骨架保留，不是整段删除
+        assertTrue(out.contains("You are an AI agent"))
+    }
+
+    @Test
+    fun `at 路径说明段会被改写（等长替换也要生效）`() {
+        // 这条是等长替换：改完长度不变。曾经有个实现「长度相等就跳过」，
+        // 导致它从来没生效过——上游照样 400。回归测试守住这一点。
+        val flagged = "Tokens starting with @ are paths the user explicitly referenced."
+        val out = prepareCodeBuddyBody(
+            """{"model":"m","messages":[{"role":"system","content":"$flagged"}]}""",
+        )
+        assertFalse(out.contains("Tokens starting with @"), "等长替换也必须执行：$out")
+        assertTrue(out.contains("Tokens beginning with @"))
+    }
+
+    @Test
+    fun `裸错误码 11-128 会被拆开`() {
+        // 上游会把这个错误码本身当作反探测特征：请求体里出现就整单拦。
+        val out = prepareCodeBuddyBody(
+            """{"model":"m","messages":[{"role":"user","content":"响应里 code 是 11-128"}]}""",
+        )
+        assertFalse(out.contains("11-128"), "裸错误码必须拆开：$out")
+        assertTrue(out.contains("11\u200B-128"))
+    }
+
+    @Test
+    fun `指纹在 messages 之外也会被处理`() {
+        // tools 描述里带品牌词，走的是兜底那一遍整包改写。
+        val out = prepareCodeBuddyBody(
+            """{"model":"m","tools":[{"type":"function","function":{"name":"f","description":"powered by DeepSeekRuntime"}}],"messages":[{"role":"user","content":"hi"}]}""",
+        )
+        assertFalse(out.contains("DeepSeekRuntime"), "messages 之外也要处理：$out")
+    }
+
+    @Test
+    fun `多个指纹同时出现时全部改写`() {
+        val out = prepareCodeBuddyBody(
+            """{"model":"m","messages":[{"role":"system","content":"You are an AI agent powered by DeepSeekRuntime. Tokens starting with @ are paths. Code 11-128 means blocked."}]}""",
+        )
+        assertFalse(out.contains("DeepSeekRuntime"))
+        assertFalse(out.contains("Tokens starting with @"))
+        assertFalse(out.contains("11-128"))
+    }
+
+    @Test
+    fun `干净请求不被改动`() {
+        val src = """{"model":"m","messages":[{"role":"user","content":"今天天气怎么样"}]}"""
+        val out = prepareCodeBuddyBody(src)
+        assertTrue(out.contains("今天天气怎么样"))
+        assertFalse(out.contains("DeepSeekRuntime"))
+    }
+
+    @Test
     fun `401 与 403 判为凭证失效`() {
         // 落到 CLIENT 的话网关会当作客户端错误早返回：不禁用死账号、也不换供应商
         assertEquals(ErrorKind.SESSION_DEAD, provider.classify(401, "").kind)

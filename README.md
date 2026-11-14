@@ -198,6 +198,18 @@ curl http://127.0.0.1:8790/v1/chat/completions \
 
 本项目会把账号凭证（`accessToken` / `refreshToken` 等）落盘保存：Android 端经 Android Keystore 加密后存入应用私有目录，命令行端（`aigw`）以**明文**文件存放于 `~/.aigw`（可用 `--data` 参数或 `AIGW_DATA` 环境变量改写）。请自行妥善保管，切勿提交到公开仓库、上传到网盘或分享给他人。因凭证泄露造成的损失由使用者自行承担。
 
+### 关于「DSH / DeepSeekRuntime 指纹」
+
+`CodeBuddyProvider` 里的 `FLAGGED_TEXT` 表负责在转发前把上游会拦的第三方客户端特征文本做等义改写。除了原有的 Claude Code / Codex CLI 片段，现在还覆盖宿主（如 DSH / DeepSeekRuntime）注入的系统提示指纹：
+
+| 原文 | 改写 |
+| --- | --- |
+| `DeepSeekRuntime` | `DeepSeekRuntime`（插入零宽空格） |
+| `Tokens starting with @` | `Tokens beginning with @` |
+| `11-128` | `11-128`（插入零宽空格） |
+
+`11-128` 那条是因为上游会把这个错误码本身当成「在回显其内部错误码」的反探测特征，请求体里出现就整单拦。
+
 ### 发布前已剔除的内容（重要）
 
 本仓库**只包含网关本体**。发布前已从发布物中**剔除**下列内容，不在本仓库内：
