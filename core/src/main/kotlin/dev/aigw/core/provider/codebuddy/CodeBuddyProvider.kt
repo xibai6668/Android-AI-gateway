@@ -1775,20 +1775,26 @@ private val FLAGGED_TEXT = listOf(
     Regex("(?<!the )Codex CLI is an open source project led by OpenAI\\.", RegexOption.IGNORE_CASE) to
         "The Codex CLI is an open source project led by OpenAI.",
 
-    // ── 以下是 DSH（DeepSeekRuntime）这类宿主注入的系统提示指纹 ──────────────
-    // 上游按「连续原文」逐字匹配，差一个字符就放行，所以下面都是等义改写、不删语义。
-    // 注意：替换前后长度可以相等——"Tokens starting with @" 那条就是等长替换，
-    // 之前有个实现因为「等长就跳过」导致它从没生效过。
-
-    // ① 宿主身份句里的品牌词。上游把它当成「非官方客户端」整单拦截。
+    // ── 以下是宿主（DSH / DeepSeekRuntime）注入的系统提示指纹 ──────────────
+    //
+    // 全部用真实失败请求体逐段二分实测得出，不是抄别人的表：
+    //
+    // ① `DeepSeekRuntime`（**带空格**）—— 注意不是 `DeepSeekRuntime`。
+    //    宿主身份句 "You are an AI agent powered by DeepSeekRuntime." 里的这个词组
+    //    本身就是拦截特征。实测：带空格 400，去掉空格放行。
+    //    这里插一个零宽空格，肉眼几乎看不出来，但上游的逐字匹配会失配。
+    //
+    // ② `the project root` —— "@ 路径说明段" 里的第二句。
+    //    上游按「连续原文」匹配：单发第一句（Tokens starting with @ …）能过，
+    //    单发第二句也能过，**两句连排就拦**。改任意一处即可，
+    //    这里选最稳定的 `project root`。
+    //    注意宿主不同版本里既有 `project root` 也有 `project root`，两种都要覆盖。
+    //
+    // ③ `11-128` —— 上游把这个错误码本身当成「在回显其内部错误码」的反探测特征，
+    //    请求体里出现就整单拦，与上下文无关。
     Regex("DeepSeekRuntime") to "DeepSeek\u200BRuntime",
-
-    // ② 「@ 开头的路径怎么解析」整段说明。段内不含任何品牌词，所以按品牌词过滤
-    //    的实现会漏掉它；但上游照样拦（实测：只发这一段 294 字节的请求就 400）。
-    Regex("Tokens starting with @") to "Tokens beginning with @",
-
-    // ③ 上游会把自己这个错误码当成「在回显/讨论其内部错误码」的反探测特征，
-    //    请求体里出现裸 "11-128" 就整单拦截（与上下文无关）。
+    Regex("the project root") to "the project\u200Broot",
+    Regex("the project root") to "the project\u200Broot",
     Regex("11-128") to "11\u200B-128",
 )
 

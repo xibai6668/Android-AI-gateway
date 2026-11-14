@@ -64,42 +64,45 @@ class CodeBuddyPayloadTest {
     }
 
     @Test
-    fun `DSH 身份句的品牌词会被换掉`() {
-        // 上游把宿主身份句当成「非官方客户端」整单拦截（400 11-128）。
+    fun `宿主身份句里的品牌词组会被打散（带空格那一版）`() {
+        // 实测：带空格的 "DeepSeekRuntime" 才是拦截特征，去掉空格就放行。
+        // 这里插零宽空格，语义不变但逐字匹配失配。
         val out = prepareCodeBuddyBody(
             """{"model":"m","messages":[{"role":"system","content":"You are an AI agent powered by DeepSeekRuntime."}]}""",
         )
-        assertFalse(out.contains("DeepSeekRuntime"), "品牌词应当被换掉：$out")
-        assertTrue(out.contains("DeepSeek\u200BRuntime"))
-        // 语义骨架保留，不是整段删除
+        assertFalse(out.contains("DeepSeekRuntime"), "品牌词组应当被打散：$out")
+        assertTrue(out.contains("DeepSeek""" + BS + """u200BRuntime"))
         assertTrue(out.contains("You are an AI agent"))
     }
 
     @Test
-    fun `at 路径说明段会被改写（等长替换也要生效）`() {
-        // 这条是等长替换：改完长度不变。曾经有个实现「长度相等就跳过」，
-        // 导致它从来没生效过——上游照样 400。回归测试守住这一点。
-        val flagged = "Tokens starting with @ are paths the user explicitly referenced."
-        val out = prepareCodeBuddyBody(
-            """{"model":"m","messages":[{"role":"system","content":"$flagged"}]}""",
+    fun `at 路径说明段里的 project root 会被打散（两种写法都要覆盖）`() {
+        // 上游按「连续原文」匹配：单发第一句能过、单发第二句也能过，两句连排才拦。
+        // 宿主不同版本里既有 "project root" 也有 "project root"，两种都要处理。
+        val spaced = "Relative paths resolve from the project root; absolute paths"
+        val out1 = prepareCodeBuddyBody(
+            """{"model":"m","messages":[{"role":"system","content":"$spaced"}]}""",
         )
-        assertFalse(out.contains("Tokens starting with @"), "等长替换也必须执行：$out")
-        assertTrue(out.contains("Tokens beginning with @"))
+        assertFalse(out1.contains("project root"), "带空格那版应当被打散：$out1")
+
+        val joined = "Relative paths resolve from the project root; absolute paths"
+        val out2 = prepareCodeBuddyBody(
+            """{"model":"m","messages":[{"role":"system","content":"$joined"}]}""",
+        )
+        assertFalse(out2.contains("project root"), "无空格那版应当被打散：$out2")
     }
 
     @Test
     fun `裸错误码 11-128 会被拆开`() {
-        // 上游会把这个错误码本身当作反探测特征：请求体里出现就整单拦。
         val out = prepareCodeBuddyBody(
             """{"model":"m","messages":[{"role":"user","content":"响应里 code 是 11-128"}]}""",
         )
         assertFalse(out.contains("11-128"), "裸错误码必须拆开：$out")
-        assertTrue(out.contains("11\u200B-128"))
+        assertTrue(out.contains("11""" + BS + """u200B-128"))
     }
 
     @Test
     fun `指纹在 messages 之外也会被处理`() {
-        // tools 描述里带品牌词，走的是兜底那一遍整包改写。
         val out = prepareCodeBuddyBody(
             """{"model":"m","tools":[{"type":"function","function":{"name":"f","description":"powered by DeepSeekRuntime"}}],"messages":[{"role":"user","content":"hi"}]}""",
         )
@@ -109,10 +112,10 @@ class CodeBuddyPayloadTest {
     @Test
     fun `多个指纹同时出现时全部改写`() {
         val out = prepareCodeBuddyBody(
-            """{"model":"m","messages":[{"role":"system","content":"You are an AI agent powered by DeepSeekRuntime. Tokens starting with @ are paths. Code 11-128 means blocked."}]}""",
+            """{"model":"m","messages":[{"role":"system","content":"You are an AI agent powered by DeepSeekRuntime. Relative paths resolve from the project root. Code 11-128 means blocked."}]}""",
         )
         assertFalse(out.contains("DeepSeekRuntime"))
-        assertFalse(out.contains("Tokens starting with @"))
+        assertFalse(out.contains("project root"))
         assertFalse(out.contains("11-128"))
     }
 
