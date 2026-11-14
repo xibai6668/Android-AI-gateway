@@ -2165,7 +2165,15 @@ class GatewayHttpServer(
     private fun log(text: String) = engine.log(text)
 
     companion object {
-        const val MAX_BODY_BYTES = 8 * 1024 * 1024
+        /**
+         * 客户端请求体上限。
+         *
+         * 原为 8MB —— 长上下文对话（十几万 token 的系统提示 + 历史）很容易顶到，
+         * 表现是 413 payload_too_large。提到 64MB，给长上下文留余量。
+         * 注意：这是「整包读进内存」的上限，64MB 对应峰值内存也是这个量级，
+         * 低配机可以把这里调小。
+         */
+        const val MAX_BODY_BYTES = 64 * 1024 * 1024
 
         /** `/v1/credits` 并行拉取的单家预算；上游半挂时不能让请求线程无限等。 */
         private const val CREDITS_FETCH_TIMEOUT_SECONDS = 20L
