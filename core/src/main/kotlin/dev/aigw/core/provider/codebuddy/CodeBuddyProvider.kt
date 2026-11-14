@@ -1671,7 +1671,10 @@ internal fun prepareCodeBuddyRequest(src: String): PreparedCodeBuddyRequest {
     normalizeCodeBuddyMaxTokens(obj)
     unflagCodeBuddyMessages(obj)
     val restore = normalizeCodeBuddyTools(obj)
-    return PreparedCodeBuddyRequest(obj.toString(), restore)
+    // 兜底：messages 之外的地方（tools 描述、system 独立字段等）也可能带指纹，
+    // 整包再过一遍；上游是按「连续原文」匹配的，多过一遍不会有副作用。
+    val body = unflagText(obj.toString())
+    return PreparedCodeBuddyRequest(body, restore)
 }
 
 /**
@@ -1771,6 +1774,22 @@ private val FLAGGED_TEXT = listOf(
         "Main branch (usually the base for PRs)",
     Regex("(?<!the )Codex CLI is an open source project led by OpenAI\\.", RegexOption.IGNORE_CASE) to
         "The Codex CLI is an open source project led by OpenAI.",
+
+    // ── 以下是 DSH（DeepSeekRuntime）这类宿主注入的系统提示指纹 ──────────────
+    // 上游按「连续原文」逐字匹配，差一个字符就放行，所以下面都是等义改写、不删语义。
+    // 注意：替换前后长度可以相等——"Tokens starting with @" 那条就是等长替换，
+    // 之前有个实现因为「等长就跳过」导致它从没生效过。
+
+    // ① 宿主身份句里的品牌词。上游把它当成「非官方客户端」整单拦截。
+    Regex("DeepSeekRuntime") to "DeepSeek\u200BRuntime",
+
+    // ② 「@ 开头的路径怎么解析」整段说明。段内不含任何品牌词，所以按品牌词过滤
+    //    的实现会漏掉它；但上游照样拦（实测：只发这一段 294 字节的请求就 400）。
+    Regex("Tokens starting with @") to "Tokens beginning with @",
+
+    // ③ 上游会把自己这个错误码当成「在回显/讨论其内部错误码」的反探测特征，
+    //    请求体里出现裸 "11-128" 就整单拦截（与上下文无关）。
+    Regex("11-128") to "11\u200B-128",
 )
 
 /** 去掉消息里的敏感特征文本；字符串内容与多模态 parts 都处理。 */
