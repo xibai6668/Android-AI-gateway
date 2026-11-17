@@ -23,11 +23,19 @@ data class SecuritySettings(
     val jitterMillis: Long = 0L,
     /** 自定义补充敏感词表（内置词表之外额外指定的词汇）。 */
     val extraWords: List<String> = emptyList(),
+    /**
+     * 本地隐私脱敏：请求出网前把 API Key、邮箱等换成占位符，响应回来后还原。
+     *
+     * 默认关闭：它会让上游看到占位符而非原文，会让「把当前配置贴给模型改」这类用法多一层
+     * 理解成本，由用户自己权衡是否开启。
+     */
+    val privacyRedactionEnabled: Boolean = false,
 ) {
     fun toJson(): JsonObject = JsonObject().apply {
         addProperty("sanitizeEnabled", sanitizeEnabled)
         addProperty("minIntervalMillis", minIntervalMillis)
         addProperty("jitterMillis", jitterMillis)
+        addProperty("privacyRedactionEnabled", privacyRedactionEnabled)
         val arr = JsonArray()
         for (w in extraWords) arr.add(w)
         add("extraWords", arr)
@@ -49,6 +57,7 @@ data class SecuritySettings(
                 minIntervalMillis = obj.get("minIntervalMillis")?.asLong?.coerceIn(0L, 60_000L) ?: 0L,
                 jitterMillis = obj.get("jitterMillis")?.asLong?.coerceIn(0L, 10_000L) ?: 0L,
                 extraWords = extra,
+                privacyRedactionEnabled = obj.get("privacyRedactionEnabled")?.asBoolean ?: false,
             )
         }
     }

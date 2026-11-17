@@ -59,6 +59,14 @@ fun SecurityProtectionScreen(
         subtitle = "反审核脱敏与账号限速",
         leading = { BackButton(onBack) },
     ) {
+        // 组件 0：本地隐私脱敏
+        PrivacyRedactionComponent(
+            state = state,
+            onToggle = { enabled ->
+                viewModel.updateSecuritySettings(state.security.copy(privacyRedactionEnabled = enabled))
+            },
+        )
+
         // 组件 1：反审核脱敏模块
         DesensitizationComponent(
             state = state,
@@ -99,6 +107,39 @@ fun SecurityProtectionScreen(
                 showRateLimitDialog = false
             },
         )
+    }
+}
+
+// ==============================================================================
+// 独立防护组件 0：本地隐私脱敏
+// ==============================================================================
+
+@Composable
+fun PrivacyRedactionComponent(
+    state: AppUiState,
+    onToggle: (Boolean) -> Unit,
+) {
+    SectionLabel("本地隐私脱敏")
+    SectionCard(enterIndex = 0) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("出网前脱敏", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = "请求发给上游前，把 API Key、邮箱等换成占位符，等回答回来再还原。上游与模型看到的不是你的真实密钥，本机客户端无感",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = state.security.privacyRedactionEnabled,
+                onCheckedChange = onToggle,
+            )
+        }
     }
 }
 

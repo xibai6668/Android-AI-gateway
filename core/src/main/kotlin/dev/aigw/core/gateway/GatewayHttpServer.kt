@@ -68,6 +68,9 @@ class GatewayHttpServer(
             when {
                 session.method == NanoHTTPD.Method.OPTIONS -> run { drainBody(session); preflight() }
                 session.method == NanoHTTPD.Method.POST && uri == "/v1/chat/completions" -> chatCompletions(session)
+                // Anthropic Messages 协议入口：Claude Code 这类客户端只讲这个协议，
+                // 进来先翻成 OpenAI 请求，出去再把响应翻回 Anthropic 形状
+                session.method == NanoHTTPD.Method.POST && uri == "/v1/messages" -> chatCompletions(session, inboundAnthropic = true)
                 session.method == NanoHTTPD.Method.POST && uri == "/v1/images/generations" -> imageGenerations(session)
                 session.method == NanoHTTPD.Method.POST && uri == "/v1/audio/transcriptions" -> audioTranscriptions(session)
                 session.method == NanoHTTPD.Method.GET && uri == "/v1/models" -> models(session)
@@ -337,18 +340,24 @@ class GatewayHttpServer(
         return root.toString()
     }
 
-    private fun chatCompletions(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
+    private fun chatCompletions(session: NanoHTTPD.IHTTPSession, inboundAnthropic: Boolean = false): NanoHTTPD.Response {
         val auth = checkAuth(session)
         if (!auth.ok) return unauthorized(session)
         val clientKey = auth.clientKey
 
-        val (body, readResult) = readBody(session)
+        val (rawBody, readResult) = readBody(session)
         if (readResult == BodyReadResult.OVER_LIMIT) {
             return errorResponse(413, "payload_too_large", "请求体超过网关 ${MAX_BODY_BYTES / (1024 * 1024)}MB 上限")
         }
-        if (body.isEmpty()) {
-            logInvalidBody(session, body, "请求体为空")
+        if (rawBody.isEmpty()) {
+            logInvalidBody(session, rawBody, "请求体为空")
             return errorResponse(400, "invalid_request", "请求体为空")
+        }
+        val body = if (inboundAnthropic) {
+            dev.aigw.core.protocol.AnthropicMessages.toOpenAiRequest(rawBody)
+                ?: return errorResponse(400, "invalid_request", "请求体不是合法的 Anthropic Messages 请求")
+        } else {
+            rawBody
         }
         val peek = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
         if (peek == null) {
@@ -515,6 +524,9 @@ class GatewayHttpServer(
             val secSettings = engine.securitySettings()
             // 反审核脱敏：仅改写 system 消息内的敏感词（注入零宽空格），完全不触碰 user 输入
             val sanitized = engine.sanitizer.sanitizeOpenAiBody(prepared, resolvedModel, secSettings.sanitizeEnabled)
+            // 本地隐私脱敏：出网前把 API Key / 邮箱换成占位符，响应回来后还原（见 PrivacyRedactor）
+            val (outbound, privacySession) =
+                engine.privacyRedactor.redactOpenAiBody(sanitized, secSettings.privacyRedactionEnabled)
 
             val tried = HashSet<String>()
             var attempt = 0
@@ -582,7 +594,7 @@ class GatewayHttpServer(
 
                 if (engine.verboseLogging()) {
                     log("第 $attempt 次选号（$providerId）：${picked.nickname.ifEmpty { picked.uid }}，发送模型 $resolvedModel")
-                    engine.logVerbose("转发内容", sanitized)
+                    engine.logVerbose("转发内容", outbound)
                 }
 
                 var account = picked
@@ -633,7 +645,7 @@ class GatewayHttpServer(
                 val attemptStart = System.currentTimeMillis()
                 attemptedUpstream = true
                 val call: ChatCall = try {
-                    provider.openChat(account, sanitized)
+                    provider.openChat(account, outbound)
                 } catch (e: Exception) {
                     val elapsed = System.currentTimeMillis() - attemptStart
                     providerLastError = e.message ?: "上游连接失败"
@@ -870,6 +882,12 @@ class GatewayHttpServer(
                             gateHandle.release()
                             engine.activeRequests.finish(activeId)
                         },
+                        privacySession = privacySession,
+                        sseTranslator = if (inboundAnthropic) {
+                            dev.aigw.core.protocol.AnthropicMessages.SseTranslator(transparentModel)
+                        } else {
+                            null
+                        },
                     )
                 }
 
@@ -880,7 +898,7 @@ class GatewayHttpServer(
                     }
                     finishActiveRequest()
                     gateHandle.release()
-                    return aggregatedResponse(aggregated, currentRoute.providerId, transparentModel, account.uid, account.nickname, startedAt, body, call.status, meta = callMeta)
+                    return aggregatedResponse(aggregated, currentRoute.providerId, transparentModel, account.uid, account.nickname, startedAt, body, call.status, meta = callMeta, privacySession = privacySession, anthropicInbound = inboundAnthropic)
                 }
 
                 call.close()
@@ -1379,6 +1397,8 @@ class GatewayHttpServer(
         meta: CallMeta = CallMeta(),
         onFirstChunk: () -> Unit = {},
         onFinished: () -> Unit = {},
+        privacySession: dev.aigw.core.security.PrivacyRedactor.Session = dev.aigw.core.security.PrivacyRedactor.Session.EMPTY,
+        sseTranslator: dev.aigw.core.protocol.AnthropicMessages.SseTranslator? = null,
     ): NanoHTTPD.Response {
         val id = newCompletionId()
         // 转发结果快照：由 produce 在结束时写入。header 写出失败时 produce 不执行，
@@ -1429,9 +1449,10 @@ class GatewayHttpServer(
             // 曾把同一事件的多行攒到 8KB 再 flush 以减少小包，但那会让不发空行分隔的上游
             // 迟迟不出首字（客户端要等积满 8KB）——首字延迟优先级高于节省小包。
             val batch = StringBuilder(1024)
+            // 隐私脱敏会话非空时才启用还原：正常路径零影响
+            val privacyRestorers = if (privacySession.active) HashMap<String, dev.aigw.core.security.PrivacyRedactor.StreamingRestorer>() else null
             try {
-                stream.bufferedReader(Charsets.UTF_8).use { reader ->
-                    while (true) {
+                stream.bufferedReader(Charsets.UTF_8).use { reader ->                    while (true) {
                         val line = reader.readLine() ?: break
                         // 先把行原样透传，再看一眼统计：解析绝不能影响转发。
                         // 上游 chunk 里 `"usage": null` 这类字段用 Gson 裸转换是会抛异常的，
@@ -1447,7 +1468,13 @@ class GatewayHttpServer(
                             if (line.removePrefix("data:").trim() == "[DONE]") sawDone = true
                         }
                         rawLines.append(line + "\n")
-                        batch.append(line).append("\n\n")
+                        val outgoing = privacyRestorers?.let { restoreStreamLine(line, privacySession, it) } ?: line
+                        if (sseTranslator != null) {
+                            // Anthropic 入口：把 OpenAI 增量翻成有结构的 Anthropic 事件序列
+                            batch.append(sseTranslator.translate(outgoing))
+                        } else {
+                            batch.append(outgoing).append("\n\n")
+                        }
                         flushBatch(batch, writer)
                         if (!firstChunkLogged && line.startsWith("data:")) {
                             firstChunkLogged = true
@@ -1486,6 +1513,23 @@ class GatewayHttpServer(
                 failure = "网关转发流出错：${e.message}"
                 engine.logError("转发 $providerId 的流失败：$e")
             } finally {
+                // 隐私还原的尾巴（可能含一个被切开的占位符）必须在这里交出，否则内容丢一截
+                if (privacyRestorers != null) {
+                    for ((key, restorer) in privacyRestorers) {
+                        val tail = restorer.flush()
+                        if (tail.isNotEmpty()) {
+                            val tailLine = "data: " + streamTailFrame(key, tail)
+                            runCatching {
+                                if (sseTranslator != null) writer.write(sseTranslator.translate(tailLine))
+                                else writer.write(tailLine + "\n\n")
+                            }
+                        }
+                    }
+                }
+                // Anthropic 流要有明确的收尾事件，否则客户端会一直等 message_stop
+                if (sseTranslator != null) {
+                    runCatching { writer.write(sseTranslator.close()) }
+                }
                 // 上游一条 data 都没给：不能静默结束，否则客户端只看到「输出完成却空」
                 if (status == CallStatus.SUCCESS && !sawData) {
                     status = CallStatus.FAILED
@@ -1546,12 +1590,54 @@ class GatewayHttpServer(
         val firstByteMillis: Long = -1,
     )
 
+    /** 把流结束时攒下的还原尾巴包成一帧 OpenAI 增量。 */
+    private fun streamTailFrame(field: String, text: String): String = JsonObject().apply {
+        add("choices", JsonArray().apply {
+            add(JsonObject().apply {
+                addProperty("index", 0)
+                add("delta", JsonObject().apply { addProperty(field, text) })
+                addProperty("finish_reason", null as String?)
+            })
+        })
+    }.toString()
+
     /** 把累积的 SSE 行批量写出；非空则写出并清空缓冲，返回是否有内容。 */
     private fun flushBatch(batch: StringBuilder, writer: ChunkWriter): Boolean {
         if (batch.isEmpty()) return false
         writer.write(batch.toString())
         batch.setLength(0)
         return true
+    }
+
+    /**
+     * 流式隐私还原：只改 `data:` 行里的文本增量，其它行原样透传。
+     *
+     * 占位符可能被上游切在两个 chunk 之间，所以按字段各维护一个 [PrivacyRedactor.StreamingRestorer]：
+     * 它会把「可能是占位符前缀」的尾巴先扣住，下次连同后续内容一起交回；流结束时由调用方 flush。
+     */
+    private fun restoreStreamLine(
+        line: String,
+        session: dev.aigw.core.security.PrivacyRedactor.Session,
+        restorers: MutableMap<String, dev.aigw.core.security.PrivacyRedactor.StreamingRestorer>,
+    ): String {
+        if (!line.startsWith("data:")) return line
+        val payload = line.removePrefix("data:").trim()
+        if (payload.isEmpty() || payload == "[DONE]") return line
+        val obj = runCatching { JsonParser.parseString(payload).asJsonObject }.getOrNull() ?: return line
+        var changed = false
+        obj.arrayOrNull("choices")?.forEach { element ->
+            val delta = element.asObjectOrNull()?.objOrNull("delta") ?: return@forEach
+            for (key in STREAM_TEXT_FIELDS) {
+                val text = delta.stringOrNull(key) ?: continue
+                val restorer = restorers.getOrPut(key) { engine.privacyRedactor.restorerFor(session) }
+                val restored = restorer.feed(text)
+                if (restored != text) {
+                    delta.addProperty(key, restored)
+                    changed = true
+                }
+            }
+        }
+        return if (changed) "data: " + obj.toString() else line
     }
 
     /** 非流式：provider 已聚合完毕，直接返回其 completion。 */
@@ -1565,13 +1651,22 @@ class GatewayHttpServer(
         requestBody: String,
         httpStatus: Int,
         meta: CallMeta = CallMeta(),
+        privacySession: dev.aigw.core.security.PrivacyRedactor.Session = dev.aigw.core.security.PrivacyRedactor.Session.EMPTY,
+        anthropicInbound: Boolean = false,
     ): NanoHTTPD.Response {
         val payload = runCatching { JsonParser.parseString(aggregated).asJsonObject }.getOrNull()
         // 对调用方透明：将响应中的 model 归一化为客户端请求的逻辑模型
         if (payload != null && model.isNotEmpty()) {
             payload.addProperty("model", model)
         }
-        val normalized = payload?.toString() ?: aggregated
+        // 把上游看到的占位符换回原文（对客户端透明：它没脱敏，也不该看到占位符）
+        val restored = privacySession.restore(payload?.toString() ?: aggregated)
+        // Anthropic 入口：把 OpenAI 响应翻回 Anthropic 的 message 形状（要在还原之后做）
+        val normalized = if (anthropicInbound) {
+            dev.aigw.core.protocol.AnthropicMessages.toAnthropicResponse(restored, model)
+        } else {
+            restored
+        }
         val usage = payload?.objOrNull("usage")
         val content = payload?.arrayOrNull("choices")?.firstOrNull()
             ?.takeIf { it.isJsonObject }?.asJsonObject
@@ -1830,14 +1925,17 @@ class GatewayHttpServer(
         return AuthResult(same)
     }
 
-    /** 从三种携带方式里取令牌（Bearer / 裸 Authorization / x-goog-api-key / ?key=）。 */
+    /** 从多种携带方式里取令牌（Bearer / 裸 Authorization / x-api-key / x-goog-api-key / ?key=）。 */
     private fun tokenOf(session: NanoHTTPD.IHTTPSession): String? {
         val authHeader = session.headers["authorization"]
         val googKeyHeader = session.headers["x-goog-api-key"]
+        // Anthropic 系客户端（Claude Code 等）只发 x-api-key，不认 Authorization
+        val anthropicKeyHeader = session.headers["x-api-key"]
         val queryKey = session.parms["key"]
         return when {
             authHeader != null && authHeader.startsWith("Bearer ", ignoreCase = true) -> authHeader.substring(7).trim()
             authHeader != null -> authHeader.trim()
+            anthropicKeyHeader != null -> anthropicKeyHeader.trim()
             googKeyHeader != null -> googKeyHeader.trim()
             queryKey != null -> queryKey.trim()
             else -> null
@@ -2182,6 +2280,9 @@ class GatewayHttpServer(
             "/v1/credits", "/credits", "/v1/v1/credits", "/healthz",
             "/v1/health", "/v1/route", "/v1/usage", "/v1/usage/requests", "/v1/limit",
         )
+
+        /** 流式响应里需要还原占位符的文本字段（按字段各维护一个还原器）。 */
+        private val STREAM_TEXT_FIELDS = listOf("content", "reasoning_content")
     }
 }
 
