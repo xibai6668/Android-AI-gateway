@@ -56,11 +56,28 @@ class ModelsStreamingTest {
         @Volatile
         var invalidations: Int = 0
 
-        override fun listModels(account: ProviderAccount?) =
-            ProviderModelCatalogView(listOf(ProviderModel("m1", "m1")), false, "")
+        /** listModels 被调次数：用于锁定「路由组不得造成重复拉取」。 */
+        @Volatile
+        var listModelsCalls: Int = 0
+
+        override fun listModels(account: ProviderAccount?): ProviderModelCatalogView {
+            listModelsCalls++
+            return ProviderModelCatalogView(listOf(ProviderModel("m1", "m1")), false, "")
+        }
 
         override fun invalidateModelCache() {
             invalidations++
+        }
+    }
+
+    /** 第一次拉成功、之后失败：验证快照不会被空列表盖掉。 */
+    private class FlakyProvider(id: String) : StubProvider(id) {
+        @Volatile
+        var failing: Boolean = false
+
+        override fun listModels(account: ProviderAccount?): ProviderModelCatalogView {
+            if (failing) throw RuntimeException("upstream down")
+            return ProviderModelCatalogView(listOf(ProviderModel("m1", "m1")), false, "")
         }
     }
 
@@ -168,6 +185,83 @@ class ModelsStreamingTest {
 
         val models = engine.models()
         assertEquals(listOf("ok/m1", "ok/m2"), models.filter { it.providerId == "ok" }.map { it.fullId })
+    }
+
+    @Test
+    fun `路由组不会让目录被重复拉取`() {
+        // 回归：exposedModels 先调一次 models()，groupModels 里又对每个组再调一次
+        // → N 个路由组 = N+1 次打全部上游，每次都可能顶满超时预算
+        val provider = CountingProvider("cnt")
+        val engine = engineWith(provider)
+        engine.updateRoutingGroups(
+            RoutingGroupSettings(
+                groups = listOf(
+                    RoutingGroup(id = "g1", name = "组一", members = listOf(GroupMember("cnt", "m1"))),
+                    RoutingGroup(id = "g2", name = "组二", members = listOf(GroupMember("cnt", "m1"))),
+                ),
+            ),
+        )
+
+        engine.exposedModels()
+        assertEquals(1, provider.listModelsCalls)
+    }
+
+    @Test
+    fun `整轮预算到点即返回已就绪的供应商`() {
+        val gate = CountDownLatch(1)
+        val engine = engineWith(
+            GatedProvider("slow", gate),
+            FixedProvider("fast", ProviderModelCatalogView(listOf(ProviderModel("f1", "f1")), false, "")),
+        )
+
+        val startedAt = System.currentTimeMillis()
+        val catalog = engine.modelsStreaming(totalTimeoutSeconds = 1) { }
+        val elapsed = System.currentTimeMillis() - startedAt
+        gate.countDown()
+
+        // 慢供应商会挂 5s；总预算 1s 必须把它截断，而不是逐家各等一个超时
+        assertTrue(elapsed < 4_000, "聚合耗时 ${elapsed}ms，没有被整轮预算截断")
+        assertTrue(catalog.models.any { it.fullId == "fast/f1" }, catalog.models.map { it.fullId }.toString())
+        assertEquals("拉取模型目录超时", catalog.failures["slow"])
+    }
+
+    @Test
+    fun `上游全部失败时保留上次的模型快照`() {
+        var clock = 1_000_000L
+        val provider = FlakyProvider("flaky")
+        val engine = GatewayEngine(InMemoryKeyValueStore(), nowMillis = { clock })
+        engine.registry.register(provider)
+        engine.pool.upsert(ProviderAccount("flaky", "u1", "账号1", "{}"))
+
+        assertEquals(
+            listOf("flaky/m1"),
+            engine.models().filter { it.providerId == "flaky" }.map { it.fullId },
+        )
+
+        // 过了 TTL、上游开始失败：首次读到的是旧快照，后台刷新失败也不该把它清空
+        provider.failing = true
+        clock += 61_000
+        assertEquals(
+            listOf("flaky/m1"),
+            engine.models().filter { it.providerId == "flaky" }.map { it.fullId },
+        )
+        Thread.sleep(300)
+        assertEquals(
+            listOf("flaky/m1"),
+            engine.models().filter { it.providerId == "flaky" }.map { it.fullId },
+        )
+    }
+
+    @Test
+    fun `TTL 内重复请求只打一次上游`() {
+        val provider = CountingProvider("cnt")
+        val engine = engineWith(provider)
+
+        engine.models()
+        engine.models()
+        engine.exposedModels()
+
+        assertEquals(1, provider.listModelsCalls)
     }
 
     @Test

@@ -43,11 +43,13 @@ import dev.aigw.core.usage.UsageStats
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.SynchronousQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReferenceArray
 
@@ -197,6 +199,9 @@ class GatewayEngine(
     val sanitizer = dev.aigw.core.security.RequestSanitizer(nowMillis)
     val rateLimiter = dev.aigw.core.security.AccountRateLimiter(nowMillis)
 
+    /** 本地隐私脱敏：出网前替换 API Key / 邮箱，响应后还原。无状态，可共享。 */
+    val privacyRedactor = dev.aigw.core.security.PrivacyRedactor()
+
     /** 在途请求表（仅供状态展示：通知/界面）；不参与调度，见 [ActiveRequests]。 */
     val activeRequests = ActiveRequests(nowMillis)
 
@@ -248,6 +253,34 @@ class GatewayEngine(
     private val scheduler: ScheduledExecutorService = ScheduledThreadPoolExecutor(2) { runnable ->
         Thread(runnable, "aigw-sched").apply { isDaemon = true }
     }.apply { removeOnCancelPolicy = true }
+
+    /**
+     * 模型目录拉取专用池。
+     *
+     * 不和 [ioPool] 共用：ioPool 是 `SynchronousQueue` + `CallerRunsPolicy`，饱和时会把任务压回
+     * 调用线程——也就是 `/v1/models` 的 HTTP 工作线程，一次上游卡住就能把请求线拖到客户端超时。
+     * 这里满了直接拒绝，调用方把该供应商记成拉取失败，响应照常返回。
+     */
+    private val modelsPool = ThreadPoolExecutor(
+        0, 16, 60L, TimeUnit.SECONDS, SynchronousQueue(),
+        { runnable -> Thread(runnable, "aigw-models").apply { isDaemon = true } },
+        ThreadPoolExecutor.AbortPolicy(),
+    )
+
+    /**
+     * `/v1/models` 等只读端点用的全量模型快照。
+     *
+     * 很多客户端（Cline / Cherry Studio）会周期轮询模型列表，每次都直打全部上游既慢又容易被
+     * 单个卡住的供应商拖死。这里存一份快照：TTL 内直接返回，过期后先返回旧值、后台刷新
+     * （stale-while-revalidate）——只要曾经拉成过，就不会再因为上游此刻不可用而返回空列表。
+     */
+    @Volatile
+    private var modelsSnapshot: List<RoutedModel>? = null
+
+    @Volatile
+    private var modelsSnapshotAt: Long = 0L
+
+    private val modelsSnapshotRefreshing = AtomicBoolean(false)
 
     /** 供 HTTP 层复用同一套后台线程池与定时器。 */
     internal fun ioExecutor(): ThreadPoolExecutor = ioPool
@@ -510,14 +543,18 @@ class GatewayEngine(
      * 路由组也会出现在这里（`group/<id>`）：组对客户端就是一个模型，
      * 不列出来客户端就没法选它。
      */
-    fun exposedModels(): List<RoutedModel> = filterExposed(models()) + groupModels()
+    fun exposedModels(): List<RoutedModel> {
+        // 只聚合一次：以前 groupModels() 内部又调了一次 models()，N 个路由组 = N+1 次打全部上游
+        val all = models()
+        return filterExposed(all) + groupModels(all)
+    }
 
     /** 把路由组投影成模型条目；能力/上下文取自组内首位成员的模型元数据。 */
-    private fun groupModels(): List<RoutedModel> = routingGroups.groups
+    private fun groupModels(all: List<RoutedModel>): List<RoutedModel> = routingGroups.groups
         .filter { it.enabled && it.members.isNotEmpty() }
         .mapNotNull { group ->
             val first = group.members.first()
-            val memberModel = models().firstOrNull { it.providerId == first.providerId && it.model.id == first.model }
+            val memberModel = all.firstOrNull { it.providerId == first.providerId && it.model.id == first.model }
                 ?: return@mapNotNull RoutedModel(
                     providerId = RoutingGroupSettings.PREFIX + group.id,
                     providerName = "路由组",
@@ -1468,37 +1505,63 @@ class GatewayEngine(
      *
      * [forceRefresh] 为 true 时先丢弃各供应商的模型目录缓存（部分供应商带 TTL 缓存，
      * 否则刷新按钮会命中缓存、远端已下架的模型仍滞留），保证本次真正重打上游。
+     *
+     * [totalTimeoutSeconds] 是**整轮聚合**的预算，不是每家一个超时：到点就返回已就绪的供应商，
+     * 剩下的记失败。逐家各算一个超时的话，最慢那家能把整轮拖到 20s 以上，客户端往往先放弃。
      */
-    fun modelsStreaming(forceRefresh: Boolean = false, onChunk: (ProviderModelsChunk) -> Unit): ModelsCatalog {
+    fun modelsStreaming(
+        forceRefresh: Boolean = false,
+        totalTimeoutSeconds: Long = MODELS_FETCH_TIMEOUT_SECONDS,
+        onChunk: (ProviderModelsChunk) -> Unit,
+    ): ModelsCatalog {
         val enabledProviders = registry.all().filter { providerSettings(it.id).enabled }
         if (enabledProviders.isEmpty()) return ModelsCatalog(emptyList())
 
         // 刷新按钮要求忽略 TTL 缓存：在提交拉取任务前失效，保证任务里拿到的是新鲜上游结果
         if (forceRefresh) enabledProviders.forEach { it.invalidateModelCache() }
 
-        val futures = enabledProviders.map { provider ->
-            provider.id to ioPool.submit<ProviderModelsChunk> {
-                val chunk = fetchProviderModels(provider)
-                onChunk(chunk)
-                chunk
+        val aggregated = ArrayList<RoutedModel>()
+        val failures = LinkedHashMap<String, String>()
+        val futures = ArrayList<Pair<String, java.util.concurrent.Future<ProviderModelsChunk>>>()
+        for (provider in enabledProviders) {
+            try {
+                futures.add(
+                    provider.id to modelsPool.submit<ProviderModelsChunk> {
+                        val chunk = fetchProviderModels(provider)
+                        onChunk(chunk)
+                        chunk
+                    },
+                )
+            } catch (_: RejectedExecutionException) {
+                failures[provider.id] = "模型拉取通道繁忙"
             }
         }
 
-        val aggregated = ArrayList<RoutedModel>()
-        val failures = LinkedHashMap<String, String>()
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(totalTimeoutSeconds)
         for ((providerId, future) in futures) {
-            val chunk = try {
-                // 各 Provider 的 READ_TIMEOUT 长达 300s，/v1/models 阻塞版不能无限等，
-                // 超时后取消该任务并按该供应商拉取失败处理。
-                future.get(MODELS_FETCH_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-            } catch (e: java.util.concurrent.TimeoutException) {
+            // 已完成的先收下（包括并行期间先跑完的）：“预算用完”只意味着不再等，不是丢掉已有结果
+            val chunk: ProviderModelsChunk? = try {
+                if (future.isDone) {
+                    future.get()
+                } else {
+                    val remainNanos = deadline - System.nanoTime()
+                    if (remainNanos <= 0) {
+                        future.cancel(true)
+                        failures[providerId] = "拉取模型目录超时"
+                        null
+                    } else {
+                        future.get(remainNanos, TimeUnit.NANOSECONDS)
+                    }
+                }
+            } catch (_: java.util.concurrent.TimeoutException) {
                 future.cancel(true)
-                logWarn("拉取模型目录超时（$providerId，${MODELS_FETCH_TIMEOUT_SECONDS}s）")
+                logWarn("拉取模型目录超时（$providerId，总预算 ${totalTimeoutSeconds}s）")
                 failures[providerId] = "拉取模型目录超时"
-                continue
+                null
             } catch (_: Exception) {
-                continue
+                null
             }
+            if (chunk == null) continue
             aggregated.addAll(chunk.models)
             // 「没有账号」不是失败：登录前本就不该有模型，供应商自报的 error 也不该报红。
             // 这条约定原本只靠各 Provider 自觉（历史上 ChatGPT 就违反了），在这里统一兜住。
@@ -1508,8 +1571,59 @@ class GatewayEngine(
         return ModelsCatalog(aggregated, failures)
     }
 
-    /** 阻塞聚合版：HTTP `/v1/models`、CLI 等需要一次性完整列表的场景使用。 */
-    fun models(): List<RoutedModel> = modelsStreaming { }.models
+    /**
+     * 阻塞聚合版：HTTP `/v1/models`、CLI 等需要一次性完整列表的场景使用。
+     *
+     * 带快照缓存：TTL 内直接返回，过期后**先返回旧快照、后台刷新**（stale-while-revalidate）。
+     * 只要曾经拉成过，上游此刻卡住也不会再返回空列表——这正是之前「概率空响应」的根因。
+     */
+    fun models(): List<RoutedModel> = modelsSnapshotForRequest()
+
+    private fun modelsSnapshotForRequest(): List<RoutedModel> {
+        val snapshot = modelsSnapshot
+        if (snapshot != null) {
+            if (now() - modelsSnapshotAt >= MODELS_SNAPSHOT_TTL_MILLIS) refreshModelsSnapshotInBackground()
+            return snapshot
+        }
+        return refreshModelsSnapshot()
+    }
+
+    /**
+     * 同步刷新快照。
+     *
+     * 全部供应商都失败时保留旧快照：拿空列表盖掉上一次的好数据，客户端会以为模型全没了。
+     * 「所有供应商都正常返回、只是确实一个模型都没有」（例如都未登录）不算失败，照常写入。
+     */
+    private fun refreshModelsSnapshot(): List<RoutedModel> {
+        val catalog = modelsStreaming(totalTimeoutSeconds = MODELS_HTTP_BUDGET_SECONDS) { }
+        val previous = modelsSnapshot
+        val keepPrevious = catalog.models.isEmpty() && catalog.failures.isNotEmpty() && previous != null
+        if (keepPrevious) {
+            logWarn("模型目录全部拉取失败，保留上次快照（${catalog.failures.size} 家：${catalog.failures.keys}）")
+        }
+        val fresh = if (keepPrevious) previous else catalog.models
+        modelsSnapshot = fresh
+        modelsSnapshotAt = now()
+        return fresh
+    }
+
+    private fun refreshModelsSnapshotInBackground() {
+        if (!modelsSnapshotRefreshing.compareAndSet(false, true)) return
+        try {
+            modelsPool.execute {
+                try {
+                    refreshModelsSnapshot()
+                } catch (e: Exception) {
+                    logWarn("后台刷新模型目录失败：${e.message}")
+                } finally {
+                    modelsSnapshotRefreshing.set(false)
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            // 拉取通道繁忙：保留旧快照，下个请求再试
+            modelsSnapshotRefreshing.set(false)
+        }
+    }
 
     /**
      * 拉取单个供应商的模型目录（id 带 `provider/` 前缀；区域型供应商按区域拆成多组）。
@@ -2061,8 +2175,19 @@ class GatewayEngine(
         /** 详细日志单条上限：环形日志每条都全量展示，太长会淹没其它日志。 */
         const val VERBOSE_LINE_LIMIT = 1500
 
-        /** `/v1/models` 单个供应商拉取模型目录的超时（秒）：上游 READ_TIMEOUT 300s 不能无限等。 */
+        /** 模型页（UI）整轮拉取的默认预算（秒）：目录带内嵌图标、可能上百 KB，给宽一点。 */
         const val MODELS_FETCH_TIMEOUT_SECONDS = 20L
+
+        /**
+         * `/v1/models` 整轮聚合的预算（秒）。
+         *
+         * 客户端等这个接口的超时普遍在 30s 以内，且它们只是拿个模型清单，少列几个模型远比
+         * 一整轮超时、客户端拿到空响应好。5s 够正常供应商返回，卡住的直接跳过。
+         */
+        const val MODELS_HTTP_BUDGET_SECONDS = 5L
+
+        /** `/v1/models` 快照有效期（毫秒）：客户端轮询模型列表时不必每次都打上游。 */
+        const val MODELS_SNAPSHOT_TTL_MILLIS = 60_000L
 
         /**
          * 客户端连接的 socket 读超时（毫秒）。
