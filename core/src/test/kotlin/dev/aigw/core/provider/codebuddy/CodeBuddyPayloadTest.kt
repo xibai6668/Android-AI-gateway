@@ -152,6 +152,69 @@ class CodeBuddyPayloadTest {
     }
 
     @Test
+    fun `宿主指纹被零宽空格打散`() {
+        // issue #16 实测的三处触发点：不打散就整单 400 / 11128
+        val messages = prepare(
+            """{"messages":[
+              {"role":"system","content":"You are an AI agent powered by DeepSeek Runtime.\nRelative paths resolve from the project root; ..."},
+              {"role":"user","content":"复现：code=11-128"}
+            ]}""".trimIndent(),
+        ).getAsJsonArray("messages")
+
+        val system = messages[0].asJsonObject.get("content").asString
+        assertFalse(system.contains("DeepSeek Runtime"))
+        assertFalse(system.contains("project root"))
+        assertTrue(system.contains("DeepSeek\u200B Runtime"))
+        assertTrue(system.contains("project\u200B root"))
+        // 语义不变：去掉零宽字符后与原文一致
+        assertEquals(
+            "You are an AI agent powered by DeepSeek Runtime.\nRelative paths resolve from the project root; ...",
+            system.replace("\u200B", ""),
+        )
+        assertEquals("复现：code=11\u200B-128", messages[1].asJsonObject.get("content").asString)
+    }
+
+    @Test
+    fun `无空格写法与 tools 里的指纹一并打散`() {
+        // 宿主不同版本有「project root」与「projectroot」两种写法；
+        // tools 的 description 也可能带指纹，所以要整包递归改写
+        val body = prepare(
+            """{"messages":[{"role":"system","content":"resolved from the projectroot"}],
+              "tools":[{"type":"function","function":{"name":"f","description":"Use project root when resolving","parameters":{"type":"object"}}}]}""",
+        )
+        val system = body.getAsJsonArray("messages")[0].asJsonObject.get("content").asString
+        assertFalse(system.contains("projectroot"))
+        assertEquals("resolved from the projectroot", system.replace("\u200B", ""))
+
+        val description = body.getAsJsonArray("tools")[0].asJsonObject
+            .getAsJsonObject("function").get("description").asString
+        assertFalse(description.contains("project root"))
+        assertEquals("Use project root when resolving", description.replace("\u200B", ""))
+    }
+
+    @Test
+    fun `工具名与 model 等协议标识不被改写`() {
+        // 零宽字符掺进这些字段会让上游对不上工具调用，且指纹本就不会出现在这类短标识里
+        val body = prepare(
+            """{"model":"project root","messages":[{"role":"system","content":"s"}],
+              "tools":[{"type":"function","function":{"name":"project_root","description":"d","parameters":{"type":"object"}}}]}""",
+        )
+        assertEquals("project root", body.get("model").asString)
+        assertEquals(
+            "project_root",
+            body.getAsJsonArray("tools")[0].asJsonObject.getAsJsonObject("function").get("name").asString,
+        )
+    }
+
+    @Test
+    fun `没有指纹的文本一字不改`() {        val plain = "You are a helpful assistant.\nUse the read tool to read files."
+        val messages = prepare(
+            """{"messages":[{"role":"system","content":"$plain"},{"role":"user","content":"hi"}]}""",
+        ).getAsJsonArray("messages")
+        assertEquals(plain, messages[0].asJsonObject.get("content").asString)
+    }
+
+    @Test
     fun `工具结果后紧跟用户消息时插入空 assistant`() {
         // 上游回 400 11153「the conversation must end with a user message」
         val messages = prepare(
