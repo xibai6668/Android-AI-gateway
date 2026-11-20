@@ -1,0 +1,33 @@
+version: 2
+updates:
+  # Gradle 依赖：每周检查一次，只提 PR 不自动合并（跨版本升级需要人工验证编译与行为）
+  - package-ecosystem: gradle
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      # androidx 一批一起升：单独升某个 compose 组件容易和 BOM 版本打架
+      androidx:
+        patterns:
+          - "androidx.*"
+      # 其余第三方库合并成一组，避免一次开十几个 PR
+      other:
+        patterns:
+          - "*"
+
+  # GitHub Actions：workflow 里用的 action 版本
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    labels:
+      - dependencies
+      - ci
+    commit-message:
+      prefix: "chore(ci)"

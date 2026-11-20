@@ -18,3 +18,6 @@ crashlab/
 
 # UI 方案稿（本地设计草稿）
 ui-proposals/
+
+# 本地会话数据（附件、缓存等），不属于仓库
+.aicode/
