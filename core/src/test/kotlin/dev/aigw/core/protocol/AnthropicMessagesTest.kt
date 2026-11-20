@@ -192,4 +192,43 @@ class AnthropicMessagesTest {
         assertEquals("", translator.translate(""))
         assertEquals("", translator.translate(": keep-alive"))
     }
+
+    @Test
+    fun `流式 chunk 带 usage null 不会抛异常`() {
+        // 回归：线上 release 包报 "JsonNull cannot be cast to JsonObject"，
+        // 因为 getAsJsonObject 是裸强转。标准 OpenAI 兼容服务的每个 chunk 都带 "usage": null。
+        val translator = AnthropicMessages.SseTranslator("m")
+        val out = translator.translate("""data: {"choices":[{"delta":{"content":"hi"}}],"usage":null}""")
+        assertTrue(out.contains("content_block_delta"), out)
+        assertTrue(out.contains("hi"), out)
+    }
+
+    @Test
+    fun `delta 为 null 或缺失时正常跳过`() {
+        val translator = AnthropicMessages.SseTranslator("m")
+        // delta 为 null
+        translator.translate("""data: {"choices":[{"delta":null}]}""")
+        // choices 为 null
+        translator.translate("""data: {"choices":null}""")
+        // choices 为空数组
+        translator.translate("""data: {"choices":[]}""")
+        // 以上都不该抛异常；流仍能正常收尾
+        assertTrue(translator.close().contains("message_stop"))
+    }
+
+    @Test
+    fun `非流式响应里 usage 为 null 不抛异常`() {
+        val body = """{"choices":[{"message":{"content":"x"},"finish_reason":"stop"}],"usage":null}"""
+        val result = JsonParser.parseString(AnthropicMessages.toAnthropicResponse(body, "m")).asJsonObject
+        assertFalse(result.has("usage"))
+    }
+
+    @Test
+    fun `请求里 tools 项为 null 时被跳过`() {
+        val raw = """{"model":"m","messages":[{"role":"user","content":"hi"}],"tools":[null,{"name":"f","input_schema":{"type":"object"}}]}"""
+        val openAi = JsonParser.parseString(AnthropicMessages.toOpenAiRequest(raw)).asJsonObject
+        val tools = openAi.getAsJsonArray("tools")
+        assertEquals(1, tools.size(), "null 项应被跳过，只保留合法工具")
+        assertEquals("f", tools[0].asJsonObject.getAsJsonObject("function").get("name").asString)
+    }
 }

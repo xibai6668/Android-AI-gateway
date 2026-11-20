@@ -3,6 +3,10 @@ package dev.aigw.core.protocol
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import dev.aigw.core.util.arrayOrNull
+import dev.aigw.core.util.asObjectOrNull
+import dev.aigw.core.util.objOrNull
+import dev.aigw.core.util.stringOrNull
 
 /**
  * Anthropic Messages 协议（`POST /v1/messages`）与网关内部 OpenAI 协议的互转。
@@ -27,7 +31,7 @@ object AnthropicMessages {
         src.get("temperature")?.takeIf { it.isJsonPrimitive }?.let { result.add("temperature", it) }
         src.get("top_p")?.takeIf { it.isJsonPrimitive }?.let { result.add("top_p", it) }
         // Anthropic 的 stop_sequences 对应 OpenAI 的 stop（单串或数组都合法）
-        src.getAsJsonArray("stop_sequences")?.let { stops ->
+        src.arrayOrNull("stop_sequences")?.let { stops ->
             if (stops.size() > 0) result.add("stop", stops)
         }
 
@@ -38,8 +42,8 @@ object AnthropicMessages {
                 addProperty("content", text)
             })
         }
-        src.getAsJsonArray("messages")?.forEach { element ->
-            val message = element.asJsonObject
+        src.arrayOrNull("messages")?.forEach { element ->
+            val message = element.asObjectOrNull() ?: return@forEach
             when (message.get("role")?.asString) {
                 "assistant" -> appendAssistant(message, messages)
                 else -> appendUser(message, messages)
@@ -47,14 +51,14 @@ object AnthropicMessages {
         }
         result.add("messages", messages)
 
-        src.getAsJsonArray("tools")?.let { tools ->
+        src.arrayOrNull("tools")?.let { tools ->
             val converted = JsonArray()
             for (tool in tools) {
-                val t = tool.asJsonObject
+                val t = tool.asObjectOrNull() ?: continue
                 val fn = JsonObject()
                 t.get("name")?.let { fn.add("name", it) }
                 t.get("description")?.let { fn.add("description", it) }
-                fn.add("parameters", t.getAsJsonObject("input_schema") ?: JsonObject().apply { addProperty("type", "object") })
+                fn.add("parameters", t.objOrNull("input_schema") ?: JsonObject().apply { addProperty("type", "object") })
                 converted.add(JsonObject().apply {
                     addProperty("type", "function")
                     add("function", fn)
@@ -63,7 +67,7 @@ object AnthropicMessages {
             if (converted.size() > 0) result.add("tools", converted)
         }
 
-        src.getAsJsonObject("tool_choice")?.let { choice ->
+        src.objOrNull("tool_choice")?.let { choice ->
             when (choice.get("type")?.asString) {
                 "auto" -> result.addProperty("tool_choice", "auto")
                 "any" -> result.addProperty("tool_choice", "required")
@@ -85,7 +89,7 @@ object AnthropicMessages {
         return when {
             element.isJsonPrimitive -> element.asString
             element.isJsonArray -> element.asJsonArray.joinToString("\n") { part ->
-                part.asJsonObject.get("text")?.asString.orEmpty()
+                part.asObjectOrNull()?.get("text")?.asString.orEmpty()
             }
             else -> null
         }
@@ -103,7 +107,7 @@ object AnthropicMessages {
             content == null -> Unit
             content.isJsonPrimitive -> text.append(content.asString)
             content.isJsonArray -> for (part in content.asJsonArray) {
-                val block = part.asJsonObject
+                val block = part.asObjectOrNull() ?: continue
                 when (block.get("type")?.asString) {
                     "text" -> text.append(block.get("text")?.asString.orEmpty())
                     "tool_use" -> {
@@ -146,7 +150,7 @@ object AnthropicMessages {
 
         val parts = JsonArray()
         for (part in content.asJsonArray) {
-            val block = part.asJsonObject
+            val block = part.asObjectOrNull() ?: continue
             when (block.get("type")?.asString) {
                 "text" -> parts.add(JsonObject().apply {
                     addProperty("type", "text")
@@ -168,11 +172,11 @@ object AnthropicMessages {
         if (parts.size() == 0) return
         // 只有一段文本时退回字符串形式：更贴近各客户端的原始写法，也少一层嵌套
         val singleText = parts.size() == 1 &&
-            parts[0].asJsonObject.get("type")?.asString == "text"
+            parts[0].asObjectOrNull()?.get("type")?.asString == "text"
         out.add(JsonObject().apply {
             addProperty("role", "user")
             if (singleText) {
-                addProperty("content", parts[0].asJsonObject.get("text")?.asString.orEmpty())
+                addProperty("content", parts[0].asObjectOrNull()?.get("text")?.asString.orEmpty())
             } else {
                 add("content", parts)
             }
@@ -180,7 +184,7 @@ object AnthropicMessages {
     }
 
     private fun imageUrlOf(block: JsonObject): String? {
-        val source = block.getAsJsonObject("source") ?: return null
+        val source = block.objOrNull("source") ?: return null
         return when (source.get("type")?.asString) {
             "base64" -> {
                 val mediaType = source.get("media_type")?.asString ?: "image/png"
@@ -198,7 +202,7 @@ object AnthropicMessages {
         return when {
             element.isJsonPrimitive -> element.asString
             element.isJsonArray -> element.asJsonArray.joinToString("\n") { part ->
-                part.asJsonObject.get("text")?.asString.orEmpty()
+                part.asObjectOrNull()?.get("text")?.asString.orEmpty()
             }
             else -> ""
         }
@@ -213,8 +217,8 @@ object AnthropicMessages {
     fun toAnthropicResponse(openAiBody: String, fallbackModel: String): String {
         val src = runCatching { JsonParser.parseString(openAiBody).asJsonObject }.getOrNull()
             ?: return openAiBody
-        val choice = src.getAsJsonArray("choices")?.firstOrNull()?.asJsonObject
-        val message = choice?.getAsJsonObject("message")
+        val choice = src.arrayOrNull("choices")?.firstOrNull()?.asObjectOrNull()
+        val message = choice?.objOrNull("message")
         val content = JsonArray()
 
         val text = message?.get("content")
@@ -224,9 +228,9 @@ object AnthropicMessages {
                 addProperty("text", text.asString)
             })
         }
-        message?.getAsJsonArray("tool_calls")?.forEach { element ->
-            val call = element.asJsonObject
-            val fn = call.getAsJsonObject("function")
+        message?.arrayOrNull("tool_calls")?.forEach { element ->
+            val call = element.asObjectOrNull() ?: return@forEach
+            val fn = call.objOrNull("function")
             content.add(JsonObject().apply {
                 addProperty("type", "tool_use")
                 addProperty("id", call.get("id")?.asString.orEmpty())
@@ -243,7 +247,7 @@ object AnthropicMessages {
             add("content", content)
             addProperty("stop_reason", stopReasonOf(choice?.get("finish_reason")?.takeIf { it.isJsonPrimitive }?.asString))
             add("stop_sequence", com.google.gson.JsonNull.INSTANCE)
-            usageOf(src.getAsJsonObject("usage"))?.let { add("usage", it) }
+            usageOf(src.objOrNull("usage"))?.let { add("usage", it) }
         }
         return result.toString()
     }
@@ -300,18 +304,20 @@ object AnthropicMessages {
             val sb = StringBuilder()
             ensureStarted(sb)
 
-            obj.getAsJsonObject("usage")?.let { usage ->
+            // 上游每个流式 chunk 都可能带 "usage": null（标准 OpenAI 兼容服务就这样），
+            // getAsJsonObject 是裸强转，JsonNull 会直接抛 ClassCastException 并掐断整条流。
+            obj.objOrNull("usage")?.let { usage ->
                 usage.get("prompt_tokens")?.takeIf { it.isJsonPrimitive }?.let { inputTokens = it.asLong }
                 usage.get("completion_tokens")?.takeIf { it.isJsonPrimitive }?.let { outputTokens = it.asLong }
             }
 
-            val choice = obj.getAsJsonArray("choices")?.firstOrNull()?.asJsonObject
-            val delta = choice?.getAsJsonObject("delta")
+            val choice = obj.arrayOrNull("choices")?.firstOrNull()?.asObjectOrNull()
+            val delta = choice?.objOrNull("delta")
             delta?.get("content")?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotEmpty() }?.let { text ->
                 blockDelta(sb, text)
             }
-            delta?.getAsJsonArray("tool_calls")?.forEach { element ->
-                val call = element.asJsonObject
+            delta?.arrayOrNull("tool_calls")?.forEach { element ->
+                val call = element.asObjectOrNull() ?: return@forEach
                 val sourceIndex = call.get("index")?.asInt ?: 0
                 val blockIndex = toolBlockIndex.getOrPut(sourceIndex) {
                     val index = nextBlockIndex++
@@ -322,13 +328,13 @@ object AnthropicMessages {
                         add("content_block", JsonObject().apply {
                             addProperty("type", "tool_use")
                             addProperty("id", call.get("id")?.asString.orEmpty())
-                            addProperty("name", call.getAsJsonObject("function")?.get("name")?.asString.orEmpty())
+                            addProperty("name", call.objOrNull("function")?.get("name")?.asString.orEmpty())
                             add("input", JsonObject())
                         })
                     }))
                     index
                 }
-                val args = call.getAsJsonObject("function")?.get("arguments")?.takeIf { it.isJsonPrimitive }?.asString
+                val args = call.objOrNull("function")?.get("arguments")?.takeIf { it.isJsonPrimitive }?.asString
                 if (!args.isNullOrEmpty()) {
                     sb.append(event("content_block_delta", JsonObject().apply {
                         addProperty("type", "content_block_delta")
