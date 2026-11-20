@@ -10,22 +10,6 @@ Android 上运行的本地 AI 模型聚合网关：把多家私有 AI 服务账�
 
 ---
 
-## 目录
-
-- [特性](#特性)
-- [快速开始](#快速开始)
-- [架构总览](#架构总览)
-- [模块结构](#模块结构)
-- [数据存储](#数据存储)
-- [构建与发版](#构建与发版)
-- [接口与鉴权](#接口与鉴权)
-- [供应商](#供应商)
-- [贡献](#贡献)
-- [使用声明](#使用声明)
-- [许可](#许可)
-
----
-
 ## 特性
 
 - **OpenAI 兼容网关**：`/v1/chat/completions` + `/v1/models`，流式 SSE / 非流式 / 多模态识图；另提供 `/v1/images/generations`（图片生成）与 `/v1/audio/transcriptions`（语音转文字）。
@@ -104,31 +88,6 @@ usage/...                         # 用量统计
 - **一个账号一个状态文件**：改某个账号（刷新额度、启用/停用）只重写它自己的键，不再整包重写该供应商的全部账号。
 - **旧数据自动迁移**：v2.4.0 之前的状态是「一个供应商一个文件」（`pool/state/<供应商>.json`，内含该供应商全部账号）。新版首次读取时惰性迁移——迁一个账号即从旧文件摘除，旧文件清空后删除；迁移可重复执行，不会回退或丢状态，无需手工处理。
 - Android 端凭证经 Android Keystore 加密后存入应用私有目录；命令行端（`aigw`）以明文存于 `--data` 目录（默认 `~/.aigw`）。
-
----
-
-## 构建与发版
-
-本地构建（产出 debug 包，可与线上 release 包同机共存）：
-
-```sh
-./gradlew :app:assembleDebug --console=plain   # 出 debug 包
-./gradlew :core:test --console=plain           # 单元测试（:core 是唯一有测试的模块）
-./gradlew :cli:installDist --console=plain     # 命令行工具，产出 cli/build/install/aigw/bin/aigw
-```
-
-- 产物：`app/build/outputs/apk/debug/app-debug.apk`（包名 `dev.aigw.app.debug`）。
-- 版本号硬编码在 `app/build.gradle.kts`（`versionCode` / `versionName`）；改后必须重新构建。
-- 本地**不产 release 包**：release 仅由云端 GitHub Actions 手动触发构建并发版，日常 push 不产生任何云端构建。
-
-命令行联调（`:cli`，无需 Android 设备）：
-
-```sh
-./gradlew :cli:run --args="serve" --console=plain       # 起网关（默认端口 8790，数据目录 ~/.aigw）
-./gradlew :cli:run --args="providers" --console=plain   # 列出供应商
-```
-
-`aigw` 子命令：`serve` / `providers` / `accounts` / `credits` / `checkin` / `login` / `browser-login` / `sms` / `models` / `usage` / `logs`；账号与设置存于 `--data` 目录（默认 `~/.aigw`，也可用 `AIGW_DATA` 环境变量改写）。
 
 ---
 
