@@ -45,8 +45,11 @@ jobs:
           keyPassword=$KEY_PASSWORD
           EOF
 
+      - name: 静态检查
+        run: gradle :core:detekt --console=plain
+
       - name: 单元测试
-        run: gradle :core:test --console=plain
+        run: gradle :core:test :app:testDebugUnitTest --console=plain
 
       - name: 打包 release
         run: gradle :app:assembleRelease --console=plain

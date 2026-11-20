@@ -48,8 +48,8 @@ android {
         applicationId = "dev.aigw.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 229
-        versionName = "2.37.2"
+        versionCode = 230
+        versionName = "2.38.0"
     }
 
     buildFeatures {
@@ -94,6 +94,8 @@ android {
             applicationIdSuffix = ".debug"
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             if (debugKeystoreFile != null) signingConfig = signingConfigs.getByName("debugStable")
+            // 崩溃页里的「制造测试崩溃」入口：只存在于 debug 包，release 包里读不到
+            resValue("bool", "crash_test_entry", "true")
         }
         // release = 仅由 GitHub Actions 云端构建并发版；本地不产出 release 包。
         release {
@@ -101,12 +103,18 @@ android {
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             if (hasReleaseKeystore) signingConfig = signingConfigs.getByName("release")
+            resValue("bool", "crash_test_entry", "false")
         }
     }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    testOptions {
+        // Robolectric 需要 android.jar 里的资源；不开 includeAndroidResources 拿不到 R 与 strings
+        unitTests.isIncludeAndroidResources = true
     }
 
     packaging {
@@ -141,7 +149,8 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
-    implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    // 1.1.0 起不再依赖旧版 Tink 的 alpha 通道；之前停在 alpha06，是加密存储的核心依赖
+    implementation("androidx.security:security-crypto:1.1.0")
 
     // 首页编辑态的拖拽排序：自己写的手势在 LazyColumn 里反复被滚动抢手势、
     // 重排动画与跟手位移双重叠加，换成这个库（基于官方 animateItem）。
@@ -152,4 +161,10 @@ dependencies {
     implementation("dev.chrisbanes.haze:haze:1.6.10")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
+
+    // 本地 JVM 上的 Android 单元测试：本仓没有 emulator，instrumented 测试跑不了，
+    // 用 Robolectric 在 JVM 里验证文件落盘与导出内容这类真实逻辑。
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.18.1")
+    testImplementation("androidx.test:core:1.6.1")
 }
