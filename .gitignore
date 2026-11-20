@@ -13,5 +13,8 @@ keystore.properties
 # 只用于本地构建/诊断，不进仓库
 scripts/
 
+# 崩溃日志测试用独立 App（本地验证用，不随主工程发布）
+crashlab/
+
 # UI 方案稿（本地设计草稿）
 ui-proposals/

@@ -48,6 +48,7 @@ import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.sp
+import dev.aigw.app.data.CrashReporter
 import dev.aigw.app.ui.theme.DeepInk
 import dev.aigw.app.ui.theme.LocalAppColors
 import dev.aigw.app.ui.theme.formatHex
@@ -192,6 +193,12 @@ fun MeScreen(state: AppUiState, viewModel: AppViewModel, open: (SubPage) -> Unit
                 "模型别名、system 追加与思考标签",
                 rewriteSummary(state.middleware),
             ) { open(SubPage.RequestRewrite) }
+            EditorialRow(
+                "02.14",
+                "崩溃日志 · CRASH",
+                "异常退出时的堆栈记录",
+                crashSummary(),
+            ) { open(SubPage.CrashLog) }
         }
 
         EditorialGroupHeader("03", "架构关于 · ABOUT THE ENGINE")
@@ -732,4 +739,12 @@ private fun rewriteSummary(settings: dev.aigw.core.gateway.MiddlewareSettings): 
         if (settings.stripThinkTags) add("清理思考标签")
     }
     return if (parts.isEmpty()) "未启用" else parts.joinToString("、")
+}
+
+/** 崩溃日志摘要：没记录时不提「0 份」，免得以为是功能坏了。 */
+@Composable
+private fun crashSummary(): String {
+    val context = LocalContext.current
+    val count = remember { CrashReporter.list(context).size }
+    return if (count == 0) "无记录" else "$count 份"
 }

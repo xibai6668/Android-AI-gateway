@@ -53,4 +53,7 @@ sealed interface SubPage {
 
     /** 请求改写：模型别名、system 追加与思考标签清理。 */
     data object RequestRewrite : SubPage
+
+    /** 崩溃日志：应用异常退出时的堆栈记录。 */
+    data object CrashLog : SubPage
 }

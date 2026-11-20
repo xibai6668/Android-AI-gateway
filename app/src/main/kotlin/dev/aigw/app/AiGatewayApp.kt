@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import androidx.core.content.getSystemService
+import dev.aigw.app.data.CrashReporter
 import dev.aigw.app.data.EncryptedKeyValueStore
 import dev.aigw.app.data.LanAddresses
 import dev.aigw.core.gateway.GatewayEngine
@@ -23,6 +24,8 @@ class AiGatewayApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // 必须最早安装：晚于任何可能崩溃的初始化就抓不到那次崩溃
+        CrashReporter.install(this)
         val created = GatewayEngine(
             store = EncryptedKeyValueStore(this),
             lanAddressProvider = { LanAddresses.current(this) },
