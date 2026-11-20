@@ -86,7 +86,7 @@ jobs:
         run: cp app/build/outputs/apk/release/app-release.apk "ai-gateway-${{ steps.version.outputs.version }}-release.apk"
 
       - name: 创建 Release 并上传 APK
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ steps.version.outputs.version }}
           # 不指定时 GitHub 会把 tag 建在默认分支顶端，导致从分支发版时 tag 指向的代码与产物不符。
