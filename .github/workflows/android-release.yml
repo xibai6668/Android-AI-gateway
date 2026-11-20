@@ -12,7 +12,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # 生成 Release 说明需要上一个 tag 到本次的完整历史
           fetch-depth: 0
