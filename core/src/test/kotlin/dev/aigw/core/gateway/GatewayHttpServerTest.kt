@@ -149,6 +149,47 @@ class GatewayHttpServerTest {
     }
 
     @Test
+    fun `CORS 白名单只对命中来源回显`() {
+        withServer(
+            configure = {
+                it.updateSettings(it.settings().copy(corsAllowedOrigins = "https://ok.example.com"))
+            },
+        ) { port ->
+            val hit = send(
+                port,
+                "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: https://ok.example.com\r\nConnection: close\r\n\r\n",
+            )
+            assertTrue(hit.contains("Access-Control-Allow-Origin: https://ok.example.com"), hit)
+            assertTrue(hit.contains("Vary: Origin"), hit)
+
+            // 未命中的来源不发 CORS 头：浏览器侧会被同源策略拦下
+            val miss = send(
+                port,
+                "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: https://evil.example.com\r\nConnection: close\r\n\r\n",
+            )
+            assertTrue(!miss.contains("Access-Control-Allow-Origin"), miss)
+        }
+    }
+
+    @Test
+    fun `局域网暴露时无 Key 调用不再对非本机放行`() {
+        // 回归：exposeLan + allowNoKey 曾让同网段任何设备直接白嫖额度。
+        // 直接测判定函数：真实 remoteIp 在回环测试里伪造不了。
+        val engine = GatewayEngine(InMemoryKeyValueStore())
+        val server = GatewayHttpServer(engine, "127.0.0.1", 0)
+
+        // 本机：无论是否监听局域网都免 Key
+        assertTrue(server.noKeyAllowedFor("127.0.0.1", exposeLan = true, allowNoKey = true))
+        assertTrue(server.noKeyAllowedFor("::1", exposeLan = true, allowNoKey = true))
+        // 未开局域网：不会收到非本机请求，行为不变
+        assertTrue(server.noKeyAllowedFor("192.168.1.50", exposeLan = false, allowNoKey = true))
+        // 开了局域网 + 无 Key：同网段设备必须带 Key
+        assertTrue(!server.noKeyAllowedFor("192.168.1.50", exposeLan = true, allowNoKey = true))
+        // 关了「无 Key 调用」：谁都要带 Key
+        assertTrue(!server.noKeyAllowedFor("127.0.0.1", exposeLan = false, allowNoKey = false))
+    }
+
+    @Test
     fun `OPTIONS 预检直接放行`() {
         withServer { port ->
             val response = send(

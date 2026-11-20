@@ -6,7 +6,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import androidx.compose.material3.MaterialTheme
@@ -39,6 +41,7 @@ fun ApiSettingsScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> 
         mutableStateOf(settings.refreshSkewSeconds.toString())
     }
     var maxRotate by remember(settings.maxRotate) { mutableStateOf(settings.maxRotate.toString()) }
+    var corsOrigins by remember(settings.corsAllowedOrigins) { mutableStateOf(settings.corsAllowedOrigins) }
 
     PageScaffold(
         title = "接入设置",
@@ -78,6 +81,14 @@ fun ApiSettingsScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> 
                     onCheckedChange = { viewModel.updateSettings(settings.copy(exposeLan = it)) },
                 )
             }
+            if (settings.exposeLan) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "局域网内其它设备也能访问。已开启「无 Key 调用」时，局域网请求仍要求带 Key（本机不受影响）。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
 
         SectionCard(enterIndex = 2) {
@@ -102,6 +113,24 @@ fun ApiSettingsScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> 
         }
 
         SectionCard(enterIndex = 3) {
+            SectionLabel("CORS 白名单")
+            OutlinedTextField(
+                value = corsOrigins,
+                onValueChange = { corsOrigins = it },
+                label = { Text("允许的网页来源，逗号分隔") },
+                placeholder = { Text("https://app.example.com") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "留空则允许任意网页来源（兼容旧行为）。填写后只对名单内的来源放行，避免局域网暴露时任意网页都能用你的额度。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        SectionCard(enterIndex = 4) {
             SectionLabel("默认供应商")
             FlowRow(
                 modifier = Modifier.fillMaxWidth(),
@@ -118,7 +147,7 @@ fun ApiSettingsScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> 
             }
         }
 
-        SectionCard(enterIndex = 4) {
+        SectionCard(enterIndex = 5) {
             SectionLabel("网关行为")
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -162,7 +191,7 @@ fun ApiSettingsScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> 
             }
         }
 
-        SectionCard(enterIndex = 5) {
+        SectionCard(enterIndex = 6) {
             OutlineActionButton("保存") {
                 val parsed = port.toIntOrNull()
                 val parsedRotate = maxRotate.toIntOrNull()
@@ -178,6 +207,7 @@ fun ApiSettingsScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> 
                                 apiKey = apiKey.trim(),
                                 refreshSkewSeconds = GatewaySettings.clampRefreshSkew(parsedSkew),
                                 maxRotate = parsedRotate,
+                                corsAllowedOrigins = corsOrigins.trim(),
                             ),
                         )
                         viewModel.notice("已保存；端口改动需重启服务生效")

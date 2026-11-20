@@ -66,7 +66,7 @@ class GatewayHttpServer(
         val uri = session.uri.trimEnd('/').ifEmpty { "/" }
         val response = try {
             when {
-                session.method == NanoHTTPD.Method.OPTIONS -> run { drainBody(session); preflight() }
+                session.method == NanoHTTPD.Method.OPTIONS -> run { drainBody(session); preflight(session) }
                 session.method == NanoHTTPD.Method.POST && uri == "/v1/chat/completions" -> chatCompletions(session)
                 // Anthropic Messages 协议入口：Claude Code 这类客户端只讲这个协议，
                 // 进来先翻成 OpenAI 请求，出去再把响应翻回 Anthropic 形状
@@ -82,6 +82,8 @@ class GatewayHttpServer(
                 session.method == NanoHTTPD.Method.GET && uri == "/v1/usage" -> usageSummary(session)
                 session.method == NanoHTTPD.Method.GET && uri == "/v1/usage/requests" -> usageRequests(session)
                 session.method == NanoHTTPD.Method.GET && uri == "/v1/limit" -> keyLimit(session)
+                // Prometheus 拉取端点：只给本机（与 /v1/health 同权限，不向局域网暴露）
+                session.method == NanoHTTPD.Method.GET && uri == "/metrics" -> metrics(session)
                 session.method == NanoHTTPD.Method.GET && uri == "/healthz" ->
                     NanoHTTPD.newFixedLengthResponse(SimpleStatus(200, "OK"), "text/plain; charset=utf-8", "ok")
                 session.method == NanoHTTPD.Method.GET && uri == "/authorize" -> authorize(session)
@@ -96,25 +98,48 @@ class GatewayHttpServer(
             engine.logError("处理 $uri 失败：${e.message}")
             errorResponse(500, "internal_error", e.message ?: "网关内部错误")
         }
-        return response.withCors()
+        return response.applyCors(session)
     }
 
     /**
      * 浏览器里跑的客户端（各种 Web UI）会先发 OPTIONS 预检，不答应就会被浏览器拦掉，
      * 界面上看起来就是「连不上」。
      */
-    private fun preflight(): NanoHTTPD.Response =
+    private fun preflight(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response =
         NanoHTTPD.newFixedLengthResponse(SimpleStatus(204, "No Content"), "text/plain; charset=utf-8", "")
+            .applyCors(session)
 
-    /** 流式响应自己写头（已含 CORS），这里的 addHeader 对它无效但无害。 */
-    private fun NanoHTTPD.Response.withCors(): NanoHTTPD.Response = apply {
-        addHeader("Access-Control-Allow-Origin", "*")
-        addHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        addHeader("Access-Control-Allow-Headers", "*")
+    /**
+     * CORS 头。
+     *
+     * 白名单为空时回 `*`（旧行为，不破坏已在用的浏览器客户端）；
+     * 填了就只对命中名单的 Origin 回显它自己，其余一律不发 CORS 头——
+     * 浏览器侧会被同源策略拦下，于是「局域网暴露时任意网页都能用你的额度」这条路就堵上了。
+     */
+    private fun NanoHTTPD.Response.applyCors(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response = apply {
+        val allowed = corsOriginFor(session)
+        if (allowed != null) {
+            addHeader("Access-Control-Allow-Origin", allowed)
+            addHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            addHeader("Access-Control-Allow-Headers", "*")
+            // 按 Origin 回显时必须是 Vary: Origin，否则中间缓存会把 A 站点的响应给 B 站点
+            if (allowed != "*") addHeader("Vary", "Origin")
+        }
         // 非流式响应一律不复用连接：NanoHTTPD 的 keep-alive 是「处理完再阻塞读下一个请求」，
         // 空闲连接会一直占着工作线程直到 socket 读超时（60s），并发一多线程就被这些空转连接吃光，
         // 真正要转发的请求只能排队。OpenAI 客户端每次请求都新建连接，放弃复用代价极小。
         if (this !is SseResponse) closeConnection(true)
+    }
+
+    /** 命中白名单时返回要回显的 Origin；空名单返回 `*`；未命中返回 null（不发 CORS 头）。 */
+    private fun corsOriginFor(session: NanoHTTPD.IHTTPSession): String? {
+        val configured = engine.settings().corsAllowedOrigins
+            .split(',', '\n')
+            .map { it.trim().trimEnd('/') }
+            .filter { it.isNotEmpty() }
+        if (configured.isEmpty()) return "*"
+        val origin = session.headers["origin"]?.trim()?.trimEnd('/') ?: return null
+        return if (configured.any { it.equals(origin, ignoreCase = true) }) origin else null
     }
 
     // ------------------------------------------------------------------ 端点
@@ -1845,6 +1870,59 @@ class GatewayHttpServer(
     }
 
     /**
+     * `GET /metrics`：Prometheus 文本格式的运行时指标。
+     *
+     * 为什么单独做而不是把 JSON 交给 exporter 转：手机上跑不了 exporter 进程，
+     * 外部监控（Prometheus / Grafana Agent）能直接 scrape 这个端点就够了。
+     *
+     * 只暴露聚合数值（队列、请求量、token、成本），不带账号昵称与凭证。
+     */
+    private fun metrics(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
+        if (!isLocalhost(session) && !authorized(session)) return unauthorized(session)
+        val now = System.currentTimeMillis()
+        val today = engine.callLogStore.todayStats(now)
+        val total = engine.callLogStore.totalStats()
+        val (executing, queued) = queueSnapshot()
+
+        val sb = StringBuilder(2048)
+        fun metric(name: String, type: String, help: String, value: Number) {
+            sb.append("# HELP ").append(name).append(' ').append(help).append('\n')
+            sb.append("# TYPE ").append(name).append(' ').append(type).append('\n')
+            sb.append(name).append(' ').append(value).append('\n')
+        }
+
+        metric("aigw_http_requests_in_flight", "gauge", "正在处理的 HTTP 请求数", executing)
+        metric("aigw_http_requests_queued", "gauge", "已排队等待的 HTTP 请求数", queued)
+        metric("aigw_requests_today", "gauge", "今日调用次数", today.requests)
+        metric("aigw_requests_success_today", "gauge", "今日成功调用数", today.success)
+        metric("aigw_requests_failed_today", "gauge", "今日失败调用数", today.failed)
+        metric("aigw_requests_total", "gauge", "累计调用次数", total.requests)
+        metric("aigw_tokens_prompt_today", "gauge", "今日输入 token", today.promptTokens)
+        metric("aigw_tokens_completion_today", "gauge", "今日输出 token", today.completionTokens)
+        metric("aigw_tokens_cached_today", "gauge", "今日命中前缀缓存的 token", today.cachedTokens)
+        metric("aigw_cost_usd_today", "gauge", "今日估算成本（美元）", today.costMicros / 1_000_000.0)
+
+        // 供应商级指标：账号数与熔断状态，排障时最常看的两个维度
+        sb.append("# HELP aigw_provider_accounts 各供应商的账号总数\n")
+        sb.append("# TYPE aigw_provider_accounts gauge\n")
+        sb.append("# HELP aigw_provider_usable_accounts 各供应商可用账号数\n")
+        sb.append("# TYPE aigw_provider_usable_accounts gauge\n")
+        for (provider in engine.registry.all()) {
+            val summary = engine.pool.summary(provider.id)
+            sb.append("aigw_provider_accounts{provider=\"").append(provider.id).append("\"} ")
+                .append(summary.total).append('\n')
+            sb.append("aigw_provider_usable_accounts{provider=\"").append(provider.id).append("\"} ")
+                .append(summary.usable).append('\n')
+        }
+
+        return NanoHTTPD.newFixedLengthResponse(
+            SimpleStatus(200, "OK"),
+            "text/plain; version=0.0.4; charset=utf-8",
+            sb.toString(),
+        )
+    }
+
+    /**
      * `GET /v1/health`：近期健康快照（供应商 × 模型）。
      *
      * 与 `/v1/credits` 同权限：只给本机看，不往局域网暴露。数据全在内存里，重启即清零。
@@ -1888,9 +1966,20 @@ class GatewayHttpServer(
 
     // ------------------------------------------------------------------ 工具
 
-    private fun isLocalhost(session: NanoHTTPD.IHTTPSession): Boolean {
-        val remoteIp = session.remoteIpAddress ?: ""
-        return remoteIp == "127.0.0.1" || remoteIp == "::1" || remoteIp == "localhost"
+    private fun isLocalhost(session: NanoHTTPD.IHTTPSession): Boolean = isLoopbackAddress(session.remoteIpAddress)
+
+    private fun isLoopbackAddress(remoteIp: String?): Boolean =
+        remoteIp == "127.0.0.1" || remoteIp == "::1" || remoteIp == "localhost"
+
+    /**
+     * 「无 Key 调用」是否对该请求生效。
+     *
+     * 本机总是生效；局域网暴露时只对本机生效——否则同网段任何设备（含任意网页）
+     * 都能直接刷你的额度。抽成纯函数是为了能直接测这几行判定，不必伪造来源 IP。
+     */
+    internal fun noKeyAllowedFor(remoteIp: String?, exposeLan: Boolean, allowNoKey: Boolean): Boolean {
+        if (!allowNoKey) return false
+        return isLoopbackAddress(remoteIp) || !exposeLan
     }
 
     private fun authorized(session: NanoHTTPD.IHTTPSession): Boolean = checkAuth(session).ok
@@ -1906,7 +1995,8 @@ class GatewayHttpServer(
     private fun checkAuth(session: NanoHTTPD.IHTTPSession): AuthResult {
         // 本地回环地址发起额度/探活/可观测查询免 Key，方便本地 Dashboard 面板脚本在非对话时也能常驻刷新
         val uri = session.uri.trimEnd('/').ifEmpty { "/" }
-        if (isLocalhost(session) && uri in LOCAL_FREE_PATHS) return AuthResult(true)
+        val local = isLocalhost(session)
+        if (local && uri in LOCAL_FREE_PATHS) return AuthResult(true)
         val settings = engine.settings()
         val token = tokenOf(session)
 
@@ -1915,7 +2005,11 @@ class GatewayHttpServer(
             engine.clientKeyStore.authenticate(token)?.let { return AuthResult(true, it) }
         }
 
-        if (settings.allowNoKey) return AuthResult(true)
+        // 局域网暴露时「无 Key 调用」只对本机生效：否则同网段任何设备都能直接用你的额度。
+        // 本机行为不变（不至于升级后自己的面板脚本/客户端突然连不上）。
+        if (noKeyAllowedFor(session.remoteIpAddress, settings.exposeLan, settings.allowNoKey)) {
+            return AuthResult(true)
+        }
         val expected = settings.apiKey
         if (expected.isEmpty() || token == null) return AuthResult(false)
         val same = MessageDigest.isEqual(
@@ -1945,10 +2039,11 @@ class GatewayHttpServer(
     private fun unauthorized(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
         drainBody(session)
         val settings = engine.settings()
-        val message = if (settings.apiKey.isEmpty()) {
-            "网关已关闭「无 Key 调用」但尚未设置 API Key，请先在 App 里设置"
-        } else {
-            "缺少或错误的 API Key"
+        val message = when {
+            settings.apiKey.isEmpty() && settings.exposeLan ->
+                "已开启局域网监听，局域网访问必须带 Key；请先在 App 里设置 API Key"
+            settings.apiKey.isEmpty() -> "网关已关闭「无 Key 调用」但尚未设置 API Key，请先在 App 里设置"
+            else -> "缺少或错误的 API Key"
         }
         return errorResponse(401, "invalid_api_key", message)
     }
@@ -2275,10 +2370,11 @@ class GatewayHttpServer(
         /** `/authorize` 回调固定归 Trae（其它供应商的登录不经过网关端口）。 */
         const val TRAE_PROVIDER_ID = "trae"
 
-        /** 本机回环免 Key 的只读端点：都是面板类查询，不涉及对话。 */
+        /** 本机回环免 Key 的只读端点：都是面板类查询与监控拉取，不涉及对话。 */
         private val LOCAL_FREE_PATHS = setOf(
             "/v1/credits", "/credits", "/v1/v1/credits", "/healthz",
             "/v1/health", "/v1/route", "/v1/usage", "/v1/usage/requests", "/v1/limit",
+            "/metrics",
         )
 
         /** 流式响应里需要还原占位符的文本字段（按字段各维护一个还原器）。 */
