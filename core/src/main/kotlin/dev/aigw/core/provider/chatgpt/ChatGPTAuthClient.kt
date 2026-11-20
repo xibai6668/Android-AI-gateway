@@ -92,7 +92,7 @@ class ChatGPTAuthClient(
             headers = mapOf(
                 "Content-Type" to contentType,
                 "Accept" to "application/json",
-                "User-Agent" to ChatGPTConstants.USER_AGENT,
+                "User-Agent" to ChatGPTConstants.userAgent(),
             ),
             body = body,
             connectTimeoutMs = ChatGPTConstants.CONNECT_TIMEOUT_MS,

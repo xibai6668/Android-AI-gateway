@@ -17,14 +17,19 @@ internal object ChatGPTConstants {
     /** 上游用它识别流量来源；Codex 系请求必须带这个值。 */
     const val ORIGINATOR = "codex_cli_rs"
 
-    /** 模型目录的 client_version 参数；Codex 后端会据此裁剪模型清单。 */
-    const val CLIENT_VERSION = "0.163.0"
+    /**
+     * 模型目录的 client_version 参数；Codex 后端会据此裁剪模型清单。
+     *
+     * 不再写死：上游抬版本后新模型会不再下发，改为从 npm registry 取官方最新版，
+     * 见 [ChatGPTVersion]。保留这个名字只为兼容旧引用。
+     */
+    val CLIENT_VERSION: String get() = ChatGPTVersion.current()
 
     /**
      * 上游 User-Agent。与 [ORIGINATOR] 一样是协议侧识别值：不带它，部分端点会返回
      * 「unsupported client」。这不是伪造指纹，只是如实声明「这是一个 Codex 协议的客户端」。
      */
-    const val USER_AGENT = "codex_cli_rs/$CLIENT_VERSION (Linux; Android) aigw-gateway"
+    fun userAgent(): String = "codex_cli_rs/${CLIENT_VERSION} (Linux; Android) aigw-gateway"
 
     const val AUTH_ENDPOINT = "https://auth.openai.com/oauth/authorize"
     const val TOKEN_ENDPOINT = "https://auth.openai.com/oauth/token"

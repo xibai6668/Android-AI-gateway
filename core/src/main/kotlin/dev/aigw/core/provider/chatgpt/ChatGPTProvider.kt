@@ -366,7 +366,7 @@ class ChatGPTProvider(
         val headers = linkedMapOf(
             "Authorization" to "Bearer ${credential.accessToken}",
             "originator" to ChatGPTConstants.ORIGINATOR,
-            "User-Agent" to ChatGPTConstants.USER_AGENT,
+            "User-Agent" to ChatGPTConstants.userAgent(),
         )
         if (credential.accountId.isNotEmpty()) {
             headers["ChatGPT-Account-ID"] = credential.accountId
