@@ -17,7 +17,7 @@ jobs:
           # 生成 Release 说明需要上一个 tag 到本次的完整历史
           fetch-depth: 0
 
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '17'
