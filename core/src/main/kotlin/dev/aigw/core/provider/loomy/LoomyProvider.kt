@@ -321,6 +321,8 @@ class LoomyProvider(
                 }
             }
         } catch (e: Exception) {
+            // 同上：额度包拉不到时留原因，不让「失败」与「本来就没有」混淆
+            hooks.onLog("Loomy 拉取额度包失败：${e.message ?: "未知错误"}")
             emptyList()
         }
     }

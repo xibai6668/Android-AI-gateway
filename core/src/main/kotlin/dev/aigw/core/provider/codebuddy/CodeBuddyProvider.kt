@@ -910,6 +910,9 @@ class CodeBuddyProvider internal constructor(
                 )
             }
         } catch (e: Exception) {
+            // 额度包拉不到就显示空表，但必须留下原因：否则界面只是「没有额度包」，
+            // 与「真的没有额度包」长得一模一样，无法区分。
+            hooks.onLog("WorkBuddy 拉取额度包失败：${e.message ?: "未知错误"}")
             emptyList()
         }
     }

@@ -2,6 +2,24 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     id("org.jetbrains.kotlin.jvm")
+    id("io.gitlab.arturbosch.detekt")
+}
+
+detekt {
+    buildUponDefaultConfig = true
+    config.setFrom(rootProject.files("config/detekt/detekt.yml"))
+    // 只看生产代码：测试里的桩类、固定数据常会触发误报
+    source.setFrom(files("src/main/kotlin"))
+}
+
+tasks.withType<io.gitlab.arturbosch.detekt.Detekt>().configureEach {
+    jvmTarget = "17"
+    reports {
+        html.required.set(true)
+        txt.required.set(false)
+        xml.required.set(false)
+        sarif.required.set(false)
+    }
 }
 
 java {

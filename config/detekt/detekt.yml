@@ -1,0 +1,99 @@
+# 静态检查只保留「真会出问题」的规则，不追求风格统一。
+#
+# 这个项目的注释密度很高，很多规则（如 MagicNumber、TooManyFunctions）会大量误报，
+# 一旦报错刷屏，人就会开始加 @Suppress 把检查当噪音绕过去——那样不如不开。
+# 所以只开几条能抓到真实缺陷的：复杂度失控、过长的函数、空 catch、可疑的相等比较。
+
+build:
+  maxIssues: 0
+
+config:
+  validation: true
+  warningsAsErrors: false
+
+complexity:
+  active: true
+  LongMethod:
+    active: true
+    # 网关核心文件本来就有 2000+ 行，方法阈值按现状放宽，只拦明显失控的
+    threshold: 520
+  LongParameterList:
+    active: false
+  CyclomaticComplexMethod:
+    active: true
+    # 网关的请求主链路（chatCompletions）天然是个大分支表，拆开反而更难跟。
+    # 阈值定在「再往上就该拆」的线上，不让既有代码天天报红。
+    threshold: 130
+  TooManyFunctions:
+    active: false
+  NestedBlockDepth:
+    active: true
+    threshold: 8
+  ComplexCondition:
+    active: true
+    threshold: 6
+  LargeClass:
+    active: false
+
+style:
+  active: true
+  MagicNumber:
+    active: false
+  MaxLineLength:
+    active: false
+  ReturnCount:
+    active: false
+  UnusedPrivateMember:
+    active: true
+  UnusedPrivateProperty:
+    active: true
+  UnusedParameter:
+    active: false
+  ForbiddenComment:
+    active: false
+  WildcardImport:
+    active: false
+  # 以下都是纯风格偏好：在已有代码上会大片报错（68 处跟一个 break 习惯相关），
+  # 逐个改成「符合风格」并不能减少任何缺陷，只会让检查变成噪音。
+  LoopWithTooManyJumpStatements:
+    active: false
+  UseCheckOrError:
+    active: false
+  UseRequire:
+    active: false
+  ThrowsCount:
+    active: false
+  NewLineAtEndOfFile:
+    active: false
+
+potential-bugs:
+  active: true
+  EqualsAlwaysReturnsTrueOrFalse:
+    active: true
+  UnsafeCallOnNullableType:
+    active: false
+  LateinitUsage:
+    active: false
+
+exceptions:
+  active: true
+  TooGenericExceptionCaught:
+    active: false
+  # 分段下载的重试判断需要「同时看异常类型与它的状态码」，拆成多个 catch 会把
+  # 同一段退避逻辑复制多份；这里保留原有的单点判断。
+  InstanceOfCheckForException:
+    active: false
+  # 本仓大量 catch 都是「把失败转成返回值/状态」（如 ProxyProbe 把异常写进 message、
+  # 拉额度失败返回空表并记日志），不是真的丢信息；逐条改只能改成同样的写法。
+  # 真正需要拦的「捕获后什么都不做」已在代码里逐处修过（额度包、Loomy 网络层）。
+  SwallowedException:
+    active: false
+
+naming:
+  active: false
+
+comments:
+  active: false
+
+coroutines:
+  active: false

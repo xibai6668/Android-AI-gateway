@@ -39,7 +39,9 @@ class LoomyApiException(
     val kind: LoomyErrorKind,
     val body: String,
     val upstreamCode: String = "",
-) : Exception(userMessage(status, kind, body, upstreamCode)) {
+    /** 原始异常（网络层失败时保留，否则堆栈只能看到包装这一层，根因看不到）。 */
+    cause: Throwable? = null,
+) : Exception(userMessage(status, kind, body, upstreamCode), cause) {
 
     fun debugSummary(): String = "upstream http $status kind=$kind " +
         (if (upstreamCode.isNotEmpty()) "code=$upstreamCode " else "") +

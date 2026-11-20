@@ -792,7 +792,6 @@ class GatewayEngine(
             registry.register(
                 dev.aigw.core.provider.custom.CustomProvider(
                     config = config,
-                    nowMillis = nowMillis,
                 ),
             )
         }

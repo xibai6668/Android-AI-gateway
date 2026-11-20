@@ -328,6 +328,8 @@ class TraeProvider(
                 )
             }
         } catch (e: Exception) {
+            // 拉不到额度包就返回空表，但要留原因：空表与「真的没有额度包」长得一样
+            hooks.onLog("Trae 拉取额度包失败：${e.message ?: "未知错误"}")
             emptyList()
         }
     }

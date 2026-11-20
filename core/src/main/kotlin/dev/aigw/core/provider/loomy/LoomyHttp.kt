@@ -45,13 +45,13 @@ internal fun httpJson(
     val conn = try {
         LoomyHttp.open(url, method, headers, body, connectTimeoutMs, readTimeoutMs)
     } catch (e: Exception) {
-        throw LoomyApiException(0, LoomyErrorKind.NETWORK, e.message.orEmpty())
+        throw LoomyApiException(0, LoomyErrorKind.NETWORK, e.message.orEmpty(), cause = e)
     }
     return try {
         val status = conn.responseCode
         status to LoomyHttp.readBody(conn)
     } catch (e: Exception) {
-        throw LoomyApiException(0, LoomyErrorKind.NETWORK, e.message.orEmpty())
+        throw LoomyApiException(0, LoomyErrorKind.NETWORK, e.message.orEmpty(), cause = e)
     } finally {
         conn.disconnect()
     }
@@ -90,13 +90,13 @@ internal fun openStreamCall(
     val conn = try {
         LoomyHttp.open(url, "POST", headers, body, connectTimeoutMs, readTimeoutMs)
     } catch (e: Exception) {
-        throw LoomyApiException(0, LoomyErrorKind.NETWORK, e.message.orEmpty())
+        throw LoomyApiException(0, LoomyErrorKind.NETWORK, e.message.orEmpty(), cause = e)
     }
     val status = try {
         conn.responseCode
     } catch (e: Exception) {
         conn.disconnect()
-        throw LoomyApiException(0, LoomyErrorKind.NETWORK, e.message.orEmpty())
+        throw LoomyApiException(0, LoomyErrorKind.NETWORK, e.message.orEmpty(), cause = e)
     }
     val contentType = conn.contentType.orEmpty()
     if (status !in 200..299) {
