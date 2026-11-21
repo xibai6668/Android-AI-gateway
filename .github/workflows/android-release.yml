@@ -1,7 +1,7 @@
 name: Android Release
 
 # 仅手动触发：只有在明确需要 release 包时才在云端构建并直接发版。
-# 本地开发一律走 debug 包（见 scripts/build.sh 与 app/build.gradle.kts 的 buildTypes.debug）。
+# 本地不产出任何包；发版包统一在云端构建（本地无 release keystore）。
 on:
   workflow_dispatch:
 
@@ -52,7 +52,7 @@ jobs:
         run: gradle :core:detekt --console=plain
 
       - name: 单元测试
-        run: gradle :core:test :app:testDebugUnitTest --console=plain
+        run: gradle :core:test :app:testReleaseUnitTest --console=plain
 
       - name: 打包 release
         run: gradle :app:assembleRelease --console=plain
