@@ -669,8 +669,19 @@ class GatewayHttpServer(
 
                 val attemptStart = System.currentTimeMillis()
                 attemptedUpstream = true
+                // 风控提示词替换：改写系统轨里会被上游当成反代特征的句子。
+                // 放在选号之后做，取证记录才能带上真实的供应商 id。
+                val rewrittenOutbound = engine.promptRewriter.rewriteOpenAiBody(
+                    outbound,
+                    currentRoute.providerId,
+                    resolvedModel,
+                    secSettings.promptRewriteEnabled,
+                )
+                if (engine.verboseLogging() && rewrittenOutbound != outbound) {
+                    engine.logVerbose("风控替换", rewrittenOutbound)
+                }
                 val call: ChatCall = try {
-                    provider.openChat(account, outbound)
+                    provider.openChat(account, rewrittenOutbound)
                 } catch (e: Exception) {
                     val elapsed = System.currentTimeMillis() - attemptStart
                     providerLastError = e.message ?: "上游连接失败"

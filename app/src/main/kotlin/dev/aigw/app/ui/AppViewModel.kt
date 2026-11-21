@@ -331,6 +331,8 @@ data class AppUiState(
     val failover: dev.aigw.core.failover.ModelFailoverSettings = dev.aigw.core.failover.ModelFailoverSettings(),
     /** 出网取证记录列表。 */
     val evidences: List<dev.aigw.core.security.OutboundEvidence> = emptyList(),
+    /** 风控提示词替换的命中记录。 */
+    val promptRewriteEvidences: List<dev.aigw.core.security.PromptRewriteEvidence> = emptyList(),
     val busy: String = "",
     val notice: String = "",
     /** 批量动作进行中的进度；非空时 UI 显示「已完成 X/N（当前：某账号）」。 */
@@ -392,6 +394,8 @@ private class Snapshot(
     val keepAlive: KeepAliveStatus,
     val security: dev.aigw.core.security.SecuritySettings,
     val evidences: List<dev.aigw.core.security.OutboundEvidence>,
+    /** 风控提示词替换的命中记录。 */
+    val promptRewriteEvidences: List<dev.aigw.core.security.PromptRewriteEvidence> = emptyList(),
     val modelExposure: dev.aigw.core.gateway.ModelExposureSettings,
     val failover: dev.aigw.core.failover.ModelFailoverSettings,
     val overlayKeepAlive: Boolean,
@@ -544,6 +548,7 @@ class AppViewModel(
                     keepAlive = KeepAlive.status(app),
                     security = engine.securitySettings(),
                     evidences = engine.sanitizer.evidenceList(),
+                    promptRewriteEvidences = engine.promptRewriter.evidenceList(),
                     modelExposure = engine.modelExposureSettings(),
                     failover = engine.failoverSettings(),
                     overlayKeepAlive = dev.aigw.app.data.KeepAlivePrefs.overlayEnabled(engine.store()),
@@ -577,6 +582,7 @@ class AppViewModel(
                 keepAlive = snapshot.keepAlive,
                 security = snapshot.security,
                 evidences = snapshot.evidences,
+                promptRewriteEvidences = snapshot.promptRewriteEvidences,
                 modelExposure = snapshot.modelExposure,
                 failover = snapshot.failover,
                 overlayKeepAlive = snapshot.overlayKeepAlive,
@@ -1016,6 +1022,42 @@ class AppViewModel(
     fun clearEvidences() {
         engine.sanitizer.clearEvidence()
         _state.value = _state.value.copy(evidences = emptyList())
+    }
+
+    /** 清空风控提示词替换的命中记录。 */
+    fun clearPromptRewriteEvidences() {
+        engine.promptRewriter.clearEvidence()
+        _state.value = _state.value.copy(promptRewriteEvidences = emptyList())
+    }
+
+    /** 开关某个内置替换预设。 */
+    fun togglePromptRewritePreset(setName: String) {
+        val current = engine.securitySettings().effectivePromptPresets()
+        val next = if (setName in current) current - setName else current + setName
+        // 存全量列表：空列表会被当成「未配置」而回落到全部开启，所以必须先落成显式集合。
+        updateSecuritySettings(engine.securitySettings().copy(promptRewritePresets = next.toList()))
+    }
+
+    /** 新增一条自定义替换规则。 */
+    fun addPromptRewriteRule(name: String, pattern: String, replacement: String) {
+        val trimmed = pattern.trim()
+        if (trimmed.isEmpty()) {
+            notice("匹配文本不能为空")
+            return
+        }
+        val settings = engine.securitySettings()
+        val rule = dev.aigw.core.security.PromptRule(
+            name = name.trim().ifEmpty { "自定义/${trimmed.take(24)}" },
+            pattern = trimmed,
+            replacement = replacement,
+        )
+        updateSecuritySettings(settings.copy(promptRewriteRules = settings.promptRewriteRules + rule))
+    }
+
+    /** 删除一条自定义替换规则。 */
+    fun removePromptRewriteRule(rule: dev.aigw.core.security.PromptRule) {
+        val settings = engine.securitySettings()
+        updateSecuritySettings(settings.copy(promptRewriteRules = settings.promptRewriteRules - rule))
     }
 
     fun setDynamicColor(enabled: Boolean) {

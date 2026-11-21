@@ -134,21 +134,6 @@ fun CrashLogScreen(onBack: () -> Unit) {
             }
         }
 
-        // 仅 debug 包可见：用来在真实环境里验证「崩溃 → 重开 → 自动展开」整条链路。
-        if (context.resources.getBoolean(R.bool.crash_test_entry)) {
-            SectionCard(enterIndex = 2) {
-                SectionLabel("调试")
-                Text(
-                    text = "仅 Debug 包可见。点击后应用会立即退出，重新打开会停在本页并自动展开最新一条。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(10.dp))
-                OutlineActionButton("制造一次测试崩溃") {
-                    throw IllegalStateException("测试崩溃：由崩溃日志页主动触发")
-                }
-            }
-        }
     }
 }
 

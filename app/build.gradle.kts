@@ -11,8 +11,8 @@ plugins {
 /**
  * release 签名：从 keystore.properties 读，仅在文件存在时装配。
  *
- * 本地开发只出 debug 包（见 buildTypes.debug），不需要 keystore.properties；
- * 云端发版时才由 CI 现生成该文件。文件缺失时不在配置阶段报错，
+ * 本地没有 release keystore，出不了发版包；发版包统一由 GitHub Actions 云端构建，
+ * 那里用 secrets 现生成 keystore.properties。文件缺失时不在配置阶段报错，
  * 但 release 构建会因无签名配置而失败——正是期望行为。
  */
 val keystoreProps = Properties().apply {
@@ -21,19 +21,6 @@ val keystoreProps = Properties().apply {
 }
 
 val hasReleaseKeystore = rootProject.file("keystore.properties").exists()
-
-/**
- * debug 签名用的固定 keystore：从 keystore.properties 的 `debugStoreFile` 读，不存在则不装配。
- *
- * 为什么要固定：容器（PRoot rootfs）重置会重新生成 `~/.android/debug.keystore`，
- * debug 包的签名随之改变，之前装好的 debug 版就再也无法原地升级
- * （`INSTALL_FAILED_UPDATE_INCOMPATIBLE`，系统提示「应用签名不一致」）。
- * 把 debug 密钥放到持久位置并在 keystore.properties 里显式指过去，签名就不再随容器重置漂移。
- *
- * CI/他人机器不写 `debugStoreFile`，此处为空，回落到 AGP 默认的 debug 签名，不受影响。
- */
-val debugKeystoreFile: File? =
-    keystoreProps.getProperty("debugStoreFile")?.let { File(it) }?.takeIf { it.isFile }
 
 fun keystoreValue(key: String): String =
     keystoreProps.getProperty(key)
@@ -58,7 +45,7 @@ android {
 
     signingConfigs {
         // 只有存在 keystore.properties 时才创建 release 签名；
-        // 本地只出 debug 包时不依赖该文件。
+        // 本地不产 release 包时不依赖该文件。
         if (hasReleaseKeystore) {
             create("release") {
                 storeFile = file(keystoreValue("storeFile"))
@@ -67,43 +54,18 @@ android {
                 keyPassword = keystoreValue("keyPassword")
             }
         }
-        // debug 签名固定到持久 keystore（见上面的 debugKeystoreFile）。
-        if (debugKeystoreFile != null) {
-            create("debugStable") {
-                storeFile = debugKeystoreFile
-                storePassword = keystoreValue("debugStorePassword")
-                keyAlias = keystoreValue("debugKeyAlias")
-                keyPassword = keystoreValue("debugKeyPassword")
-            }
-        }
     }
 
     buildTypes {
-        // 两个变体都开 R8。注意 AGP 对 debuggable 构建会禁用「优化与混淆」
-        // （构建时会提示 “All code optimizations and obfuscation are disabled for
-        // debuggable builds”），但**代码裁剪照常生效**——这才是体积的大头：
-        // material-icons-extended 的 10660 个未使用图标类会被裁掉。
-        // 裁剪后 debug 3.5MB / release 1.4MB（未开前 debug 是 16.8MB）。
+        // 只有一个 release 变体：发版包统一由 GitHub Actions 云端构建。
         //
-        // debug = 本地开发包：applicationId 加 .debug 后缀、应用名加 Debug，
-        // 可与 release 包同机共存、互不覆盖；签名固定到持久 keystore（未配置时用 AGP 默认 debug 签名），
-        // 否则容器重置会换 key，装上后的 debug 包永远无法原地升级。
-        debug {
-            isMinifyEnabled = true
-            isShrinkResources = true
-            applicationIdSuffix = ".debug"
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            if (debugKeystoreFile != null) signingConfig = signingConfigs.getByName("debugStable")
-            // 崩溃页里的「制造测试崩溃」入口：只存在于 debug 包，release 包里读不到
-            resValue("bool", "crash_test_entry", "true")
-        }
-        // release = 仅由 GitHub Actions 云端构建并发版；本地不产出 release 包。
+        // 开 R8 裁剪（体积大头是 material-icons-extended 的 10660 个未使用图标类）；
+        // debuggable 构建会被 AGP 禁用优化与混淆但裁剪照常生效，所以不再保留 debug 变体。
         release {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             if (hasReleaseKeystore) signingConfig = signingConfigs.getByName("release")
-            resValue("bool", "crash_test_entry", "false")
         }
     }
 
@@ -160,8 +122,8 @@ dependencies {
     // 1.6.10 是最后一个用 Kotlin 2.1.0 构建的版本，与本项目编译器一致。
     implementation("dev.chrisbanes.haze:haze:1.6.10")
 
-    debugImplementation("androidx.compose.ui:ui-tooling")
-
+    // 原本给 debug 变体用的 Compose 预览工具（ui-tooling）随 debug 变体一起移除：
+    // 打进 release 包会增体积，也会把调试入口带进线上包。
     // 本地 JVM 上的 Android 单元测试：本仓没有 emulator，instrumented 测试跑不了，
     // 用 Robolectric 在 JVM 里验证文件落盘与导出内容这类真实逻辑。
     testImplementation("junit:junit:4.13.2")

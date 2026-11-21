@@ -49,7 +49,7 @@ jobs:
         run: gradle :core:detekt --console=plain
 
       - name: 单元测试
-        run: gradle :core:test :app:testDebugUnitTest --console=plain
+        run: gradle :core:test :app:testReleaseUnitTest --console=plain
 
       - name: 打包 release
         run: gradle :app:assembleRelease --console=plain
