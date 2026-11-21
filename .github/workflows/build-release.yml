@@ -21,11 +21,11 @@ jobs:
 
       - uses: android-actions/setup-android@v4
         with:
-          packages: 'platform-tools platforms;android-36 build-tools;35.0.0'
+          packages: 'platform-tools platforms;android-37.0 build-tools;36.0.0'
 
       - uses: gradle/actions/setup-gradle@v6
         with:
-          gradle-version: '8.11.1'
+          gradle-version: '9.9.1'
 
       - name: 还原 release keystore
         env:

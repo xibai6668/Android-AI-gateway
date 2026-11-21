@@ -4,7 +4,6 @@ import java.util.Properties
 
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
@@ -28,8 +27,8 @@ fun keystoreValue(key: String): String =
 
 android {
     namespace = "dev.aigw.app"
-    compileSdk = 36
-    buildToolsVersion = "35.0.0"
+    compileSdk = 37
+    buildToolsVersion = "36.0.0"
 
     defaultConfig {
         applicationId = "dev.aigw.app"
@@ -79,6 +78,11 @@ android {
         unitTests.isIncludeAndroidResources = true
     }
 
+    // 本项目只有 release 变体（发版包由云端构建）。AGP 9 起只给「测试构建类型」建
+    // 单元测试任务（android.onlyEnableUnitTestForTheTestedBuildType 默认 true），
+    // 不指定的话 testReleaseUnitTest 根本不存在，CI 那步会 Task not found。
+    testBuildType = "release"
+
     packaging {
         resources.excludes += setOf(
             "/META-INF/{AL2.0,LGPL2.1}",
@@ -87,6 +91,12 @@ android {
             "META-INF/NOTICE*",
         )
     }
+}
+
+// 关掉 debug 变体：删掉 buildTypes.debug 配置块后 AGP 仍会自动创建它，
+// 这里显式禁用，保证只产出 release。
+androidComponents {
+    beforeVariants(selector().withBuildType("debug")) { it.enable = false }
 }
 
 kotlin {
@@ -101,7 +111,7 @@ dependencies {
     // :core 用 implementation 引 gson，不传递；app 里要直接构造 JsonObject（如动作 payload）
     implementation("com.google.code.gson:gson:2.15.0")
 
-    implementation(platform("androidx.compose:compose-bom:2024.12.01"))
+    implementation(platform("androidx.compose:compose-bom:2026.09.00"))
     implementation("androidx.core:core-ktx:1.15.0")
     // 登录走 Custom Tab：裸 ACTION_VIEW 会让进程被系统判 idle 冻结，本地回调端口随之失聪
     implementation("androidx.browser:browser:1.10.0")
@@ -118,9 +128,10 @@ dependencies {
     // 重排动画与跟手位移双重叠加，换成这个库（基于官方 animateItem）。
     implementation("sh.calvin.reorderable:reorderable:3.1.0")
 
-    // 液态玻璃底栏：真正的背景模糊（backdrop blur）。Compose 原生做不到，
-    // 1.6.10 是最后一个用 Kotlin 2.1.0 构建的版本，与本项目编译器一致。
+    // 液态玻璃底栏：真正的背景模糊（backdrop blur）。Compose 原生做不到。
+    // 2.x 把模糊能力拆到独立 artifact，haze 只保留 HazeState 等基础设施。
     implementation("dev.chrisbanes.haze:haze:2.1.0")
+    implementation("dev.chrisbanes.haze:haze-blur:2.1.0")
 
     // 原本给 debug 变体用的 Compose 预览工具（ui-tooling）随 debug 变体一起移除：
     // 打进 release 包会增体积，也会把调试入口带进线上包。

@@ -4,9 +4,6 @@
 # 一旦报错刷屏，人就会开始加 @Suppress 把检查当噪音绕过去——那样不如不开。
 # 所以只开几条能抓到真实缺陷的：复杂度失控、过长的函数、空 catch、可疑的相等比较。
 
-build:
-  maxIssues: 0
-
 config:
   validation: true
   warningsAsErrors: false
@@ -16,22 +13,22 @@ complexity:
   LongMethod:
     active: true
     # 网关核心文件本来就有 2000+ 行，方法阈值按现状放宽，只拦明显失控的
-    threshold: 520
+    allowedLines: 520
   LongParameterList:
     active: false
   CyclomaticComplexMethod:
     active: true
     # 网关的请求主链路（chatCompletions）天然是个大分支表，拆开反而更难跟。
     # 阈值定在「再往上就该拆」的线上，不让既有代码天天报红。
-    threshold: 130
+    allowedComplexity: 130
   TooManyFunctions:
     active: false
   NestedBlockDepth:
     active: true
-    threshold: 8
+    allowedDepth: 8
   ComplexCondition:
     active: true
-    threshold: 6
+    allowedConditions: 6
   LargeClass:
     active: false
 
@@ -43,7 +40,9 @@ style:
     active: false
   ReturnCount:
     active: false
-  UnusedPrivateMember:
+  UnusedPrivateClass:
+    active: true
+  UnusedPrivateFunction:
     active: true
   UnusedPrivateProperty:
     active: true

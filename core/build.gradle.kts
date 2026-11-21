@@ -1,8 +1,9 @@
+import dev.detekt.gradle.extensions.FailOnSeverity
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     id("org.jetbrains.kotlin.jvm")
-    id("io.gitlab.arturbosch.detekt")
+    id("dev.detekt")
 }
 
 detekt {
@@ -10,14 +11,17 @@ detekt {
     config.setFrom(rootProject.files("config/detekt/detekt.yml"))
     // 只看生产代码：测试里的桩类、固定数据常会触发误报
     source.setFrom(files("src/main/kotlin"))
+    // 2.0 用严重度取代了旧的权重式 maxIssues
+    failOnSeverity.set(FailOnSeverity.Error)
 }
 
-tasks.withType<io.gitlab.arturbosch.detekt.Detekt>().configureEach {
+tasks.withType<dev.detekt.gradle.Detekt>().configureEach {
     jvmTarget = "17"
     reports {
         html.required.set(true)
-        txt.required.set(false)
-        xml.required.set(false)
+        // 2.0 把 txt/xml 换成了 markdown/checkstyle
+        markdown.required.set(false)
+        checkstyle.required.set(false)
         sarif.required.set(false)
     }
 }
