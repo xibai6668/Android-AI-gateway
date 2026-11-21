@@ -99,7 +99,7 @@ dependencies {
     implementation(project(":core"))
 
     // :core 用 implementation 引 gson，不传递；app 里要直接构造 JsonObject（如动作 payload）
-    implementation("com.google.code.gson:gson:2.11.0")
+    implementation("com.google.code.gson:gson:2.15.0")
 
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
     implementation("androidx.core:core-ktx:1.15.0")
@@ -120,7 +120,7 @@ dependencies {
 
     // 液态玻璃底栏：真正的背景模糊（backdrop blur）。Compose 原生做不到，
     // 1.6.10 是最后一个用 Kotlin 2.1.0 构建的版本，与本项目编译器一致。
-    implementation("dev.chrisbanes.haze:haze:1.6.10")
+    implementation("dev.chrisbanes.haze:haze:2.1.0")
 
     // 原本给 debug 变体用的 Compose 预览工具（ui-tooling）随 debug 变体一起移除：
     // 打进 release 包会增体积，也会把调试入口带进线上包。
