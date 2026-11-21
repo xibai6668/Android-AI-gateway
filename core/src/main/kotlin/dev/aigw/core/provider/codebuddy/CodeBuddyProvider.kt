@@ -64,6 +64,8 @@ class CodeBuddyProvider internal constructor(
     private val endpointFor: (String) -> Endpoint = { endpointOf(it) },
     /** 写动作之间的停顿（上游对密集写有风控）；测试里换成空实现。 */
     private val pause: (Long) -> Unit = { Thread.sleep(it) },
+    /** 风控提示词替换开关（与「安全防护」页的同名选项一致）。 */
+    private val promptRewrite: () -> Boolean = { true },
 ) : Provider, DeviceCodeSupport, dev.aigw.core.provider.RegionAwareSupport {
 
     override val id: String = ID
@@ -146,7 +148,7 @@ class CodeBuddyProvider internal constructor(
         }
         val streaming = isStreamingBody(openAiBody)
         val model = resolveModel(requestedModelOf(openAiBody))
-        val request = prepareCodeBuddyRequest(openAiBody)
+        val request = prepareCodeBuddyRequest(openAiBody, promptRewrite())
         val prepared = request.body
         // 工具名被改写过时，响应里的调用名要还原（空表 = 直接透传）
         val restoreNames = request.toolNameRestore
@@ -1667,15 +1669,22 @@ internal data class PreparedCodeBuddyRequest(
     val toolNameRestore: Map<String, String>,
 )
 
-internal fun prepareCodeBuddyRequest(src: String): PreparedCodeBuddyRequest {
+/**
+ * @param promptRewrite 是否执行提示词特征替换（未标记语句 + 宿主指纹）。
+ *   开关来自「安全防护 → 风控提示词替换」，与反重力的同名开关一致。
+ *   消息形状与工具 schema 的归一不在此列：那是上游的硬协议要求，关掉就直接 400。
+ */
+internal fun prepareCodeBuddyRequest(src: String, promptRewrite: Boolean = true): PreparedCodeBuddyRequest {
     val obj = runCatching { JsonParser.parseString(src).asJsonObject }.getOrNull()
         ?: return PreparedCodeBuddyRequest(src, emptyMap())
     obj.addProperty("stream", true)
     normalizeCodeBuddyToolChoice(obj)
     normalizeCodeBuddyMessages(obj)
     normalizeCodeBuddyMaxTokens(obj)
-    unflagCodeBuddyMessages(obj)
-    breakHostFingerprintsDeep(obj)
+    if (promptRewrite) {
+        unflagCodeBuddyMessages(obj)
+        breakHostFingerprintsDeep(obj)
+    }
     val restore = normalizeCodeBuddyTools(obj)
     return PreparedCodeBuddyRequest(obj.toString(), restore)
 }

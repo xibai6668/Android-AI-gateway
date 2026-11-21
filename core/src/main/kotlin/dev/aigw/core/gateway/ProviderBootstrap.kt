@@ -64,6 +64,7 @@ internal fun registerBuiltinProviders(engine: GatewayEngine) {
             region = { engine.providerSettings(CodeBuddyProvider.ID).option("region", CodeBuddyProvider.REGION_CN) },
             nowMillis = { engine.now() },
             hooks = engine.hooks,
+            promptRewrite = { engine.securitySettings().promptRewriteEnabled },
         ),
     )
 

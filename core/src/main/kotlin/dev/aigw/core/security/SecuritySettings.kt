@@ -30,12 +30,42 @@ data class SecuritySettings(
      * 理解成本，由用户自己权衡是否开启。
      */
     val privacyRedactionEnabled: Boolean = false,
+    /**
+     * 风控提示词替换：改写系统提示词里会被上游当成「反代特征」的句子。
+     *
+     * 上游并不总是直接报错，常见做法是伪装成 429 RESOURCE_EXHAUSTED 或直接降智，
+     * 所以默认开启：它只改系统轨里的固定句式，模型语义不变，对正常对话无副作用。
+     */
+    val promptRewriteEnabled: Boolean = true,
+    /** 启用的内置规则预设（按 [PromptRiskRewriter.builtinRules] 的 setName 分组）。 */
+    val promptRewritePresets: List<String> = emptyList(),
+    /** 用户自定义替换规则。 */
+    val promptRewriteRules: List<PromptRule> = emptyList(),
 ) {
+    /** 实际生效的预设：未显式配置时全部内置预设默认开启。 */
+    fun effectivePromptPresets(): Set<String> =
+        promptRewritePresets.ifEmpty { PromptRiskRewriter.builtinRuleSets().keys }.toSet()
+
     fun toJson(): JsonObject = JsonObject().apply {
         addProperty("sanitizeEnabled", sanitizeEnabled)
         addProperty("minIntervalMillis", minIntervalMillis)
         addProperty("jitterMillis", jitterMillis)
         addProperty("privacyRedactionEnabled", privacyRedactionEnabled)
+        addProperty("promptRewriteEnabled", promptRewriteEnabled)
+        val presetArr = JsonArray()
+        for (p in promptRewritePresets) presetArr.add(p)
+        add("promptRewritePresets", presetArr)
+        val ruleArr = JsonArray()
+        for (r in promptRewriteRules) {
+            ruleArr.add(
+                JsonObject().apply {
+                    addProperty("name", r.name)
+                    addProperty("pattern", r.pattern)
+                    addProperty("replacement", r.replacement)
+                },
+            )
+        }
+        add("promptRewriteRules", ruleArr)
         val arr = JsonArray()
         for (w in extraWords) arr.add(w)
         add("extraWords", arr)
@@ -52,12 +82,33 @@ data class SecuritySettings(
             obj.getAsJsonArray("extraWords")?.forEach {
                 if (it.isJsonPrimitive) extra.add(it.asString)
             }
+            val presets = mutableListOf<String>()
+            obj.getAsJsonArray("promptRewritePresets")?.forEach {
+                if (it.isJsonPrimitive) presets.add(it.asString)
+            }
+            val rules = mutableListOf<PromptRule>()
+            obj.getAsJsonArray("promptRewriteRules")?.forEach { element ->
+                val ruleObj = runCatching { element.asJsonObject }.getOrNull() ?: return@forEach
+                val pattern = ruleObj.get("pattern")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty()
+                if (pattern.isEmpty()) return@forEach
+                rules.add(
+                    PromptRule(
+                        name = ruleObj.get("name")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty()
+                            .ifEmpty { PromptRiskRewriter.CUSTOM_SET },
+                        pattern = pattern,
+                        replacement = ruleObj.get("replacement")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty(),
+                    ),
+                )
+            }
             return SecuritySettings(
                 sanitizeEnabled = obj.get("sanitizeEnabled")?.asBoolean ?: false,
                 minIntervalMillis = obj.get("minIntervalMillis")?.asLong?.coerceIn(0L, 60_000L) ?: 0L,
                 jitterMillis = obj.get("jitterMillis")?.asLong?.coerceIn(0L, 10_000L) ?: 0L,
                 extraWords = extra,
                 privacyRedactionEnabled = obj.get("privacyRedactionEnabled")?.asBoolean ?: false,
+                promptRewriteEnabled = obj.get("promptRewriteEnabled")?.asBoolean ?: true,
+                promptRewritePresets = presets,
+                promptRewriteRules = rules,
             )
         }
     }

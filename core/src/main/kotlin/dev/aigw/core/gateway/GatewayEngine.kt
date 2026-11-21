@@ -199,6 +199,9 @@ class GatewayEngine(
     val sanitizer = dev.aigw.core.security.RequestSanitizer(nowMillis)
     val rateLimiter = dev.aigw.core.security.AccountRateLimiter(nowMillis)
 
+    /** 风控提示词替换：改写系统提示词里会被上游当成反代特征的句子。 */
+    val promptRewriter = dev.aigw.core.security.PromptRiskRewriter(nowMillis)
+
     /** 本地隐私脱敏：出网前替换 API Key / 邮箱，响应后还原。无状态，可共享。 */
     val privacyRedactor = dev.aigw.core.security.PrivacyRedactor()
 
@@ -428,6 +431,7 @@ class GatewayEngine(
         migrateLegacyProxyExclusions()
         installProxy()
         sanitizer.reloadPipeline(securitySettings.extraWords)
+        promptRewriter.reload(securitySettings.effectivePromptPresets(), securitySettings.promptRewriteRules)
         lastAutoPurgeDay = nowMillis() / DAY_MILLIS
         if (preloadCallLogs) {
             runCatching { purgeExpiredRecords() }
@@ -468,16 +472,21 @@ class GatewayEngine(
         securitySettings = updated
         store.write(dev.aigw.core.security.SecuritySettings.STORE_KEY, updated.toJson().toString())
         sanitizer.reloadPipeline(updated.extraWords)
+        promptRewriter.reload(updated.effectivePromptPresets(), updated.promptRewriteRules)
         log("安全防护设置已更新（脱敏=${if (updated.sanitizeEnabled) "开启" else "关闭"}，限速=${updated.minIntervalMillis}ms，抖动=${updated.jitterMillis}ms）")
     }
 
     /** 重新加载脱敏处理链与规则词表。 */
     fun reloadSanitizerPipeline(): Int {
         sanitizer.reloadPipeline(securitySettings.extraWords)
+        promptRewriter.reload(securitySettings.effectivePromptPresets(), securitySettings.promptRewriteRules)
         val count = sanitizer.currentRulesCount()
         log("反审核脱敏处理链已重新加载，当前生效规则词汇数：$count")
         return count
     }
+
+    /** 风控提示词替换的当前生效规则数。 */
+    fun promptRewriteRulesCount(): Int = promptRewriter.currentRulesCount()
 
     // ------------------------------------------------------------------ 故障转移与容灾调度
 

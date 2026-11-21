@@ -122,8 +122,12 @@ fun MeScreen(state: AppUiState, viewModel: AppViewModel, open: (SubPage) -> Unit
             EditorialRow(
                 "02.2",
                 "安全防护 · SECURITY",
-                "反审核脱敏与账号限速",
-                if (state.security.sanitizeEnabled) "脱敏开启" else "脱敏关闭",
+                "风控提示词替换、反审核脱敏与账号限速",
+                when {
+                    state.security.promptRewriteEnabled -> "提示词替换开启"
+                    state.security.sanitizeEnabled -> "脱敏开启"
+                    else -> "全部关闭"
+                },
             ) { open(SubPage.SecurityProtection) }
             EditorialRow(
                 "02.3",
