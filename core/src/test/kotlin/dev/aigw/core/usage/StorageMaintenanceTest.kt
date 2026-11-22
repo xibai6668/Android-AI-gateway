@@ -282,11 +282,11 @@ class StorageMaintenanceTest {
         store.write("account/trae/u1", "z".repeat(300))
 
         val report = StorageAudit.audit(store)
-        assertEquals(2_800, report.totalChars)
+        assertEquals(2_800, report.totalBytes)
         val calls = report.entries.first { it.name == StorageReport.NAME_CALLS }
-        assertEquals(2_000, calls.chars)
+        assertEquals(2_000, calls.bytes)
         assertEquals(1, calls.items)
-        assertEquals(2_000, report.recordsChars)
+        assertEquals(2_000, report.recordsBytes)
         // 明细按占用从大到小排，界面直接顺序渲染即可
         assertEquals(StorageReport.NAME_CALLS, report.entries.first().name)
     }
@@ -297,7 +297,7 @@ class StorageMaintenanceTest {
         store.write("settings/gateway.json", "s".repeat(120))
         val report = StorageAudit.audit(store)
         val settings = report.entries.first { it.name == StorageReport.NAME_SETTINGS }
-        assertEquals(120, settings.chars)
+        assertEquals(120, settings.bytes)
         assertEquals(1, settings.items)
     }
 

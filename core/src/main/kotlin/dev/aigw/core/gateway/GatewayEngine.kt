@@ -174,6 +174,16 @@ fun interface LanAddressProvider {
 }
 
 /**
+ * 额外需要统计/清理的缓存目录。
+ *
+ * Android 侧提供更新包缓存与崩溃日志所在目录；它们是文件系统数据，不在键值存储里，
+ * 但往往是应用占用的真正大头。core 不能引用 Android 路径，所以由 App 注入。
+ */
+fun interface StorageDirProvider {
+    fun groups(): List<StorageAudit.DirectoryGroup>
+}
+
+/**
  * 网关引擎：把账号池、各供应商、HTTP 服务、日志与设置串起来。
  * UI 直接调用这里的方法，不需要走 HTTP。
  */
@@ -189,6 +199,8 @@ class GatewayEngine(
     preloadCallLogs: Boolean = true,
     /** 完整原文溢出目录：加密存储只留每字段 8K 摘要，超出部分写这里供详情页回读；null 时仅摘要。 */
     spillDir: java.io.File? = null,
+    /** 额外的缓存目录（更新包、崩溃日志等），用于统计与清理；null 时只统计键值存储。 */
+    private val storageDirs: StorageDirProvider = StorageDirProvider { emptyList() },
 ) {
     val settingsRepository = SettingsRepository(store)
     val pool = AccountPool(store, nowMillis)
@@ -2143,7 +2155,54 @@ class GatewayEngine(
     // ------------------------------------------------------------------ 数据管理
 
     /** 存储占用明细。 */
-    fun storageReport(): StorageReport = StorageAudit.audit(store)
+    fun storageReport(): StorageReport = StorageAudit.audit(store, storageDirs.groups())
+
+    /**
+     * 清理缓存类数据（更新包、崩溃日志、完整原文溢出），保留调用记录与用量。
+     *
+     * 一次性回收「不影响网关工作」的那部分占用：记录列表、额度台账与账号不受影响。
+     * 真正想连记录一起清，走各自单独的清空入口。
+     *
+     * @return 释放的字节数与删掉的文件数。
+     */
+    fun clearCaches(): Pair<Long, Long> {
+        var bytes = 0L
+        var files = 0L
+        for (group in storageDirs.groups()) {
+            if (!group.clearable) continue
+            val (freed, removed) = deleteDirectoryContents(group.dir)
+            bytes += freed
+            files += removed
+        }
+        // 溢出原文是占用大头，且删掉只影响「详情页看全文」，一并清掉。
+        val (spillFiles, spillBytes) = callLogStore.clearFullText()
+        bytes += spillBytes
+        files += spillFiles.toLong()
+        if (files > 0) {
+            log("已清理缓存：${StorageAudit.formatSize(bytes)}（$files 个文件）")
+        }
+        return bytes to files
+    }
+
+    /** 递归删除目录内容但保留目录本身；返回（释放字节, 删除文件数）。 */
+    private fun deleteDirectoryContents(dir: java.io.File): Pair<Long, Long> {
+        if (!dir.isDirectory) return 0L to 0L
+        var bytes = 0L
+        var removed = 0L
+        // 先收集再删：遍历中删除会让 walkTopDown 的惰性遍历漏掉部分条目。
+        val targets = dir.walkTopDown().filter { it.isFile }.toList()
+        for (file in targets) {
+            val size = file.length()
+            if (file.delete()) {
+                bytes += size
+                removed++
+            }
+        }
+        // 顺手清掉删空的子目录，避免留下一堆空文件夹
+        dir.walkBottomUp().filter { it != dir && it.isDirectory && it.list()?.isEmpty() == true }
+            .forEach { it.delete() }
+        return bytes to removed
+    }
 
     /** 清理早于「保留天数」的记录；返回删除条数。 */
     fun purgeExpiredRecords(): Int {

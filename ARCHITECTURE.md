@@ -118,7 +118,7 @@
 | `store/BatchedKeyValueStore.kt` | 把 `logs/`、`usage/`、`clientkey/` 写入合并后交后台线程提交；凭证/设置/登录态仍同步落盘 | **读己所写**（未提交值先查内存）、**不丢写**（提交成功才按值摘除）、提交失败留待下轮不重试风暴；代价是提交窗口内的数据只存在内存里，靠 `flush()` 兜底 |
 | `store/SplitKeyValueStore.kt` | 按前缀把键路由到不同存储：日志与用量独立成文件，凭证/设置留主文件 | 每个加密文件每次提交都整份重写，日志与凭证同文件会让改一条设置也背上重写几 MB；`migrateLegacy()` 幂等搬运旧数据，标记固定在兜底存储 |
 | `security/` | `SecuritySettings`（脱敏/限速开关）、`RequestSanitizer`（system 提示词零宽字符脱敏 + 出网取证）、`AccountRateLimiter`（账号级最小间隔 + 抖动） | 只改 system 消息，不碰 user 输入 |
-| `usage/` | `CallLogStore`（调用记录，每条一键；超出 8K 摘要的完整原文溢出到缓存目录供详情页回读）、`RequestLog`（环形运行日志，容量可运行期调整）、`StorageAudit`（按前缀统计占用） | 记录有容量淘汰与保留天数清理；溢出文件随删除/清空/过期清理/截断一并回收；**请求与尝试分层计量**（`tries`/`retried` 是一次请求内的尝试数，不是请求数） |
+| `usage/` | `CallLogStore`（调用记录，每条一键；超出 8K 摘要的完整原文溢出到缓存目录供详情页回读；`clearFullText()` 只清原文副本、保留记录）、`RequestLog`（环形运行日志，容量可运行期调整）、`StorageAudit`（按前缀统计占用，**并统计注入的缓存目录**） | 记录有容量淘汰与保留天数清理；溢出文件随删除/清空/过期清理/截断一并回收；**占用大头往往在文件系统而非键值存储**（更新包、溢出原文、崩溃日志），只算键值会让界面数字与系统「应用信息」差一个量级；`clearCaches()` 只清可清理项，凭证与调用记录不受影响；**请求与尝试分层计量**（`tries`/`retried` 是一次请求内的尝试数，不是请求数） |
 | `util/` | `CappedStringBuilder`（边收边截）、`CountFormat`、`JsonAccess`、`TimeWindow` | |
 | `update/` | `UpdateRepository`（Release JSON 解析，多线路竞争取先到）、`MirrorSpeedTest`（Range 探测 512KB 测带宽）、`ApkDownloader`（HEAD 取长度后分段并发下载，单段续传+重试）、`UpdateSources`（直连 + 4 条国内镜像的映射表） | 只登记实测支持 `206` 的镜像；镜像请求绕开用户代理（国内入口），直连尊重代理设置；任一线路失败只是少一个候选 |
 

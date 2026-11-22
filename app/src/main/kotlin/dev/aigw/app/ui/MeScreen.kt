@@ -53,6 +53,8 @@ import dev.aigw.app.ui.theme.DeepInk
 import dev.aigw.app.ui.theme.LocalAppColors
 import dev.aigw.app.ui.theme.formatHex
 import dev.aigw.core.usage.StorageAudit
+import dev.aigw.core.usage.StorageEntry
+import dev.aigw.core.usage.StorageReport
 import dev.aigw.core.usage.UsageStats
 import dev.aigw.core.usage.formatMicroUsd
 import dev.aigw.core.util.startOfDay
@@ -441,10 +443,141 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
 
         SectionCard(enterIndex = 6) {
             SectionLabel("存储")
+            val report = state.storage
+            if (report == null) {
+                Text(
+                    text = "正在统计…",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                StorageDetail(state, report, viewModel)
+            }
+        }
+    }
+}
+
+/**
+ * 存储明细与清理。
+ *
+ * 光报一个总量没有用——用户看到「应用占了 84MB」却无从下手。这里把占用拆到每一项，
+ * 并标注哪些是可安全删除的缓存，让「清什么」变成确定的选择。
+ */
+@Composable
+private fun StorageDetail(state: AppUiState, report: StorageReport, viewModel: AppViewModel) {
+    var confirmCaches by remember { mutableStateOf(false) }
+    var confirmCalls by remember { mutableStateOf(false) }
+
+    Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            text = StorageAudit.formatSize(report.totalBytes),
+            style = MaterialTheme.typography.headlineSmall.copy(fontFamily = FontFamily.Monospace),
+            fontWeight = FontWeight.Light,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Text(
+            text = "应用当前占用",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(bottom = 3.dp),
+        )
+    }
+
+    Column(Modifier.fillMaxWidth().padding(top = 12.dp)) {
+        report.entries.forEachIndexed { index, entry ->
+            if (index > 0) {
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                    modifier = Modifier.padding(vertical = 9.dp),
+                )
+            }
+            StorageEntryRow(entry)
+        }
+    }
+
+    if (report.clearableBytes > 0) {
+        OutlineActionButton(
+            text = "清理缓存 · ${StorageAudit.formatSize(report.clearableBytes)}",
+            modifier = Modifier.padding(top = 14.dp),
+            onClick = { confirmCaches = true },
+        )
+    }
+    OutlineActionButton(
+        text = "清空调用记录",
+        modifier = Modifier.padding(top = if (report.clearableBytes > 0) 8.dp else 14.dp),
+        onClick = { confirmCalls = true },
+    )
+
+    if (confirmCaches) {
+        ConfirmDestructiveDialog(
+            title = "清理缓存？",
+            body = "将删除下载的更新包、崩溃日志与调用记录的完整原文副本，" +
+                "释放约 ${StorageAudit.formatSize(report.clearableBytes)}。" +
+                "调用记录列表、用量统计与账号不受影响。",
+            confirmText = "清理",
+            onConfirm = { viewModel.clearCaches() },
+            onDismiss = { confirmCaches = false },
+        )
+    }
+    if (confirmCalls) {
+        ConfirmDestructiveDialog(
+            title = "清空全部调用记录？",
+            body = "将删除本机保存的 ${state.storedCalls} 条调用记录（含完整原文），不可恢复。",
+            confirmText = "清空",
+            onConfirm = { viewModel.clearCalls() },
+            onDismiss = { confirmCalls = false },
+        )
+    }
+}
+
+/** 一条占用明细：左对齐名称 + 说明，右对齐体积与条数。 */
+@Composable
+private fun StorageEntryRow(entry: StorageEntry) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    text = entry.name,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                // 「可清理」只是提示「删了不影响功能」，不是警告，所以不用高亮色
+                if (entry.clearable) {
+                    Text(
+                        text = "可清理",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .clip(MaterialTheme.shapes.small)
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .padding(horizontal = 5.dp, vertical = 1.dp),
+                    )
+                }
+            }
+            if (entry.detail.isNotEmpty()) {
+                Text(
+                    text = entry.detail,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Text(
+            text = StorageAudit.formatSize(entry.bytes),
+            style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+        )
+        if (entry.items > 0) {
             Text(
-                text = "调用记录 ${state.storedCalls} 条，占用约 ${StorageAudit.formatSize(state.storage?.totalChars ?: 0L)}",
-                style = MaterialTheme.typography.bodySmall,
+                text = "${entry.items} 项",
+                style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
             )
         }
     }

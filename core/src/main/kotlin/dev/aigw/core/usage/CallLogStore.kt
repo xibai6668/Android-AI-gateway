@@ -445,6 +445,31 @@ class CallLogStore(
         }
     }
 
+    /**
+     * 只清溢出目录里的完整原文，保留调用记录本身。
+     *
+     * 溢出原文是占用大头（上限 [MAX_SPILL_TOTAL_BYTES]），而它的作用仅是「详情页能看全文」；
+     * 先把这一层清掉，记录列表、用量统计与额度台账完全不受影响——
+     * 这比「清空全部调用记录」温和得多，也是空间吃紧时的首选。
+     *
+     * @return 删除的文件数与释放字节数。
+     */
+    fun clearFullText(): Pair<Int, Long> {
+        val dir = spillDir ?: return 0 to 0L
+        if (!dir.isDirectory) return 0 to 0L
+        var files = 0
+        var bytes = 0L
+        for (file in dir.listFiles().orEmpty()) {
+            if (!file.isFile) continue
+            val size = file.length()
+            if (file.delete()) {
+                files++
+                bytes += size
+            }
+        }
+        return files to bytes
+    }
+
     companion object {
         const val PREFIX = "logs/calls/"
         private const val USAGE_PREFIX = "usage/"

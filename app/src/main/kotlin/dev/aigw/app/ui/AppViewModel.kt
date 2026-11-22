@@ -18,6 +18,7 @@ import dev.aigw.app.data.ApkInstaller
 import dev.aigw.app.data.KeepAlive
 import dev.aigw.app.data.KeepAliveStatus
 import dev.aigw.app.gatewayEngine
+import dev.aigw.app.updateApkDir
 import dev.aigw.app.ui.theme.ThemeMode
 import dev.aigw.app.ui.theme.defaultAppColors
 import dev.aigw.app.ui.theme.formatHex
@@ -60,6 +61,7 @@ import dev.aigw.core.update.UpdateRepository
 import dev.aigw.core.update.UpdateSources
 import dev.aigw.core.usage.CallRecord
 import dev.aigw.core.usage.LogLine
+import dev.aigw.core.usage.StorageAudit
 import dev.aigw.core.usage.StorageReport
 import dev.aigw.core.usage.UsageStats
 import kotlinx.coroutines.Dispatchers
@@ -636,6 +638,16 @@ class AppViewModel(
             }
             _state.value = _state.value.copy(storage = report, storedCalls = count)
         }
+    }
+
+    /**
+     * 清理缓存类占用（更新包、崩溃日志、完整原文溢出），保留调用记录与用量。
+     *
+     * 这是「空间吃紧但不想丢历史」时的默认动作：删掉的只是能从记录重新生成或无关紧要的副本。
+     */
+    fun clearCaches() = action(alsoRefreshStorage = true) {
+        val (bytes, files) = engine.clearCaches()
+        if (files == 0L) "没有可清理的缓存" else "已清理 ${StorageAudit.formatSize(bytes)}（$files 个文件）"
     }
 
     fun refreshModels(silent: Boolean = false, forceRefresh: Boolean = false) {
@@ -1967,8 +1979,15 @@ class AppViewModel(
         }
         cancelRequested = false
         _state.value = _state.value.copy(updateDownload = UpdateDownload.Probing)
-        val target = File(File(app.cacheDir, "updates").apply { mkdirs() }, "update-${info.version}.apk")
+        val target = File(app.updateApkDir().apply { mkdirs() }, "update-${info.version}.apk")
         updateJob = viewModelScope.launch {
+            // 下载前先清掉旧包：每次升级都留一份 APK，几轮下来就是几十 MB。
+            // 放在 IO 线程做，避免目录很大时卡主线程。
+            withContext(Dispatchers.IO) {
+                app.updateApkDir().listFiles()?.forEach { old ->
+                    if (old.isFile && old.absolutePath != target.absolutePath) old.delete()
+                }
+            }
             // 线路按实测带宽降序；全部探测失败时退回内置顺序逐一尝试
             val candidates = withContext(Dispatchers.IO) {
                 MirrorSpeedTest().measure(apkUrl, UpdateSources.DOWNLOAD)

@@ -13,6 +13,7 @@ import dev.aigw.core.gateway.GatewayEngine
 import dev.aigw.core.store.BatchedKeyValueStore
 import dev.aigw.core.store.KeyValueStore
 import dev.aigw.core.store.SplitKeyValueStore
+import java.io.File
 
 /**
  * 应用入口。
@@ -38,6 +39,24 @@ class AiGatewayApp : Application() {
             // 完整原文溢出到缓存目录（系统空间不足时可回收）：加密存储只留 8K 摘要，
             // 详情页打开时按记录 id 回读全文
             spillDir = java.io.File(cacheDir, "call-fulltext"),
+            // 更新包与崩溃日志是文件系统数据，不在键值存储里，但是占用的真正大头，
+            // 交给引擎一起统计与清理
+            storageDirs = {
+                listOf(
+                    dev.aigw.core.usage.StorageAudit.DirectoryGroup(
+                        name = dev.aigw.core.usage.StorageReport.NAME_UPDATE_APK,
+                        dir = updateApkDir(),
+                        detail = "应用内更新下载的安装包，安装后即可删除",
+                        clearable = true,
+                    ),
+                    dev.aigw.core.usage.StorageAudit.DirectoryGroup(
+                        name = dev.aigw.core.usage.StorageReport.NAME_CRASH,
+                        dir = CrashReporter.crashDir(this),
+                        detail = "崩溃现场日志，最多 10 份",
+                        clearable = true,
+                    ),
+                )
+            },
         )
         engine = created
         getSystemService<NotificationManager>()?.apply {
@@ -100,7 +119,13 @@ class AiGatewayApp : Application() {
             .onFailure { Log.w(TAG, "日志存储拆分迁移失败，下次启动重试", it) }
         return BatchedKeyValueStore(split)
     }
+
+    /** 应用内更新的安装包缓存目录（与 [AppViewModel.downloadUpdate] 写入的位置一致）。 */
+    fun updateApkDir(): File = File(cacheDir, "updates")
 }
+
+/** 应用内更新的安装包缓存目录；见 [AiGatewayApp.updateApkDir]。 */
+fun Context.updateApkDir(): File = (applicationContext as AiGatewayApp).updateApkDir()
 
 /**
  * 取得进程内唯一的网关引擎。

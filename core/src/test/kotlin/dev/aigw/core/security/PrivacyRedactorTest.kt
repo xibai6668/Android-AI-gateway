@@ -121,4 +121,55 @@ class PrivacyRedactorTest {
         assertEquals("", restorer.flush())
         assertTrue(redacted.isNotEmpty())
     }
+
+    @Test
+    fun `正文里的伪造占位符不会被还原成密钥`() {
+        val key = "sk-abcdefghijklmnopqrstuvwxyz"
+        // 外部可以凭旧版顺序编号写出 __AIGW_1__；它不能被当成「这里有密钥的记号」
+        val forged = "__AIGW_1__"
+        val (redacted, session) = redactor.redactOpenAiBody(bodyOf("$key 与 $forged"), enabled = true)
+
+        val out = contentsOf(redacted)[0]
+        assertFalse(out.contains(key))
+        // 伪造的记号原样保留，既不会被替换，也不会在还原时变成密钥
+        assertTrue(out.contains(forged))
+        assertEquals("$key 与 $forged", session.restore(out))
+    }
+
+    @Test
+    fun `同一把密钥在不同请求里得到同一个占位符`() {
+        val key = "sk-abcdefghijklmnopqrstuvwxyz"
+        val first = contentsOf(redactor.redactOpenAiBody(bodyOf(key), enabled = true).first)[0]
+        val second = contentsOf(redactor.redactOpenAiBody(bodyOf("前缀 $key 后缀"), enabled = true).first)[0]
+
+        assertTrue(first.startsWith(PrivacyRedactor.PLACEHOLDER_PREFIX))
+        // 跨请求稳定：多轮对话里模型看到的始终是同一个记号
+        assertEquals(first, second.removePrefix("前缀 ").removeSuffix(" 后缀"))
+    }
+
+    @Test
+    fun `正文已含同名记号时改用更长的哈希`() {
+        val key = "sk-abcdefghijklmnopqrstuvwxyz"
+        val short = contentsOf(redactor.redactOpenAiBody(bodyOf(key), enabled = true).first)[0]
+
+        // 正文自己写了这个记号：若沿用，还原时会把这段正文一起换成密钥
+        val (redacted, session) = redactor.redactOpenAiBody(bodyOf("$key 与 $short"), enabled = true)
+        val out = contentsOf(redacted)[0]
+        val used = out.substringBefore(" 与 ")
+
+        assertTrue(used.startsWith(PrivacyRedactor.PLACEHOLDER_PREFIX))
+        assertTrue(used != short, "不应与正文里已有的记号撞车")
+        assertTrue(out.endsWith(short), "正文里的记号必须原样保留")
+        assertEquals("$key 与 $short", session.restore(out))
+    }
+
+    @Test
+    fun `日志脱敏与出网请求使用同一套占位符`() {
+        val key = "sk-abcdefghijklmnopqrstuvwxyz"
+        val outbound = contentsOf(redactor.redactOpenAiBody(bodyOf(key), enabled = true).first)[0]
+
+        val logged = redactor.redactPlainText("Authorization: $key")
+        assertEquals("Authorization: $outbound", logged)
+        assertFalse(logged.contains(key))
+    }
 }

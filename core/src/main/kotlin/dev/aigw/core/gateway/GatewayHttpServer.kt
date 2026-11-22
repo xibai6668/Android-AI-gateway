@@ -456,7 +456,7 @@ class GatewayHttpServer(
         val failoverCfg = engine.failoverSettings()
         if (engine.verboseLogging()) {
             log("收到请求 /v1/chat/completions：model=$requestedModel stream=$streaming，已解析路由 ${primaryRoute.providerId}/${primaryRoute.model}")
-            engine.logVerbose("请求原文", body)
+            engine.logVerbose("请求原文", redactForLog(body))
         }
 
         // 首选路由优先；失败后做同款模型 Failover
@@ -2177,8 +2177,12 @@ class GatewayHttpServer(
             .mapNotNull { key -> session.headers[key]?.let { "$key=$it" } }
             .joinToString(" ")
         log("请求体异常（$reason）：$headers 已收 ${body.length} 字符，前 256 字节=${body.take(256).escapeControl()}")
-        engine.logVerbose("请求原文（$reason）", body)
+        engine.logVerbose("请求原文（$reason）", redactForLog(body))
     }
+
+    /** 落盘前脱敏：详细日志里的请求原文同样不能留下明文密钥。 */
+    private fun redactForLog(text: String): String =
+        if (engine.securitySettings().privacyRedactionEnabled) engine.privacyRedactor.redactPlainText(text) else text
 
     private fun String.escapeControl(): String = buildString {
         for (ch in this@escapeControl) {
