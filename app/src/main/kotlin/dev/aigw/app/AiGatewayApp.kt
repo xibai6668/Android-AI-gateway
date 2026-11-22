@@ -4,11 +4,15 @@ import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.util.Log
 import androidx.core.content.getSystemService
 import dev.aigw.app.data.CrashReporter
 import dev.aigw.app.data.EncryptedKeyValueStore
 import dev.aigw.app.data.LanAddresses
 import dev.aigw.core.gateway.GatewayEngine
+import dev.aigw.core.store.BatchedKeyValueStore
+import dev.aigw.core.store.KeyValueStore
+import dev.aigw.core.store.SplitKeyValueStore
 
 /**
  * 应用入口。
@@ -27,7 +31,7 @@ class AiGatewayApp : Application() {
         // 必须最早安装：晚于任何可能崩溃的初始化就抓不到那次崩溃
         CrashReporter.install(this)
         val created = GatewayEngine(
-            store = EncryptedKeyValueStore(this),
+            store = openStore(),
             lanAddressProvider = { LanAddresses.current(this) },
             // 调用记录预载与过期清理改走后台，冷启动首帧不再等全量解密
             preloadCallLogs = false,
@@ -67,6 +71,34 @@ class AiGatewayApp : Application() {
 
         /** 实时状态通知渠道（Android 16 Live Updates 走这里）。 */
         const val LIVE_CHANNEL_ID = "aigw_live"
+
+        private const val TAG = "AiGatewayApp"
+    }
+
+    /**
+     * 组装落盘链路。
+     *
+     * 两层套在同一个加密实现上，各解一个具体问题：
+     * - [SplitKeyValueStore]：加密文件每次提交都整份重写，把体积大的调用记录与用量拆到
+     *   独立文件，防止日志增长拖慢凭证与设置的读写；
+     * - [BatchedKeyValueStore]：日志类写入不再每条同步落盘，而是合并后由后台线程提交，
+     *   请求线程不再等 fsync。
+     *
+     * 注意拆分只对「路由到日志文件」的前缀生效，凭证与设置仍留在主文件同步写——
+     * 那部分数据量小且不能丢，用合并换来的延迟不值得。
+     */
+    private fun openStore(): KeyValueStore {
+        val main = EncryptedKeyValueStore(this)
+        val logs = EncryptedKeyValueStore(this, EncryptedKeyValueStore.LOG_FILE_NAME)
+        val split = SplitKeyValueStore(
+            routes = SplitKeyValueStore.LOG_STORE_PREFIXES.associateWith { logs },
+            fallback = main,
+        )
+        // 旧版本把日志与用量存在主文件里：不搬的话升级后调用记录与用量会全空。
+        // 搬运是幂等的，且带标记，只在首次启动多付一次扫描代价。
+        runCatching { split.migrateLegacy() }
+            .onFailure { Log.w(TAG, "日志存储拆分迁移失败，下次启动重试", it) }
+        return BatchedKeyValueStore(split)
     }
 }
 

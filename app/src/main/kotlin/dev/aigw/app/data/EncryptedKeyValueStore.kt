@@ -12,8 +12,15 @@ import dev.aigw.core.store.KeyValueStore
  *
  * 写操作走 `commit()` 而不是 `apply()`：换 token 后需要立刻回读新值，
  * 异步写会让紧随其后的读拿到旧数据。
+ *
+ * [fileName] 决定写入哪个加密文件：加密 SharedPreferences 每次提交都会整份重写，
+ * 把体积大的调用记录与凭证放进同一个文件，会让每次落盘都背上重写全部日志的代价。
+ * 因此 App 侧开出两个实例，再由 [dev.aigw.core.store.SplitKeyValueStore] 按前缀路由。
  */
-class EncryptedKeyValueStore(context: Context) : KeyValueStore {
+class EncryptedKeyValueStore(
+    context: Context,
+    private val fileName: String = FILE_NAME,
+) : KeyValueStore {
 
     private val prefs: SharedPreferences = open(context.applicationContext)
 
@@ -45,7 +52,7 @@ class EncryptedKeyValueStore(context: Context) : KeyValueStore {
             // 密钥随备份/换机丢失（或密钥被系统永久作废）时旧数据已无法解密，
             // 此时清掉重建才是唯一可行的自愈方式，否则每次启动都崩。
             Log.w(TAG, "加密存储密钥失效，清空并重建（原有数据无法解密）", e)
-            context.deleteSharedPreferences(FILE_NAME)
+            context.deleteSharedPreferences(fileName)
             create(context, masterKey)
         }
     }
@@ -82,14 +89,19 @@ class EncryptedKeyValueStore(context: Context) : KeyValueStore {
     private fun create(context: Context, masterKey: MasterKey): SharedPreferences =
         EncryptedSharedPreferences.create(
             context,
-            FILE_NAME,
+            fileName,
             masterKey,
             EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
             EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
         )
 
-    private companion object {
+    companion object {
+        /** 主文件：凭证、设置、密钥配置与登录中间态。 */
         const val FILE_NAME = "aigw.store"
-        const val TAG = "EncryptedKeyValueStore"
+
+        /** 日志文件：调用记录、用量聚合、密钥台账。单独成文件，避免拖慢主文件的每次提交。 */
+        const val LOG_FILE_NAME = "aigw.logs"
+
+        private const val TAG = "EncryptedKeyValueStore"
     }
 }

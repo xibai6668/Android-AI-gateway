@@ -114,7 +114,9 @@
 | `provider/loomy/` | 讯飞 Loomy（HTTP 200 + 业务码陷阱）| 模型目录 `modalities.input` 的 audio 位要采集，转写靠它路由 |
 | `provider/raccoon/` | 商汤小浣熊（`xiaohuanxiong.com`，web 通道，网页回调登录）| OpenAI 结构包在 `data` 里、`delta` 是字符串；字段用标准名（v2 是 LiteLLM 层，`max_new_tokens` 会被 500 拒）；有积分余额接口 |
 | `provider/custom/` | 任意 OpenAI 兼容中转站 | 一个 key = 一个账号 |
-| `store/KeyValueStore.kt` | 存储抽象（App 侧用 EncryptedSharedPreferences 实现） | |
+| `store/KeyValueStore.kt` | 存储抽象（App 侧用 EncryptedSharedPreferences 实现）；`flush()` 默认空实现，供合并提交型存储强刷 | |
+| `store/BatchedKeyValueStore.kt` | 把 `logs/`、`usage/`、`clientkey/` 写入合并后交后台线程提交；凭证/设置/登录态仍同步落盘 | **读己所写**（未提交值先查内存）、**不丢写**（提交成功才按值摘除）、提交失败留待下轮不重试风暴；代价是提交窗口内的数据只存在内存里，靠 `flush()` 兜底 |
+| `store/SplitKeyValueStore.kt` | 按前缀把键路由到不同存储：日志与用量独立成文件，凭证/设置留主文件 | 每个加密文件每次提交都整份重写，日志与凭证同文件会让改一条设置也背上重写几 MB；`migrateLegacy()` 幂等搬运旧数据，标记固定在兜底存储 |
 | `security/` | `SecuritySettings`（脱敏/限速开关）、`RequestSanitizer`（system 提示词零宽字符脱敏 + 出网取证）、`AccountRateLimiter`（账号级最小间隔 + 抖动） | 只改 system 消息，不碰 user 输入 |
 | `usage/` | `CallLogStore`（调用记录，每条一键；超出 8K 摘要的完整原文溢出到缓存目录供详情页回读）、`RequestLog`（环形运行日志，容量可运行期调整）、`StorageAudit`（按前缀统计占用） | 记录有容量淘汰与保留天数清理；溢出文件随删除/清空/过期清理/截断一并回收；**请求与尝试分层计量**（`tries`/`retried` 是一次请求内的尝试数，不是请求数） |
 | `util/` | `CappedStringBuilder`（边收边截）、`CountFormat`、`JsonAccess`、`TimeWindow` | |
@@ -124,11 +126,11 @@
 
 | 文件 | 职责 |
 |---|---|
-| `AiGatewayApp.kt` | Application：构造引擎（单例）+ 通知渠道 |
+| `AiGatewayApp.kt` | Application：构造引擎（单例）+ 通知渠道；`openStore()` 组装 `SplitKeyValueStore` + `BatchedKeyValueStore` 并执行一次旧数据迁移 |
 | `service/GatewayService.kt` | 前台服务：`startForeground` 必须在 `onStartCommand` 第一行（系统超时 5s 强杀），START_NOT_STICKY 不自重建（自重建是灰色软件检测特征），WakeLock+WifiLock |
 | `service/GatewayTileService.kt` | 控制中心磁贴开关 |
 | `service/FloatingKeepAlive.kt` | 可选的「悬浮窗保活」：`TYPE_APPLICATION_OVERLAY` 小悬浮标签（可拖动、点按回应用），由前台服务按开关启停 |
-| `data/EncryptedKeyValueStore.kt` | 写操作用 `commit()`（同步）而非 `apply()`——换 token 后必须立刻可读 |
+| `data/EncryptedKeyValueStore.kt` | 写操作用 `commit()`（同步）而非 `apply()`——换 token 后必须立刻可读；`fileName` 参数化以开出主文件（`aigw.store`）与日志文件（`aigw.logs`）两个加密库 |
 | `data/ApkInstaller.kt` | 应用内更新安装：校验安装包版本、「安装未知应用」权限引导、FileProvider 交付系统安装器 |
 | `ui/ModelsScreen.kt` | 模型列表：点击复制、Q弹测速按钮 |
 | `ui/ResilienceScreen.kt` | 并发与容错设置页：并发闸门参数、重试退避、熔断器（每个对话框一个参数组） |

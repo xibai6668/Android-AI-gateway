@@ -1913,6 +1913,16 @@ class GatewayHttpServer(
         metric("aigw_tokens_cached_today", "gauge", "今日命中前缀缓存的 token", today.cachedTokens)
         metric("aigw_cost_usd_today", "gauge", "今日估算成本（美元）", today.costMicros / 1_000_000.0)
 
+        // 存储落盘指标：排障「为什么变慢」时先看这两项。pending 持续不为 0 说明写入速度
+        // 跟不上产生速度；flush 耗时随存储体量线性增长则说明单文件全量重写的成本已经压不住了。
+        engine.storeFlushStats()?.let { flush ->
+            metric("aigw_store_pending_writes", "gauge", "尚未落盘的待提交写入数", flush.pendingWrites)
+            metric("aigw_store_flushes_total", "counter", "累计落盘提交次数", flush.flushes)
+            metric("aigw_store_flush_failures_total", "counter", "落盘失败累计次数", flush.failures)
+            metric("aigw_store_last_flush_keys", "gauge", "最近一次提交写入的键数", flush.lastBatchKeys)
+            metric("aigw_store_last_flush_ms", "gauge", "最近一次提交耗时（毫秒）", flush.lastFlushMillis)
+        }
+
         // 供应商级指标：账号数与熔断状态，排障时最常看的两个维度
         sb.append("# HELP aigw_provider_accounts 各供应商的账号总数\n")
         sb.append("# TYPE aigw_provider_accounts gauge\n")
@@ -1942,6 +1952,16 @@ class GatewayHttpServer(
         if (!isLocalhost(session) && !authorized(session)) return unauthorized(session)
         val root = JsonObject()
         root.addProperty("queue", "${queueSnapshot().first} 在途 / ${queueSnapshot().second} 排队")
+        // 落盘状态：并发变慢时先看这两项，pending 持续不为 0 或提交耗时暴涨就是存储堵了，
+        // 而不是上游慢。
+        engine.storeFlushStats()?.let { flush ->
+            root.addProperty(
+                "store",
+                "待提交 ${flush.pendingWrites} 写 / ${flush.pendingDeletes} 删，" +
+                    "已提交 ${flush.flushes} 次（失败 ${flush.failures}），" +
+                    "最近一次 ${flush.lastBatchKeys} 键 / ${flush.lastFlushMillis}ms",
+            )
+        }
         val window = JsonObject()
         engine.healthWindowOf().snapshot().forEach { (key, summary) ->
             val obj = JsonObject()

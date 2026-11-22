@@ -763,9 +763,16 @@ class GatewayEngine(
             server?.stop()
             server = null
             requestLog.flush()
+            // 停止是最后一个能把待提交写入落盘的机会：服务被用户/系统停掉后
+            // 进程可能很快回收，合并窗口里的调用记录与用量会跟着丢。
+            store.flush()
             log("网关已停止")
         }
     }
+
+    /** 存储待提交状态（仅合并提交型存储有内容）；供 `/metrics` 与健康页展示。 */
+    fun storeFlushStats(): dev.aigw.core.store.FlushStats? =
+        (store as? dev.aigw.core.store.BatchedKeyValueStore)?.flushStats()
 
     fun isRunning(): Boolean = server != null
 

@@ -12,6 +12,14 @@ interface KeyValueStore {
     fun delete(key: String)
     /** 返回该前缀下的全部键。 */
     fun keys(prefix: String): List<String>
+
+    /**
+     * 把尚未落盘的写入提交出去。
+     *
+     * 同步实现的存储（[FileKeyValueStore]）本就是写完即落盘，这里是空操作；
+     * 合并提交的存储（[BatchedKeyValueStore]）在进程退出、服务停止时靠它保证不丢最后一波写入。
+     */
+    fun flush() = Unit
 }
 
 /** 以文件落盘的实现：键里的 `/` 会映射成子目录。 */
