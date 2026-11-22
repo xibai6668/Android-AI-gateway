@@ -172,4 +172,82 @@ class PrivacyRedactorTest {
         assertEquals("Authorization: $outbound", logged)
         assertFalse(logged.contains(key))
     }
+
+    @Test
+    fun `手机号会被替换`() {
+        val phones = listOf("13800138000", "+8613800138000", "8615901234567", "19912345678")
+        val (redacted, session) = redactor.redactOpenAiBody(bodyOf(*phones.toTypedArray()), enabled = true)
+
+        val out = contentsOf(redacted)
+        for ((i, phone) in phones.withIndex()) {
+            assertFalse(out[i].contains(phone), "第 $i 个手机号未被替换：${out[i]}")
+            assertEquals(phone, session.restore(out[i]))
+        }
+    }
+
+    @Test
+    fun `身份证会被替换`() {
+        // 18 位带校验位，15 位老式；后者只能靠生日排除误伤
+        val ids = listOf("11010519491231002X", "440524188001010014", "110105491231002")
+        val (redacted, session) = redactor.redactOpenAiBody(bodyOf(*ids.toTypedArray()), enabled = true)
+
+        val out = contentsOf(redacted)
+        for ((i, id) in ids.withIndex()) {
+            assertFalse(out[i].contains(id), "第 $i 个身份证未被替换：${out[i]}")
+            assertEquals(id, session.restore(out[i]))
+        }
+    }
+
+    @Test
+    fun `银行卡会被替换`() {
+        val cards = listOf("4111111111111111", "6217000010000004", "6222021234567890128")
+        val (redacted, session) = redactor.redactOpenAiBody(bodyOf(*cards.toTypedArray()), enabled = true)
+
+        val out = contentsOf(redacted)
+        for ((i, card) in cards.withIndex()) {
+            assertFalse(out[i].contains(card), "第 $i 个卡号未被替换：${out[i]}")
+            assertEquals(card, session.restore(out[i]))
+        }
+    }
+
+    @Test
+    fun `位数相同但校验不过的数字不被误伤`() {
+        // 18 位订单号、16 位哈希片段、时间戳、长整型常量：位数像但校验位不对
+        val plain = listOf(
+            "订单号 110105194912310021 已发货",
+            "hash=1234567890123456",
+            "timestamp=1750000000000",
+            "val id = 440524188001010019L",
+            "版本 202401011200001234",
+        )
+        val (redacted, session) = redactor.redactOpenAiBody(bodyOf(*plain.toTypedArray()), enabled = true)
+
+        assertFalse(session.active, "不该命中任何规则")
+        assertEquals(plain, contentsOf(redacted))
+    }
+
+    @Test
+    fun `15 位老身份证靠省级码与生日识别`() {
+        // 130105 + 49/12/31 + 002：河北，真老证
+        val real = "130105491231002"
+        // 前两位不是省级码（20 / 99），即使月日像生日也不认
+        val fakeProvince = listOf("201231491231002", "991231491231002")
+
+        val (redacted, session) = redactor.redactOpenAiBody(bodyOf(real), enabled = true)
+        assertFalse(contentsOf(redacted)[0].contains(real))
+        assertEquals(real, session.restore(contentsOf(redacted)[0]))
+
+        val (untouched, inactive) = redactor.redactOpenAiBody(bodyOf(*fakeProvince.toTypedArray()), enabled = true)
+        assertFalse(inactive.active, "省级码不合法不应命中")
+        assertEquals(fakeProvince, contentsOf(untouched))
+    }
+
+    @Test
+    fun `手机号不会从更长的数字串中间截取`() {
+        // 前后紧贴数字时不能截出 11 位：那会把订单号改残
+        val text = "流水号 9138001380001234567890"
+        val (redacted, session) = redactor.redactOpenAiBody(bodyOf(text), enabled = true)
+        assertFalse(session.active)
+        assertEquals(text, contentsOf(redacted)[0])
+    }
 }
