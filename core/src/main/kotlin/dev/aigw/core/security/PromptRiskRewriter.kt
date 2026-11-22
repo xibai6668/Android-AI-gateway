@@ -67,7 +67,7 @@ class PromptRiskRewriter(
          * 工具体名（如 codemode）不做改写——改了模型可能叫不出那个工具，得不偿失。
          */
         val builtinRules: List<PromptRule> = listOf(
-            // ---------------------------------------------------------------- Antigravity：客户端身份声明
+            // ---------------------------------------------------------------- Antigravity 专有
             // 反重力对「浏览器上下文说明」有字面指纹：命中后伪装成 429 RESOURCE_EXHAUSTED。
             // 上游会先做大小写归一与空白折叠再匹配，所以整句等义改写即可，不必逐字符打散。
             PromptRule(
@@ -87,80 +87,84 @@ class PromptRiskRewriter(
                 pattern = "the user did not write",
                 replacement = "the operator did not author",
             ),
-            // Claude Code 的官方身份声明；去掉 official 即不再命中。
-            // 真实提示词里撇号可能是直引号或弯引号，两种都要覆盖。
-            PromptRule(
-                name = "Antigravity/Claude Code 身份声明",
-                pattern = "You are Claude Code, Anthropic's official CLI for Claude",
-                replacement = "You are Claude Code, Anthropic's CLI for Claude",
-            ),
-            PromptRule(
-                name = "Antigravity/Claude Code 身份声明（弯引号）",
-                pattern = "You are Claude Code, Anthropic\u2019s official CLI for Claude",
-                replacement = "You are Claude Code, Anthropic\u2019s CLI for Claude",
-            ),
-            // Codex CLI 的项目描述句；补上冠词并改写成不同句式即可避开。
-            PromptRule(
-                name = "Antigravity/Codex CLI 项目描述",
-                pattern = "Codex CLI is an open source project led by OpenAI.",
-                replacement = "The Codex CLI is an open source project maintained by OpenAI.",
-            ),
             // opencode 在身份句后的同位语续写，单独出现也会触发。
             PromptRule(
                 name = "Antigravity/coding agent harness 同位语",
                 pattern = "a coding agent harness",
                 replacement = "a coding assistant environment",
             ),
-            // Anthropic 计费头，出现在 system 文本里属于客户端特征。
+            // ---------------------------------------------------------------- WorkBuddy / CodeBuddy 专有
+            // 以下来自 CodeBuddyProvider 的 FLAGGED_TEXT / HOST_FINGERPRINTS，是 WorkBuddy 上游的检测点。
+            // DSH（DeepSeek Harness）的宿主标识，上游按「连续词组」匹配，拆开即失效。
             PromptRule(
-                name = "Antigravity/计费头残留",
-                pattern = "x-anthropic-billing-header",
-                replacement = "x-client-header",
-            ),
-            // ---------------------------------------------------------------- Antigravity：宿主指纹
-            // DSH（DeepSeek Harness）的宿主标识，按连续词组匹配。
-            PromptRule(
-                name = "Antigravity/DSH 宿主标识 Runtime",
+                name = "WorkBuddy/DSH 宿主标识 Runtime",
                 pattern = "DeepSeek Runtime",
                 replacement = "DSH runtime",
             ),
             PromptRule(
-                name = "Antigravity/DSH 宿主标识 Harness",
+                name = "WorkBuddy/DSH 宿主标识 Harness",
                 pattern = "DeepSeek Harness",
                 replacement = "DSH harness",
             ),
-            // 同上，DSH 的另一处高频词组。注意这条影响面最大：project root 是通用说法，
-            // 正常代码说明里也常见，如果发现模型对项目结构的理解变差，可单独关掉这条所在预设。
-            PromptRule(
-                name = "Antigravity/project root 词组",
-                pattern = "project root",
-                replacement = "project directory",
-            ),
-            // ---------------------------------------------------------------- WorkBuddy / CodeBuddy
             // WorkBuddy 的系统首行带上了模型名，被上游当作非官方客户端声明。
             PromptRule(
                 name = "WorkBuddy/系统首行模型声明",
                 pattern = "This conversation is powered by",
                 replacement = "Selected model:",
             ),
-            // CodeBuddy 上游按 DSH 宿主指纹判断，见 CodeBuddyProvider 的同名处理；
-            // 这里提供同样的整句级兜底，供用户关闭内置处理时自行启用。
-            PromptRule(
-                name = "WorkBuddy/Codex 桌面上下文标题",
-                pattern = "# Codex desktop context",
-                replacement = "# Desktop application context",
-            ),
-            // 上游内部错误码的回显，请求体出现即整单拦（与 CodeBuddyProvider 的 HOST_FINGERPRINTS 一致）。
+            // 上游内部错误码的回显，请求体出现即整单拦。
             PromptRule(
                 name = "WorkBuddy/内部错误码回显",
                 pattern = "11-128",
                 replacement = "11 - 128",
             ),
+            // ---------------------------------------------------------------- 通用：两家都会查的第三方客户端指纹
+            // 这些条目同时出现在 WorkBuddy 的 FLAGGED_TEXT 和反重力的检测里，
+            // 放单独一组：否则关掉其中一个供应商的预设会把另一家的保护一起带走。
+            //
+            // Claude Code 的官方身份声明；去掉 official 即不再命中。
+            // 真实提示词里撇号可能是直引号或弯引号，两种都要覆盖。
+            PromptRule(
+                name = "通用/Claude Code 身份声明",
+                pattern = "You are Claude Code, Anthropic's official CLI for Claude",
+                replacement = "You are Claude Code, Anthropic's CLI for Claude",
+            ),
+            PromptRule(
+                name = "通用/Claude Code 身份声明（弯引号）",
+                pattern = "You are Claude Code, Anthropic\u2019s official CLI for Claude",
+                replacement = "You are Claude Code, Anthropic\u2019s CLI for Claude",
+            ),
+            // Codex CLI 的项目描述句；补上冠词并改写成不同句式即可避开。
+            PromptRule(
+                name = "通用/Codex CLI 项目描述",
+                pattern = "Codex CLI is an open source project led by OpenAI.",
+                replacement = "The Codex CLI is an open source project maintained by OpenAI.",
+            ),
+            // Anthropic 计费头，出现在 system 文本里属于客户端特征。
+            PromptRule(
+                name = "通用/计费头残留",
+                pattern = "x-anthropic-billing-header",
+                replacement = "x-client-header",
+            ),
             // git 分支说明的固定括注，属于 Claude Code 提示词片段。
             PromptRule(
-                name = "WorkBuddy/主分支括注",
+                name = "通用/主分支括注",
                 pattern = "Main branch (you will usually use this for PRs)",
                 replacement = "Main branch (usually the base for PRs)",
+            ),
+            // CodeBuddy 与反重力都会查的宿主指纹。
+            // 注意这条影响面最大：project root 是通用说法，正常代码说明里也常见，
+            // 如果发现模型对项目结构的理解变差，可在界面上单独关掉。
+            PromptRule(
+                name = "通用/project root 词组",
+                pattern = "project root",
+                replacement = "project directory",
+            ),
+            // Codex 的桌面上下文标题，CodeBuddy 侧要求改成中性写法。
+            PromptRule(
+                name = "通用/Codex 桌面上下文标题",
+                pattern = "# Codex desktop context",
+                replacement = "# Desktop application context",
             ),
         )
 
