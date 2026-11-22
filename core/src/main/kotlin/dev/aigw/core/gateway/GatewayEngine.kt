@@ -431,7 +431,11 @@ class GatewayEngine(
         migrateLegacyProxyExclusions()
         installProxy()
         sanitizer.reloadPipeline(securitySettings.extraWords)
-        promptRewriter.reload(securitySettings.effectivePromptPresets(), securitySettings.promptRewriteRules)
+        promptRewriter.reload(
+            securitySettings.effectivePromptPresets(),
+            securitySettings.promptRewriteRules,
+            securitySettings.promptRewriteDisabledRules.toSet(),
+        )
         lastAutoPurgeDay = nowMillis() / DAY_MILLIS
         if (preloadCallLogs) {
             runCatching { purgeExpiredRecords() }
@@ -472,14 +476,22 @@ class GatewayEngine(
         securitySettings = updated
         store.write(dev.aigw.core.security.SecuritySettings.STORE_KEY, updated.toJson().toString())
         sanitizer.reloadPipeline(updated.extraWords)
-        promptRewriter.reload(updated.effectivePromptPresets(), updated.promptRewriteRules)
+        promptRewriter.reload(
+            updated.effectivePromptPresets(),
+            updated.promptRewriteRules,
+            updated.promptRewriteDisabledRules.toSet(),
+        )
         log("安全防护设置已更新（脱敏=${if (updated.sanitizeEnabled) "开启" else "关闭"}，限速=${updated.minIntervalMillis}ms，抖动=${updated.jitterMillis}ms）")
     }
 
     /** 重新加载脱敏处理链与规则词表。 */
     fun reloadSanitizerPipeline(): Int {
         sanitizer.reloadPipeline(securitySettings.extraWords)
-        promptRewriter.reload(securitySettings.effectivePromptPresets(), securitySettings.promptRewriteRules)
+        promptRewriter.reload(
+            securitySettings.effectivePromptPresets(),
+            securitySettings.promptRewriteRules,
+            securitySettings.promptRewriteDisabledRules.toSet(),
+        )
         val count = sanitizer.currentRulesCount()
         log("反审核脱敏处理链已重新加载，当前生效规则词汇数：$count")
         return count

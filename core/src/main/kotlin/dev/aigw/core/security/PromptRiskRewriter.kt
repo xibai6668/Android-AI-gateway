@@ -167,6 +167,70 @@ class PromptRiskRewriter(
         /** 按预设分组，供 UI 渲染。 */
         fun builtinRuleSets(): Map<String, List<PromptRule>> =
             builtinRules.groupBy { it.setName }
+
+        /** 导出文件格式版本；将来结构变动时用于拒绝旧版本文件。 */
+        const val EXPORT_VERSION = 1
+
+        /**
+         * 把一组规则编码成可分享的 JSON。
+         *
+         * 只导出规则本身，不带开关状态与预设开关：导入方拿到的是「一套词表」，
+         * 怎么启用由对方自己在界面里决定。
+         */
+        fun encodeRules(rules: List<PromptRule>): String {
+            val obj = com.google.gson.JsonObject().apply {
+                addProperty("version", EXPORT_VERSION)
+                add(
+                    "rules",
+                    com.google.gson.JsonArray().apply {
+                        for (r in rules) {
+                            add(
+                                com.google.gson.JsonObject().apply {
+                                    addProperty("name", r.name)
+                                    addProperty("pattern", r.pattern)
+                                    addProperty("replacement", r.replacement)
+                                },
+                            )
+                        }
+                    },
+                )
+            }
+            return obj.toString()
+        }
+
+        /**
+         * 解析导入文件。
+         *
+         * 宽容处理：接受 `{version, rules:[...]}`，也接受裸数组 `[...]`，
+         * 因为用户手写或从别处粘过来的文件未必带外层包装。
+         *
+         * @return 解析出的规则；格式不可识别时返回 null（调用方报错给用户）。
+         */
+        fun decodeRules(raw: String): List<PromptRule>? {
+            val text = raw.trim()
+            if (text.isEmpty()) return null
+            val element = runCatching { com.google.gson.JsonParser.parseString(text) }.getOrNull() ?: return null
+            val array = when {
+                element.isJsonArray -> element.asJsonArray
+                element.isJsonObject -> element.asJsonObject.getAsJsonArray("rules") ?: return null
+                else -> return null
+            }
+            val parsed = mutableListOf<PromptRule>()
+            for (item in array) {
+                val obj = runCatching { item.asJsonObject }.getOrNull() ?: continue
+                val pattern = obj.get("pattern")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty()
+                if (pattern.isEmpty()) continue
+                parsed.add(
+                    PromptRule(
+                        name = obj.get("name")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty()
+                            .ifEmpty { "导入/${pattern.take(24)}" },
+                        pattern = pattern,
+                        replacement = obj.get("replacement")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty(),
+                    ),
+                )
+            }
+            return parsed
+        }
     }
 
     private val evidenceHistory = ConcurrentLinkedDeque<PromptRewriteEvidence>()
@@ -185,10 +249,10 @@ class PromptRiskRewriter(
 
     /** 重新装配规则链。 */
     @Synchronized
-    fun reload(presets: Set<String>, custom: List<PromptRule>) {
+    fun reload(presets: Set<String>, custom: List<PromptRule>, disabledBuiltin: Set<String> = emptySet()) {
         enabledPresets = presets
         customRules = custom
-        activeRules = builtinRules.filter { it.setName in presets } + custom
+        activeRules = builtinRules.filter { it.setName in presets && it.name !in disabledBuiltin } + custom
     }
 
     fun currentRulesCount(): Int = activeRules.size

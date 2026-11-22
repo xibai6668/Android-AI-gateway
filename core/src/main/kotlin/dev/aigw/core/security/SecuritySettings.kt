@@ -39,12 +39,23 @@ data class SecuritySettings(
     val promptRewriteEnabled: Boolean = true,
     /** 启用的内置规则预设（按 [PromptRiskRewriter.builtinRules] 的 setName 分组）。 */
     val promptRewritePresets: List<String> = emptyList(),
+    /**
+     * 被单独关掉的内置规则（按 [PromptRule.name] 记录）。
+     *
+     * 内置规则写死在代码里，无法真正删除；用户「删除」一条内置规则时记在这里，
+     * 装配规则链时跳过它。这样上游改了检测点、我们后续更新内置规则表时，
+     * 用户的禁用选择依然保留，不会因为规则列表变动而失效。
+     */
+    val promptRewriteDisabledRules: List<String> = emptyList(),
     /** 用户自定义替换规则。 */
     val promptRewriteRules: List<PromptRule> = emptyList(),
 ) {
     /** 实际生效的预设：未显式配置时全部内置预设默认开启。 */
     fun effectivePromptPresets(): Set<String> =
         promptRewritePresets.ifEmpty { PromptRiskRewriter.builtinRuleSets().keys }.toSet()
+
+    /** 某条内置规则是否被用户关掉。 */
+    fun isBuiltinRuleDisabled(ruleName: String): Boolean = ruleName in promptRewriteDisabledRules
 
     fun toJson(): JsonObject = JsonObject().apply {
         addProperty("sanitizeEnabled", sanitizeEnabled)
@@ -55,6 +66,9 @@ data class SecuritySettings(
         val presetArr = JsonArray()
         for (p in promptRewritePresets) presetArr.add(p)
         add("promptRewritePresets", presetArr)
+        val disabledArr = JsonArray()
+        for (n in promptRewriteDisabledRules) disabledArr.add(n)
+        add("promptRewriteDisabledRules", disabledArr)
         val ruleArr = JsonArray()
         for (r in promptRewriteRules) {
             ruleArr.add(
@@ -86,6 +100,10 @@ data class SecuritySettings(
             obj.getAsJsonArray("promptRewritePresets")?.forEach {
                 if (it.isJsonPrimitive) presets.add(it.asString)
             }
+            val disabledRules = mutableListOf<String>()
+            obj.getAsJsonArray("promptRewriteDisabledRules")?.forEach {
+                if (it.isJsonPrimitive) disabledRules.add(it.asString)
+            }
             val rules = mutableListOf<PromptRule>()
             obj.getAsJsonArray("promptRewriteRules")?.forEach { element ->
                 val ruleObj = runCatching { element.asJsonObject }.getOrNull() ?: return@forEach
@@ -108,6 +126,7 @@ data class SecuritySettings(
                 privacyRedactionEnabled = obj.get("privacyRedactionEnabled")?.asBoolean ?: false,
                 promptRewriteEnabled = obj.get("promptRewriteEnabled")?.asBoolean ?: true,
                 promptRewritePresets = presets,
+                promptRewriteDisabledRules = disabledRules,
                 promptRewriteRules = rules,
             )
         }

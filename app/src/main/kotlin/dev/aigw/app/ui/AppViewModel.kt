@@ -1060,6 +1060,52 @@ class AppViewModel(
         updateSecuritySettings(settings.copy(promptRewriteRules = settings.promptRewriteRules - rule))
     }
 
+    /** 禁用一条内置替换规则（内置规则写死在代码里，用禁用列表实现「删除」）。 */
+    fun disableBuiltinPromptRule(ruleName: String) {
+        val settings = engine.securitySettings()
+        if (settings.isBuiltinRuleDisabled(ruleName)) return
+        updateSecuritySettings(
+            settings.copy(promptRewriteDisabledRules = settings.promptRewriteDisabledRules + ruleName),
+        )
+    }
+
+    /** 恢复一条被禁用的内置规则。 */
+    fun enableBuiltinPromptRule(ruleName: String) {
+        val settings = engine.securitySettings()
+        updateSecuritySettings(
+            settings.copy(promptRewriteDisabledRules = settings.promptRewriteDisabledRules - ruleName),
+        )
+    }
+
+    /** 恢复全部被禁用的内置规则。 */
+    fun enableAllBuiltinPromptRules() {
+        val settings = engine.securitySettings()
+        if (settings.promptRewriteDisabledRules.isEmpty()) return
+        updateSecuritySettings(settings.copy(promptRewriteDisabledRules = emptyList()))
+    }
+
+    /** 导出全部自定义规则（JSON 文本），供用户存成文件或分享。 */
+    fun exportPromptRewriteRules(): String =
+        dev.aigw.core.security.PromptRiskRewriter.encodeRules(engine.securitySettings().promptRewriteRules)
+
+    /**
+     * 导入规则。同名（name）的覆盖，其余追加，所以重复导入同一份文件不会堆出重复规则。
+     *
+     * @return 导入的条数；解析失败返回 -1。
+     */
+    fun importPromptRewriteRules(raw: String): Int {
+        val parsed = dev.aigw.core.security.PromptRiskRewriter.decodeRules(raw)
+            ?: return -1
+        if (parsed.isEmpty()) return 0
+        val settings = engine.securitySettings()
+        val existing = settings.promptRewriteRules.associateBy { it.name }
+        val merged = LinkedHashMap<String, dev.aigw.core.security.PromptRule>()
+        for ((name, rule) in existing) merged[name] = rule
+        for (rule in parsed) merged[rule.name] = rule
+        updateSecuritySettings(settings.copy(promptRewriteRules = merged.values.toList()))
+        return parsed.size
+    }
+
     fun setDynamicColor(enabled: Boolean) {
         _state.value = _state.value.copy(dynamicColor = enabled)
         viewModelScope.launch { withContext(Dispatchers.IO) { appearance.setDynamicColor(enabled) } }
