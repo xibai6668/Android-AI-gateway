@@ -111,7 +111,7 @@ dependencies {
     // :core 用 implementation 引 gson，不传递；app 里要直接构造 JsonObject（如动作 payload）
     implementation("com.google.code.gson:gson:2.15.0")
 
-    implementation(platform("androidx.compose:compose-bom:2026.09.00"))
+    implementation(platform("androidx.compose:compose-bom:2026.11.01"))
     implementation("androidx.core:core-ktx:1.15.0")
     // 登录走 Custom Tab：裸 ACTION_VIEW 会让进程被系统判 idle 冻结，本地回调端口随之失聪
     implementation("androidx.browser:browser:1.10.0")
